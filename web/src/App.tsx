@@ -3,6 +3,8 @@ import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
 import Subscriptions from './pages/Subscriptions';
 import Rules from './pages/Rules';
+import Profiles from './pages/Profiles';
+import ProxyChains from './pages/ProxyChains';
 import Settings from './pages/Settings';
 import Logs from './pages/Logs';
 import { ToastContainer } from './components/Toast';
@@ -16,6 +18,8 @@ function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/subscriptions" element={<Subscriptions />} />
           <Route path="/rules" element={<Rules />} />
+          <Route path="/profiles" element={<Profiles />} />
+          <Route path="/proxy-chains" element={<ProxyChains />} />
           <Route path="/logs" element={<Logs />} />
           <Route path="/settings" element={<Settings />} />
         </Routes>

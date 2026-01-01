@@ -55,6 +55,41 @@ export const configApi = {
   generate: () => api.post('/config/generate'),
   preview: () => api.get('/config/preview'),
   apply: () => api.post('/config/apply'),
+  // 导出 sing-box 配置（返回下载 URL）
+  exportUrl: () => '/api/config/export',
+};
+
+// 备份恢复 API
+export const backupApi = {
+  // 导出备份（返回下载 URL）
+  exportUrl: () => '/api/backup',
+  // 导入备份
+  restore: (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return api.post('/backup/restore', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+};
+
+// Profile API
+export const profileApi = {
+  getAll: () => api.get('/profiles'),
+  get: (id: string) => api.get(`/profiles/${id}`),
+  create: (name: string, description: string) => api.post('/profiles', { name, description }),
+  update: (id: string, data: { name: string; description: string }) => api.put(`/profiles/${id}`, data),
+  delete: (id: string) => api.delete(`/profiles/${id}`),
+  activate: (id: string) => api.post(`/profiles/${id}/activate`),
+  snapshot: (id: string) => api.post(`/profiles/${id}/snapshot`),
+  exportUrl: (id: string) => `/api/profiles/${id}/export`,
+  import: (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return api.post('/profiles/import', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
 };
 
 // 服务 API
@@ -104,6 +139,22 @@ export const manualNodeApi = {
   add: (data: any) => api.post('/manual-nodes', data),
   update: (id: string, data: any) => api.put(`/manual-nodes/${id}`, data),
   delete: (id: string) => api.delete(`/manual-nodes/${id}`),
+};
+
+// 入站端口 API
+export const inboundPortApi = {
+  getAll: () => api.get('/inbound-ports'),
+  add: (data: any) => api.post('/inbound-ports', data),
+  update: (id: string, data: any) => api.put(`/inbound-ports/${id}`, data),
+  delete: (id: string) => api.delete(`/inbound-ports/${id}`),
+};
+
+// 代理链路 API
+export const proxyChainApi = {
+  getAll: () => api.get('/proxy-chains'),
+  add: (data: any) => api.post('/proxy-chains', data),
+  update: (id: string, data: any) => api.put(`/proxy-chains/${id}`, data),
+  delete: (id: string) => api.delete(`/proxy-chains/${id}`),
 };
 
 // 内核管理 API

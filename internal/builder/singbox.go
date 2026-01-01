@@ -67,16 +67,23 @@ type NTPConfig struct {
 
 // Inbound 入站配置
 type Inbound struct {
-	Type           string   `json:"type"`
-	Tag            string   `json:"tag"`
-	Listen         string   `json:"listen,omitempty"`
-	ListenPort     int      `json:"listen_port,omitempty"`
-	Address        []string `json:"address,omitempty"`
-	AutoRoute      bool     `json:"auto_route,omitempty"`
-	StrictRoute    bool     `json:"strict_route,omitempty"`
-	Stack          string   `json:"stack,omitempty"`
-	Sniff          bool     `json:"sniff,omitempty"`
+	Type           string        `json:"type"`
+	Tag            string        `json:"tag"`
+	Listen         string        `json:"listen,omitempty"`
+	ListenPort     int           `json:"listen_port,omitempty"`
+	Address        []string      `json:"address,omitempty"`
+	AutoRoute      bool          `json:"auto_route,omitempty"`
+	StrictRoute    bool          `json:"strict_route,omitempty"`
+	Stack          string        `json:"stack,omitempty"`
+	Sniff          bool          `json:"sniff,omitempty"`
 	SniffOverrideDestination bool `json:"sniff_override_destination,omitempty"`
+	Users          []InboundUser `json:"users,omitempty"` // 用户认证
+}
+
+// InboundUser 入站用户认证
+type InboundUser struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
 // Outbound 出站配置
@@ -133,21 +140,25 @@ type CacheFileConfig struct {
 
 // ConfigBuilder 配置生成器
 type ConfigBuilder struct {
-	settings   *storage.Settings
-	nodes      []storage.Node
-	filters    []storage.Filter
-	rules      []storage.Rule
-	ruleGroups []storage.RuleGroup
+	settings     *storage.Settings
+	nodes        []storage.Node
+	filters      []storage.Filter
+	rules        []storage.Rule
+	ruleGroups   []storage.RuleGroup
+	inboundPorts []storage.InboundPort
+	proxyChains  []storage.ProxyChain
 }
 
 // NewConfigBuilder 创建配置生成器
-func NewConfigBuilder(settings *storage.Settings, nodes []storage.Node, filters []storage.Filter, rules []storage.Rule, ruleGroups []storage.RuleGroup) *ConfigBuilder {
+func NewConfigBuilder(settings *storage.Settings, nodes []storage.Node, filters []storage.Filter, rules []storage.Rule, ruleGroups []storage.RuleGroup, inboundPorts []storage.InboundPort, proxyChains []storage.ProxyChain) *ConfigBuilder {
 	return &ConfigBuilder{
-		settings:   settings,
-		nodes:      nodes,
-		filters:    filters,
-		rules:      rules,
-		ruleGroups: ruleGroups,
+		settings:     settings,
+		nodes:        nodes,
+		filters:      filters,
+		rules:        rules,
+		ruleGroups:   ruleGroups,
+		inboundPorts: inboundPorts,
+		proxyChains:  proxyChains,
 	}
 }
 
@@ -375,6 +386,34 @@ func (b *ConfigBuilder) buildInbounds() []Inbound {
 		})
 	}
 
+	// 添加自定义入站端口
+	for _, port := range b.inboundPorts {
+		if !port.Enabled {
+			continue
+		}
+
+		inbound := Inbound{
+			Type:       port.Type,
+			Tag:        fmt.Sprintf("custom-%s", port.ID),
+			Listen:     port.Listen,
+			ListenPort: port.Port,
+			Sniff:      true,
+			SniffOverrideDestination: true,
+		}
+
+		// 如果有认证配置，添加用户
+		if port.Auth != nil && port.Auth.Username != "" {
+			inbound.Users = []InboundUser{
+				{
+					Username: port.Auth.Username,
+					Password: port.Auth.Password,
+				},
+			}
+		}
+
+		inbounds = append(inbounds, inbound)
+	}
+
 	return inbounds
 }
 
@@ -390,10 +429,31 @@ func (b *ConfigBuilder) buildOutbounds() []Outbound {
 	var allNodeTags []string
 	nodeTagSet := make(map[string]bool)
 	countryNodes := make(map[string][]string) // 国家代码 -> 节点标签列表
+	nodeOutboundIndex := make(map[string]int) // 节点 Tag -> outbound 索引
+
+	// 构建代理链路的 detour 映射
+	// 对于链路 [A, B, C]：A.detour=B, B.detour=C
+	chainDetourMap := make(map[string]string) // 节点 Tag -> detour 目标 Tag
+	for _, chain := range b.proxyChains {
+		if !chain.Enabled || len(chain.Nodes) < 2 {
+			continue
+		}
+		for i := 0; i < len(chain.Nodes)-1; i++ {
+			// 节点 i 通过节点 i+1 出站
+			chainDetourMap[chain.Nodes[i]] = chain.Nodes[i+1]
+		}
+	}
 
 	// 添加所有节点
 	for _, node := range b.nodes {
 		outbound := b.nodeToOutbound(node)
+
+		// 如果该节点在链路中，设置 detour
+		if detour, ok := chainDetourMap[node.Tag]; ok {
+			outbound["detour"] = detour
+		}
+
+		nodeOutboundIndex[node.Tag] = len(outbounds)
 		outbounds = append(outbounds, outbound)
 		tag := node.Tag
 		if !nodeTagSet[tag] {
@@ -501,16 +561,55 @@ func (b *ConfigBuilder) buildOutbounds() []Outbound {
 		})
 	}
 
+	// 为代理链路创建选择器
+	var chainGroupTags []string
+	for _, chain := range b.proxyChains {
+		if !chain.Enabled || len(chain.Nodes) == 0 {
+			continue
+		}
+
+		// 验证链路中的所有节点是否存在
+		allNodesExist := true
+		for _, nodeTag := range chain.Nodes {
+			if !nodeTagSet[nodeTag] {
+				allNodesExist = false
+				break
+			}
+		}
+		if !allNodesExist {
+			continue
+		}
+
+		chainGroupTags = append(chainGroupTags, chain.Name)
+
+		// 创建链路选择器，指向链路的入口节点（第一个节点）
+		outbounds = append(outbounds, Outbound{
+			"tag":       chain.Name,
+			"type":      "selector",
+			"outbounds": []string{chain.Nodes[0]},
+			"default":   chain.Nodes[0],
+		})
+	}
+
 	// 创建主选择器（精简版：只包含分组，不包含单节点）
-	proxyOutbounds := []string{"Auto"}
+	var proxyOutbounds []string
+	proxyDefault := "DIRECT"
+
+	// 只有在有节点时才添加 Auto
+	if len(allNodeTags) > 0 {
+		proxyOutbounds = append(proxyOutbounds, "Auto")
+		proxyDefault = "Auto"
+	}
 	proxyOutbounds = append(proxyOutbounds, countryGroupTags...) // 添加国家分组
 	proxyOutbounds = append(proxyOutbounds, filterGroupTags...)
+	proxyOutbounds = append(proxyOutbounds, chainGroupTags...) // 添加链路分组
+	proxyOutbounds = append(proxyOutbounds, "DIRECT")          // 始终添加 DIRECT 作为备选
 
 	outbounds = append(outbounds, Outbound{
 		"tag":       "Proxy",
 		"type":      "selector",
 		"outbounds": proxyOutbounds,
-		"default":   "Auto",
+		"default":   proxyDefault,
 	})
 
 	// 为启用的规则组创建选择器
@@ -527,9 +626,14 @@ func (b *ConfigBuilder) buildOutbounds() []Outbound {
 			selectorOutbounds = []string{"DIRECT", "REJECT", "Proxy"}
 		} else {
 			// 代理规则组：提供完整选项（但不包含单节点）
-			selectorOutbounds = []string{"Proxy", "Auto", "DIRECT", "REJECT"}
+			selectorOutbounds = []string{"Proxy", "DIRECT", "REJECT"}
+			// 只有在有节点时才添加 Auto
+			if len(allNodeTags) > 0 {
+				selectorOutbounds = append(selectorOutbounds, "Auto")
+			}
 			selectorOutbounds = append(selectorOutbounds, countryGroupTags...) // 添加国家分组
 			selectorOutbounds = append(selectorOutbounds, filterGroupTags...)
+			selectorOutbounds = append(selectorOutbounds, chainGroupTags...) // 添加链路分组
 		}
 
 		outbounds = append(outbounds, Outbound{
@@ -544,6 +648,7 @@ func (b *ConfigBuilder) buildOutbounds() []Outbound {
 	fallbackOutbounds := []string{"Proxy", "DIRECT"}
 	fallbackOutbounds = append(fallbackOutbounds, countryGroupTags...) // 添加国家分组
 	fallbackOutbounds = append(fallbackOutbounds, filterGroupTags...)
+	fallbackOutbounds = append(fallbackOutbounds, chainGroupTags...) // 添加链路分组
 	outbounds = append(outbounds, Outbound{
 		"tag":       "Final",
 		"type":      "selector",
@@ -831,6 +936,19 @@ func (b *ConfigBuilder) buildRoute() *RouteConfig {
 				"outbound": rg.Name,
 			})
 		}
+	}
+
+	// 添加自定义入站端口的路由规则
+	// 这些规则优先级较低，放在规则组之后
+	for _, port := range b.inboundPorts {
+		if !port.Enabled || port.Outbound == "" {
+			continue
+		}
+
+		rules = append(rules, RouteRule{
+			"inbound":  []string{fmt.Sprintf("custom-%s", port.ID)},
+			"outbound": port.Outbound,
+		})
 	}
 
 	route.Rules = rules

@@ -1,6 +1,9 @@
 package api
 
 import (
+	"encoding/json"
+	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
@@ -132,6 +135,22 @@ func (s *Server) setupRoutes() {
 		api.POST("/config/generate", s.generateConfig)
 		api.POST("/config/apply", s.applyConfig)
 		api.GET("/config/preview", s.previewConfig)
+		api.GET("/config/export", s.exportConfig)
+
+		// 备份恢复
+		api.GET("/backup", s.exportBackup)
+		api.POST("/backup/restore", s.importBackup)
+
+		// Profile 管理
+		api.GET("/profiles", s.getProfiles)
+		api.GET("/profiles/:id", s.getProfileData)
+		api.POST("/profiles", s.createProfile)
+		api.PUT("/profiles/:id", s.updateProfile)
+		api.DELETE("/profiles/:id", s.deleteProfile)
+		api.POST("/profiles/:id/activate", s.activateProfile)
+		api.POST("/profiles/:id/snapshot", s.snapshotProfile)
+		api.GET("/profiles/:id/export", s.exportProfile)
+		api.POST("/profiles/import", s.importProfile)
 
 		// 服务管理
 		api.GET("/service/status", s.getServiceStatus)
@@ -175,6 +194,18 @@ func (s *Server) setupRoutes() {
 		api.POST("/manual-nodes", s.addManualNode)
 		api.PUT("/manual-nodes/:id", s.updateManualNode)
 		api.DELETE("/manual-nodes/:id", s.deleteManualNode)
+
+		// 入站端口管理
+		api.GET("/inbound-ports", s.getInboundPorts)
+		api.POST("/inbound-ports", s.addInboundPort)
+		api.PUT("/inbound-ports/:id", s.updateInboundPort)
+		api.DELETE("/inbound-ports/:id", s.deleteInboundPort)
+
+		// 代理链路管理
+		api.GET("/proxy-chains", s.getProxyChains)
+		api.POST("/proxy-chains", s.addProxyChain)
+		api.PUT("/proxy-chains/:id", s.updateProxyChain)
+		api.DELETE("/proxy-chains/:id", s.deleteProxyChain)
 
 		// 内核管理
 		api.GET("/kernel/info", s.getKernelInfo)
@@ -669,13 +700,364 @@ func (s *Server) buildConfig() (string, error) {
 	filters := s.store.GetFilters()
 	rules := s.store.GetRules()
 	ruleGroups := s.store.GetRuleGroups()
+	inboundPorts := s.store.GetInboundPorts()
+	proxyChains := s.store.GetProxyChains()
 
-	b := builder.NewConfigBuilder(settings, nodes, filters, rules, ruleGroups)
+	b := builder.NewConfigBuilder(settings, nodes, filters, rules, ruleGroups, inboundPorts, proxyChains)
 	return b.BuildJSON()
 }
 
 func (s *Server) saveConfigFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0644)
+}
+
+// exportConfig 导出 sing-box 配置文件（下载）
+func (s *Server) exportConfig(c *gin.Context) {
+	configJSON, err := s.buildConfig()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 设置响应头，触发浏览器下载
+	c.Header("Content-Disposition", "attachment; filename=singbox-config.json")
+	c.Header("Content-Type", "application/json")
+	c.String(http.StatusOK, configJSON)
+}
+
+// exportBackup 导出应用完整数据（备份）
+func (s *Server) exportBackup(c *gin.Context) {
+	dataFile := filepath.Join(s.store.GetDataDir(), "data.json")
+	data, err := os.ReadFile(dataFile)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取数据文件失败: " + err.Error()})
+		return
+	}
+
+	filename := fmt.Sprintf("sbm-backup-%s.json", time.Now().Format("20060102-150405"))
+	c.Header("Content-Disposition", "attachment; filename="+filename)
+	c.Header("Content-Type", "application/json")
+	c.Data(http.StatusOK, "application/json", data)
+}
+
+// importBackup 导入应用数据（恢复）
+func (s *Server) importBackup(c *gin.Context) {
+	file, _, err := c.Request.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请上传文件"})
+		return
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "读取文件失败: " + err.Error()})
+		return
+	}
+
+	// 验证 JSON 格式
+	var appData storage.AppData
+	if err := json.Unmarshal(data, &appData); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的备份文件格式: " + err.Error()})
+		return
+	}
+
+	// 备份当前数据
+	dataDir := s.store.GetDataDir()
+	currentDataFile := filepath.Join(dataDir, "data.json")
+	backupFile := filepath.Join(dataDir, fmt.Sprintf("data-backup-%s.json", time.Now().Format("20060102-150405")))
+	if currentData, err := os.ReadFile(currentDataFile); err == nil {
+		os.WriteFile(backupFile, currentData, 0644)
+	}
+
+	// 写入新数据
+	if err := os.WriteFile(currentDataFile, data, 0644); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "写入数据失败: " + err.Error()})
+		return
+	}
+
+	// 重新加载存储
+	if err := s.store.Reload(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "重新加载数据失败: " + err.Error()})
+		return
+	}
+
+	// 自动应用配置
+	s.autoApplyConfig()
+
+	c.JSON(http.StatusOK, gin.H{"message": "数据已恢复", "backup": backupFile})
+}
+
+// ==================== Profile API ====================
+
+// getProfiles 获取所有 Profile
+func (s *Server) getProfiles(c *gin.Context) {
+	profiles := s.store.GetProfiles()
+	activeProfile := s.store.GetActiveProfile()
+	c.JSON(http.StatusOK, gin.H{
+		"data":           profiles,
+		"active_profile": activeProfile,
+	})
+}
+
+// getProfileData 获取单个 Profile 完整数据
+func (s *Server) getProfileData(c *gin.Context) {
+	id := c.Param("id")
+
+	profile := s.store.GetProfile(id)
+	if profile == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Profile 不存在"})
+		return
+	}
+
+	data, err := s.store.LoadProfileData(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"profile": profile,
+		"data":    data,
+	})
+}
+
+// createProfile 创建新 Profile（基于当前配置快照）
+func (s *Server) createProfile(c *gin.Context) {
+	var req struct {
+		Name        string `json:"name" binding:"required"`
+		Description string `json:"description"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	now := time.Now()
+	profile := storage.Profile{
+		ID:          uuid.New().String(),
+		Name:        req.Name,
+		Description: req.Description,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		IsActive:    false,
+	}
+
+	// 保存 Profile 元数据
+	if err := s.store.AddProfile(profile); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 保存当前配置快照
+	snapshot := s.store.CreateSnapshotData()
+	if err := s.store.SaveProfileData(profile.ID, snapshot); err != nil {
+		// 回滚 Profile 元数据
+		s.store.DeleteProfile(profile.ID)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存 Profile 数据失败: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": profile})
+}
+
+// updateProfile 更新 Profile 元数据
+func (s *Server) updateProfile(c *gin.Context) {
+	id := c.Param("id")
+
+	var req struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	profile := s.store.GetProfile(id)
+	if profile == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Profile 不存在"})
+		return
+	}
+
+	profile.Name = req.Name
+	profile.Description = req.Description
+	profile.UpdatedAt = time.Now()
+
+	if err := s.store.UpdateProfile(*profile); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "更新成功"})
+}
+
+// deleteProfile 删除 Profile
+func (s *Server) deleteProfile(c *gin.Context) {
+	id := c.Param("id")
+
+	// 不能删除当前激活的 Profile
+	if s.store.GetActiveProfile() == id {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "不能删除当前激活的 Profile"})
+		return
+	}
+
+	// 删除 Profile 元数据
+	if err := s.store.DeleteProfile(id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 删除 Profile 数据文件
+	s.store.DeleteProfileData(id)
+
+	c.JSON(http.StatusOK, gin.H{"message": "删除成功"})
+}
+
+// activateProfile 切换到指定 Profile
+func (s *Server) activateProfile(c *gin.Context) {
+	id := c.Param("id")
+
+	profile := s.store.GetProfile(id)
+	if profile == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Profile 不存在"})
+		return
+	}
+
+	// 保存当前配置到当前激活的 Profile
+	currentActive := s.store.GetActiveProfile()
+	if currentActive != "" && currentActive != id {
+		snapshot := s.store.CreateSnapshotData()
+		s.store.SaveProfileData(currentActive, snapshot)
+	}
+
+	// 加载目标 Profile 数据
+	data, err := s.store.LoadProfileData(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载 Profile 数据失败: " + err.Error()})
+		return
+	}
+
+	// 恢复配置
+	if err := s.store.RestoreFromProfileData(data); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "恢复配置失败: " + err.Error()})
+		return
+	}
+
+	// 设置当前激活的 Profile
+	if err := s.store.SetActiveProfile(id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 自动应用配置
+	s.autoApplyConfig()
+
+	c.JSON(http.StatusOK, gin.H{"message": "已切换到 Profile: " + profile.Name})
+}
+
+// snapshotProfile 更新 Profile 为当前配置快照
+func (s *Server) snapshotProfile(c *gin.Context) {
+	id := c.Param("id")
+
+	profile := s.store.GetProfile(id)
+	if profile == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Profile 不存在"})
+		return
+	}
+
+	// 保存当前配置快照
+	snapshot := s.store.CreateSnapshotData()
+	if err := s.store.SaveProfileData(id, snapshot); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存快照失败: " + err.Error()})
+		return
+	}
+
+	// 更新 Profile 时间
+	profile.UpdatedAt = time.Now()
+	s.store.UpdateProfile(*profile)
+
+	c.JSON(http.StatusOK, gin.H{"message": "快照已更新"})
+}
+
+// exportProfile 导出 Profile（下载）
+func (s *Server) exportProfile(c *gin.Context) {
+	id := c.Param("id")
+
+	profile := s.store.GetProfile(id)
+	if profile == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Profile 不存在"})
+		return
+	}
+
+	data, err := s.store.LoadProfileData(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 组合导出数据
+	exportData := gin.H{
+		"profile": profile,
+		"data":    data,
+	}
+
+	content, _ := json.MarshalIndent(exportData, "", "  ")
+	filename := fmt.Sprintf("profile-%s-%s.json", profile.Name, time.Now().Format("20060102"))
+	c.Header("Content-Disposition", "attachment; filename="+filename)
+	c.Header("Content-Type", "application/json")
+	c.Data(http.StatusOK, "application/json", content)
+}
+
+// importProfile 导入 Profile
+func (s *Server) importProfile(c *gin.Context) {
+	file, _, err := c.Request.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请上传文件"})
+		return
+	}
+	defer file.Close()
+
+	content, err := io.ReadAll(file)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "读取文件失败"})
+		return
+	}
+
+	// 解析导入数据
+	var importData struct {
+		Profile storage.Profile `json:"profile"`
+		Data    storage.AppData `json:"data"`
+	}
+
+	if err := json.Unmarshal(content, &importData); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的 Profile 文件格式"})
+		return
+	}
+
+	// 生成新 ID
+	now := time.Now()
+	importData.Profile.ID = uuid.New().String()
+	importData.Profile.CreatedAt = now
+	importData.Profile.UpdatedAt = now
+	importData.Profile.IsActive = false
+
+	// 保存 Profile 元数据
+	if err := s.store.AddProfile(importData.Profile); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 保存 Profile 数据
+	if err := s.store.SaveProfileData(importData.Profile.ID, &importData.Data); err != nil {
+		s.store.DeleteProfile(importData.Profile.ID)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存 Profile 数据失败"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": importData.Profile})
 }
 
 // resolvePath 将相对路径解析为基于数据目录的绝对路径
@@ -1388,4 +1770,148 @@ func (s *Server) startKernelDownload(c *gin.Context) {
 func (s *Server) getKernelProgress(c *gin.Context) {
 	progress := s.kernelManager.GetProgress()
 	c.JSON(http.StatusOK, gin.H{"data": progress})
+}
+
+// ==================== 入站端口 API ====================
+
+func (s *Server) getInboundPorts(c *gin.Context) {
+	ports := s.store.GetInboundPorts()
+	c.JSON(http.StatusOK, gin.H{"data": ports})
+}
+
+func (s *Server) addInboundPort(c *gin.Context) {
+	var port storage.InboundPort
+	if err := c.ShouldBindJSON(&port); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 生成 ID
+	port.ID = uuid.New().String()
+
+	if err := s.store.AddInboundPort(port); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 自动应用配置
+	if err := s.autoApplyConfig(); err != nil {
+		c.JSON(http.StatusOK, gin.H{"data": port, "warning": "添加成功，但自动应用配置失败: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": port})
+}
+
+func (s *Server) updateInboundPort(c *gin.Context) {
+	id := c.Param("id")
+
+	var port storage.InboundPort
+	if err := c.ShouldBindJSON(&port); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	port.ID = id
+	if err := s.store.UpdateInboundPort(port); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 自动应用配置
+	if err := s.autoApplyConfig(); err != nil {
+		c.JSON(http.StatusOK, gin.H{"message": "更新成功，但自动应用配置失败: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "更新成功"})
+}
+
+func (s *Server) deleteInboundPort(c *gin.Context) {
+	id := c.Param("id")
+
+	if err := s.store.DeleteInboundPort(id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 自动应用配置
+	if err := s.autoApplyConfig(); err != nil {
+		c.JSON(http.StatusOK, gin.H{"message": "删除成功，但自动应用配置失败: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "删除成功"})
+}
+
+// ==================== 代理链路 API ====================
+
+func (s *Server) getProxyChains(c *gin.Context) {
+	chains := s.store.GetProxyChains()
+	c.JSON(http.StatusOK, gin.H{"data": chains})
+}
+
+func (s *Server) addProxyChain(c *gin.Context) {
+	var chain storage.ProxyChain
+	if err := c.ShouldBindJSON(&chain); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 生成 ID
+	chain.ID = uuid.New().String()
+
+	if err := s.store.AddProxyChain(chain); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 自动应用配置
+	if err := s.autoApplyConfig(); err != nil {
+		c.JSON(http.StatusOK, gin.H{"data": chain, "warning": "添加成功，但自动应用配置失败: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": chain})
+}
+
+func (s *Server) updateProxyChain(c *gin.Context) {
+	id := c.Param("id")
+
+	var chain storage.ProxyChain
+	if err := c.ShouldBindJSON(&chain); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	chain.ID = id
+	if err := s.store.UpdateProxyChain(chain); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 自动应用配置
+	if err := s.autoApplyConfig(); err != nil {
+		c.JSON(http.StatusOK, gin.H{"message": "更新成功，但自动应用配置失败: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "更新成功"})
+}
+
+func (s *Server) deleteProxyChain(c *gin.Context) {
+	id := c.Param("id")
+
+	if err := s.store.DeleteProxyChain(id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 自动应用配置
+	if err := s.autoApplyConfig(); err != nil {
+		c.JSON(http.StatusOK, gin.H{"message": "删除成功，但自动应用配置失败: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "删除成功"})
 }

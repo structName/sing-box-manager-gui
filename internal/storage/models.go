@@ -2,6 +2,43 @@ package storage
 
 import "time"
 
+// Profile 配置方案
+type Profile struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	IsActive    bool      `json:"is_active"`
+}
+
+// InboundPort 入站端口配置
+type InboundPort struct {
+	ID       string       `json:"id"`
+	Name     string       `json:"name"`     // 端口名称，如 "家人专用"
+	Type     string       `json:"type"`     // mixed/http/socks
+	Listen   string       `json:"listen"`   // 监听地址，默认 127.0.0.1
+	Port     int          `json:"port"`     // 端口号
+	Auth     *InboundAuth `json:"auth,omitempty"`
+	Outbound string       `json:"outbound"` // 关联的出站 tag
+	Enabled  bool         `json:"enabled"`
+}
+
+// InboundAuth 入站认证
+type InboundAuth struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+// ProxyChain 代理链路配置
+type ProxyChain struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`        // 链路名称，如 "香港中转链"
+	Description string   `json:"description"` // 描述
+	Nodes       []string `json:"nodes"`       // 有序的节点 Tag 列表 [入口节点, 中转1, 中转2, ..., 出口节点]
+	Enabled     bool     `json:"enabled"`
+}
+
 // Subscription 订阅
 type Subscription struct {
 	ID        string     `json:"id"`
@@ -155,12 +192,16 @@ func DefaultSettings() *Settings {
 
 // AppData 应用数据
 type AppData struct {
-	Subscriptions []Subscription `json:"subscriptions"`
-	ManualNodes   []ManualNode   `json:"manual_nodes"`
-	Filters       []Filter       `json:"filters"`
-	Rules         []Rule         `json:"rules"`
-	RuleGroups    []RuleGroup    `json:"rule_groups"`
-	Settings      *Settings      `json:"settings"`
+	Subscriptions []Subscription  `json:"subscriptions"`
+	ManualNodes   []ManualNode    `json:"manual_nodes"`
+	Filters       []Filter        `json:"filters"`
+	Rules         []Rule          `json:"rules"`
+	RuleGroups    []RuleGroup     `json:"rule_groups"`
+	Settings      *Settings       `json:"settings"`
+	Profiles      []Profile       `json:"profiles,omitempty"`        // Profile 元数据列表
+	ActiveProfile string          `json:"active_profile,omitempty"`  // 当前激活的 Profile ID
+	InboundPorts  []InboundPort   `json:"inbound_ports,omitempty"`   // 自定义入站端口
+	ProxyChains   []ProxyChain    `json:"proxy_chains,omitempty"`    // 代理链路配置
 }
 
 // DefaultRuleGroups 默认规则组
