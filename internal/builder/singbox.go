@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -67,16 +68,23 @@ type NTPConfig struct {
 
 // Inbound 入站配置
 type Inbound struct {
-	Type           string   `json:"type"`
-	Tag            string   `json:"tag"`
-	Listen         string   `json:"listen,omitempty"`
-	ListenPort     int      `json:"listen_port,omitempty"`
-	Address        []string `json:"address,omitempty"`
-	AutoRoute      bool     `json:"auto_route,omitempty"`
-	StrictRoute    bool     `json:"strict_route,omitempty"`
-	Stack          string   `json:"stack,omitempty"`
-	Sniff          bool     `json:"sniff,omitempty"`
+	Type           string        `json:"type"`
+	Tag            string        `json:"tag"`
+	Listen         string        `json:"listen,omitempty"`
+	ListenPort     int           `json:"listen_port,omitempty"`
+	Address        []string      `json:"address,omitempty"`
+	AutoRoute      bool          `json:"auto_route,omitempty"`
+	StrictRoute    bool          `json:"strict_route,omitempty"`
+	Stack          string        `json:"stack,omitempty"`
+	Sniff          bool          `json:"sniff,omitempty"`
 	SniffOverrideDestination bool `json:"sniff_override_destination,omitempty"`
+	Users          []InboundUser `json:"users,omitempty"` // 用户认证
+}
+
+// InboundUser 入站用户认证
+type InboundUser struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
 // Outbound 出站配置
@@ -133,22 +141,32 @@ type CacheFileConfig struct {
 
 // ConfigBuilder 配置生成器
 type ConfigBuilder struct {
-	settings   *storage.Settings
-	nodes      []storage.Node
-	filters    []storage.Filter
-	rules      []storage.Rule
-	ruleGroups []storage.RuleGroup
+	settings     *storage.Settings
+	nodes        []storage.Node
+	filters      []storage.Filter
+	rules        []storage.Rule
+	ruleGroups   []storage.RuleGroup
+	inboundPorts []storage.InboundPort
+	proxyChains  []storage.ProxyChain
+	dataDir      string // 数据目录路径
 }
 
 // NewConfigBuilder 创建配置生成器
-func NewConfigBuilder(settings *storage.Settings, nodes []storage.Node, filters []storage.Filter, rules []storage.Rule, ruleGroups []storage.RuleGroup) *ConfigBuilder {
+func NewConfigBuilder(settings *storage.Settings, nodes []storage.Node, filters []storage.Filter, rules []storage.Rule, ruleGroups []storage.RuleGroup, inboundPorts []storage.InboundPort, proxyChains []storage.ProxyChain) *ConfigBuilder {
 	return &ConfigBuilder{
-		settings:   settings,
-		nodes:      nodes,
-		filters:    filters,
-		rules:      rules,
-		ruleGroups: ruleGroups,
+		settings:     settings,
+		nodes:        nodes,
+		filters:      filters,
+		rules:        rules,
+		ruleGroups:   ruleGroups,
+		inboundPorts: inboundPorts,
+		proxyChains:  proxyChains,
 	}
+}
+
+// SetDataDir 设置数据目录
+func (b *ConfigBuilder) SetDataDir(dataDir string) {
+	b.dataDir = dataDir
 }
 
 // buildRuleSetURL 构建规则集 URL（支持 GitHub 代理）
@@ -162,17 +180,13 @@ func (b *ConfigBuilder) buildRuleSetURL(originalURL string) string {
 // Build 构建 sing-box 配置
 func (b *ConfigBuilder) Build() (*SingBoxConfig, error) {
 	config := &SingBoxConfig{
-		Log:       b.buildLog(),
-		DNS:       b.buildDNS(),
-		NTP:       b.buildNTP(),
-		Inbounds:  b.buildInbounds(),
-		Outbounds: b.buildOutbounds(),
-		Route:     b.buildRoute(),
-	}
-
-	// 添加 Clash API 支持
-	if b.settings.ClashAPIPort > 0 {
-		config.Experimental = b.buildExperimental()
+		Log:          b.buildLog(),
+		DNS:          b.buildDNS(),
+		NTP:          b.buildNTP(),
+		Inbounds:     b.buildInbounds(),
+		Outbounds:    b.buildOutbounds(),
+		Route:        b.buildRoute(),
+		Experimental: b.buildExperimental(), // 始终启用，FakeIP 需要 cache_file
 	}
 
 	return config, nil
@@ -255,12 +269,6 @@ func (b *ConfigBuilder) buildDNS() *DNSConfig {
 			Type:   "udp",
 			Server: "223.5.5.5",
 		},
-		{
-			Tag:        "dns_fakeip",
-			Type:       "fakeip",
-			Inet4Range: "198.18.0.0/15",
-			Inet6Range: "fc00::/18",
-		},
 	}
 
 	// 基础 DNS 规则
@@ -274,11 +282,22 @@ func (b *ConfigBuilder) buildDNS() *DNSConfig {
 			Server:  "dns_direct",
 			Action:  "route",
 		},
-		{
+	}
+
+	// 如果启用 FakeIP
+	if b.settings.FakeIPEnabled {
+		servers = append(servers, DNSServer{
+			Tag:        "dns_fakeip",
+			Type:       "fakeip",
+			Inet4Range: "198.18.0.0/15",
+			Inet6Range: "fc00::/18",
+		})
+
+		rules = append(rules, DNSRule{
 			QueryType: []string{"A", "AAAA"},
 			Server:    "dns_fakeip",
 			Action:    "route",
-		},
+		})
 	}
 
 	// 1. 读取系统 hosts
@@ -375,6 +394,34 @@ func (b *ConfigBuilder) buildInbounds() []Inbound {
 		})
 	}
 
+	// 添加自定义入站端口
+	for _, port := range b.inboundPorts {
+		if !port.Enabled {
+			continue
+		}
+
+		inbound := Inbound{
+			Type:       port.Type,
+			Tag:        fmt.Sprintf("custom-%s", port.ID),
+			Listen:     port.Listen,
+			ListenPort: port.Port,
+			Sniff:      true,
+			SniffOverrideDestination: true,
+		}
+
+		// 如果有认证配置，添加用户
+		if port.Auth != nil && port.Auth.Username != "" {
+			inbound.Users = []InboundUser{
+				{
+					Username: port.Auth.Username,
+					Password: port.Auth.Password,
+				},
+			}
+		}
+
+		inbounds = append(inbounds, inbound)
+	}
+
 	return inbounds
 }
 
@@ -390,10 +437,68 @@ func (b *ConfigBuilder) buildOutbounds() []Outbound {
 	var allNodeTags []string
 	nodeTagSet := make(map[string]bool)
 	countryNodes := make(map[string][]string) // 国家代码 -> 节点标签列表
+	nodeOutboundIndex := make(map[string]int) // 节点 Tag -> outbound 索引
 
-	// 添加所有节点
+	// 构建节点 Tag 到节点的映射
+	nodeMap := make(map[string]storage.Node)
+	for _, node := range b.nodes {
+		nodeMap[node.Tag] = node
+	}
+
+	// 生成链路节点副本（独立的副本，不影响原始节点）
+	chainCopyTags := make(map[string]bool) // 已创建的副本 Tag
+	for _, chain := range b.proxyChains {
+		if !chain.Enabled || len(chain.Nodes) < 2 {
+			continue
+		}
+
+		// 验证链路中的所有节点是否存在
+		allNodesExist := true
+		for _, nodeTag := range chain.Nodes {
+			if _, exists := nodeMap[nodeTag]; !exists {
+				allNodesExist = false
+				break
+			}
+		}
+		if !allNodesExist {
+			continue
+		}
+
+		// 为链路中的每个节点创建副本
+		// 链路顺序: [入口, 中间..., 出口]
+		// detour 方向: 出口节点的 detour 指向前一个节点
+		// 流量路径: 客户端 → 入口 → 中间... → 出口 → 目标
+		for i, nodeTag := range chain.Nodes {
+			copyTag := storage.GenerateChainNodeCopyTag(chain.Name, nodeTag)
+
+			// 避免重复创建
+			if chainCopyTags[copyTag] {
+				continue
+			}
+			chainCopyTags[copyTag] = true
+
+			// 获取原节点并创建副本
+			originalNode := nodeMap[nodeTag]
+			copyOutbound := b.nodeToOutbound(originalNode)
+			copyOutbound["tag"] = copyTag
+
+			// 设置 detour: 当前节点通过前一个节点出站
+			// 入口节点(i=0)不需要 detour，直接连接
+			// 后续节点需要通过前一个节点
+			if i > 0 {
+				prevCopyTag := storage.GenerateChainNodeCopyTag(chain.Name, chain.Nodes[i-1])
+				copyOutbound["detour"] = prevCopyTag
+			}
+
+			outbounds = append(outbounds, copyOutbound)
+		}
+	}
+
+	// 添加所有原始节点（不设置 detour，保持独立）
 	for _, node := range b.nodes {
 		outbound := b.nodeToOutbound(node)
+
+		nodeOutboundIndex[node.Tag] = len(outbounds)
 		outbounds = append(outbounds, outbound)
 		tag := node.Tag
 		if !nodeTagSet[tag] {
@@ -501,16 +606,57 @@ func (b *ConfigBuilder) buildOutbounds() []Outbound {
 		})
 	}
 
+	// 为代理链路创建选择器（指向副本入口节点）
+	var chainGroupTags []string
+	for _, chain := range b.proxyChains {
+		if !chain.Enabled || len(chain.Nodes) == 0 {
+			continue
+		}
+
+		// 验证链路中的所有节点是否存在
+		allNodesExist := true
+		for _, nodeTag := range chain.Nodes {
+			if !nodeTagSet[nodeTag] {
+				allNodesExist = false
+				break
+			}
+		}
+		if !allNodesExist {
+			continue
+		}
+
+		chainGroupTags = append(chainGroupTags, chain.Name)
+
+		// 创建链路选择器，指向链路的副本出口节点（最后一个）
+		// 流量路径: 选择器 → 出口节点 → (detour) 中间节点... → 入口节点 → 目标
+		exitCopyTag := storage.GenerateChainNodeCopyTag(chain.Name, chain.Nodes[len(chain.Nodes)-1])
+		outbounds = append(outbounds, Outbound{
+			"tag":       chain.Name,
+			"type":      "selector",
+			"outbounds": []string{exitCopyTag},
+			"default":   exitCopyTag,
+		})
+	}
+
 	// 创建主选择器（精简版：只包含分组，不包含单节点）
-	proxyOutbounds := []string{"Auto"}
+	var proxyOutbounds []string
+	proxyDefault := "DIRECT"
+
+	// 只有在有节点时才添加 Auto
+	if len(allNodeTags) > 0 {
+		proxyOutbounds = append(proxyOutbounds, "Auto")
+		proxyDefault = "Auto"
+	}
 	proxyOutbounds = append(proxyOutbounds, countryGroupTags...) // 添加国家分组
 	proxyOutbounds = append(proxyOutbounds, filterGroupTags...)
+	proxyOutbounds = append(proxyOutbounds, chainGroupTags...) // 添加链路分组
+	proxyOutbounds = append(proxyOutbounds, "DIRECT")          // 始终添加 DIRECT 作为备选
 
 	outbounds = append(outbounds, Outbound{
 		"tag":       "Proxy",
 		"type":      "selector",
 		"outbounds": proxyOutbounds,
-		"default":   "Auto",
+		"default":   proxyDefault,
 	})
 
 	// 为启用的规则组创建选择器
@@ -527,9 +673,14 @@ func (b *ConfigBuilder) buildOutbounds() []Outbound {
 			selectorOutbounds = []string{"DIRECT", "REJECT", "Proxy"}
 		} else {
 			// 代理规则组：提供完整选项（但不包含单节点）
-			selectorOutbounds = []string{"Proxy", "Auto", "DIRECT", "REJECT"}
+			selectorOutbounds = []string{"Proxy", "DIRECT", "REJECT"}
+			// 只有在有节点时才添加 Auto
+			if len(allNodeTags) > 0 {
+				selectorOutbounds = append(selectorOutbounds, "Auto")
+			}
 			selectorOutbounds = append(selectorOutbounds, countryGroupTags...) // 添加国家分组
 			selectorOutbounds = append(selectorOutbounds, filterGroupTags...)
+			selectorOutbounds = append(selectorOutbounds, chainGroupTags...) // 添加链路分组
 		}
 
 		outbounds = append(outbounds, Outbound{
@@ -544,6 +695,7 @@ func (b *ConfigBuilder) buildOutbounds() []Outbound {
 	fallbackOutbounds := []string{"Proxy", "DIRECT"}
 	fallbackOutbounds = append(fallbackOutbounds, countryGroupTags...) // 添加国家分组
 	fallbackOutbounds = append(fallbackOutbounds, filterGroupTags...)
+	fallbackOutbounds = append(fallbackOutbounds, chainGroupTags...) // 添加链路分组
 	outbounds = append(outbounds, Outbound{
 		"tag":       "Final",
 		"type":      "selector",
@@ -833,6 +985,19 @@ func (b *ConfigBuilder) buildRoute() *RouteConfig {
 		}
 	}
 
+	// 添加自定义入站端口的路由规则
+	// 这些规则优先级较低，放在规则组之后
+	for _, port := range b.inboundPorts {
+		if !port.Enabled || port.Outbound == "" {
+			continue
+		}
+
+		rules = append(rules, RouteRule{
+			"inbound":  []string{fmt.Sprintf("custom-%s", port.ID)},
+			"outbound": port.Outbound,
+		})
+	}
+
 	route.Rules = rules
 
 	return route
@@ -840,17 +1005,30 @@ func (b *ConfigBuilder) buildRoute() *RouteConfig {
 
 // buildExperimental 构建实验性配置
 func (b *ConfigBuilder) buildExperimental() *ExperimentalConfig {
-	return &ExperimentalConfig{
-		ClashAPI: &ClashAPIConfig{
+	// 计算 cache.db 的路径
+	cachePath := "cache.db"
+	if b.dataDir != "" {
+		cachePath = filepath.Join(b.dataDir, "cache.db")
+	}
+
+	exp := &ExperimentalConfig{
+		// CacheFile 用于存储缓存数据
+		CacheFile: &CacheFileConfig{
+			Enabled:     true,
+			Path:        cachePath,
+			StoreFakeIP: b.settings.FakeIPEnabled, // 根据设置存储 FakeIP 映射
+		},
+	}
+
+	// 如果启用了 Clash API，添加配置
+	if b.settings.ClashAPIPort > 0 {
+		exp.ClashAPI = &ClashAPIConfig{
 			ExternalController:    fmt.Sprintf("127.0.0.1:%d", b.settings.ClashAPIPort),
 			ExternalUI:            b.settings.ClashUIPath,
 			ExternalUIDownloadURL: "https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip",
 			DefaultMode:           "rule",
-		},
-		CacheFile: &CacheFileConfig{
-			Enabled:     true,
-			Path:        "cache.db",
-			StoreFakeIP: true, // 持久化 FakeIP 映射，避免重启后地址变化
-		},
+		}
 	}
+
+	return exp
 }

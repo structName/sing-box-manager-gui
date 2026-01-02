@@ -96,6 +96,7 @@ export interface Settings {
   proxy_dns: string;
   direct_dns: string;
   hosts?: HostEntry[];           // DNS hosts 映射
+  fakeip_enabled?: boolean;      // FakeIP 模式
   web_port: number;
   clash_api_port: number;
   clash_ui_path: string;

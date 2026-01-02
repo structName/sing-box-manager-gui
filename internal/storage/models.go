@@ -2,6 +2,84 @@ package storage
 
 import "time"
 
+// Profile 配置方案
+type Profile struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	IsActive    bool      `json:"is_active"`
+}
+
+// InboundPort 入站端口配置
+type InboundPort struct {
+	ID       string       `json:"id"`
+	Name     string       `json:"name"`     // 端口名称，如 "家人专用"
+	Type     string       `json:"type"`     // mixed/http/socks
+	Listen   string       `json:"listen"`   // 监听地址，默认 127.0.0.1
+	Port     int          `json:"port"`     // 端口号
+	Auth     *InboundAuth `json:"auth,omitempty"`
+	Outbound string       `json:"outbound"` // 关联的出站 tag
+	Enabled  bool         `json:"enabled"`
+}
+
+// InboundAuth 入站认证
+type InboundAuth struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+// ProxyChain 代理链路配置
+type ProxyChain struct {
+	ID           string             `json:"id"`
+	Name         string             `json:"name"`                     // 链路名称，如 "香港中转链"
+	Description  string             `json:"description"`              // 描述
+	Nodes        []string           `json:"nodes"`                    // 有序的节点 Tag 列表（兼容旧版）
+	ChainNodes   []ChainNode        `json:"chain_nodes,omitempty"`    // 节点副本列表
+	Enabled      bool               `json:"enabled"`
+	HealthConfig *ChainHealthConfig `json:"health_config,omitempty"`  // 健康检测配置
+}
+
+// ChainNode 链路节点副本引用
+type ChainNode struct {
+	OriginalTag string `json:"original_tag"` // 原节点 Tag
+	CopyTag     string `json:"copy_tag"`     // 副本 Tag: "{链路名}-{原Tag}"
+	Source      string `json:"source"`       // 来源订阅 ID 或 "manual"
+}
+
+// ChainHealthConfig 链路健康检测配置
+type ChainHealthConfig struct {
+	Enabled      bool   `json:"enabled"`
+	Interval     int    `json:"interval"`       // 检测间隔（秒），默认 300
+	Timeout      int    `json:"timeout"`        // 超时（秒），默认 10
+	URL          string `json:"url"`            // 测试 URL
+	AlertEnabled bool   `json:"alert_enabled"`  // 启用告警
+	AutoSwitch   bool   `json:"auto_switch"`    // 自动切换
+}
+
+// ChainHealthStatus 链路健康状态
+type ChainHealthStatus struct {
+	ChainID      string             `json:"chain_id"`
+	LastCheck    time.Time          `json:"last_check"`
+	Status       string             `json:"status"`        // "healthy" | "degraded" | "unhealthy"
+	Latency      int                `json:"latency"`       // 总延迟 (ms)
+	NodeStatuses []NodeHealthStatus `json:"node_statuses"`
+}
+
+// NodeHealthStatus 节点健康状态
+type NodeHealthStatus struct {
+	Tag     string `json:"tag"`
+	Status  string `json:"status"`  // "healthy" | "unhealthy" | "timeout"
+	Latency int    `json:"latency"` // ms
+	Error   string `json:"error,omitempty"`
+}
+
+// GenerateChainNodeCopyTag 生成链路节点副本 Tag
+func GenerateChainNodeCopyTag(chainName, originalTag string) string {
+	return chainName + "-" + originalTag
+}
+
 // Subscription 订阅
 type Subscription struct {
 	ID        string     `json:"id"`
@@ -31,6 +109,15 @@ type Node struct {
 	Extra        map[string]interface{} `json:"extra,omitempty"`         // 协议特定字段
 	Country      string                 `json:"country,omitempty"`       // 国家代码
 	CountryEmoji string                 `json:"country_emoji,omitempty"` // 国家 emoji
+	Source       string                 `json:"source,omitempty"`        // 来源: "manual" 或订阅 ID
+	SourceName   string                 `json:"source_name,omitempty"`   // 来源名称: "手动添加" 或机场名称
+}
+
+// NodeGroup 节点分组（按来源）
+type NodeGroup struct {
+	Source     string `json:"source"`
+	SourceName string `json:"source_name"`
+	Nodes      []Node `json:"nodes"`
 }
 
 // ManualNode 手动添加的节点
@@ -110,9 +197,10 @@ type Settings struct {
 	TunEnabled bool `json:"tun_enabled"` // TUN 模式
 
 	// DNS 配置
-	ProxyDNS  string      `json:"proxy_dns"`        // 代理 DNS
-	DirectDNS string      `json:"direct_dns"`       // 直连 DNS
-	Hosts     []HostEntry `json:"hosts,omitempty"`  // DNS hosts 映射
+	ProxyDNS      string      `json:"proxy_dns"`               // 代理 DNS
+	DirectDNS     string      `json:"direct_dns"`              // 直连 DNS
+	Hosts         []HostEntry `json:"hosts,omitempty"`         // DNS hosts 映射
+	FakeIPEnabled bool        `json:"fakeip_enabled,omitempty"` // 启用 FakeIP 模式
 
 	// 控制面板
 	WebPort      int    `json:"web_port"`       // 管理界面端口
@@ -131,6 +219,9 @@ type Settings struct {
 
 	// GitHub 代理设置
 	GithubProxy string `json:"github_proxy"` // GitHub 代理地址，如 https://ghproxy.com/
+
+	// 链路健康检测配置
+	ChainHealthConfig *ChainHealthConfig `json:"chain_health_config,omitempty"`
 }
 
 // DefaultSettings 默认设置
@@ -150,17 +241,29 @@ func DefaultSettings() *Settings {
 		AutoApply:            true, // 默认开启自动应用
 		SubscriptionInterval: 60,   // 默认 60 分钟更新一次
 		GithubProxy:          "",   // 默认不使用代理
+		ChainHealthConfig: &ChainHealthConfig{
+			Enabled:      false,
+			Interval:     300,
+			Timeout:      10,
+			URL:          "https://www.gstatic.com/generate_204",
+			AlertEnabled: false,
+			AutoSwitch:   false,
+		},
 	}
 }
 
 // AppData 应用数据
 type AppData struct {
-	Subscriptions []Subscription `json:"subscriptions"`
-	ManualNodes   []ManualNode   `json:"manual_nodes"`
-	Filters       []Filter       `json:"filters"`
-	Rules         []Rule         `json:"rules"`
-	RuleGroups    []RuleGroup    `json:"rule_groups"`
-	Settings      *Settings      `json:"settings"`
+	Subscriptions []Subscription  `json:"subscriptions"`
+	ManualNodes   []ManualNode    `json:"manual_nodes"`
+	Filters       []Filter        `json:"filters"`
+	Rules         []Rule          `json:"rules"`
+	RuleGroups    []RuleGroup     `json:"rule_groups"`
+	Settings      *Settings       `json:"settings"`
+	Profiles      []Profile       `json:"profiles,omitempty"`        // Profile 元数据列表
+	ActiveProfile string          `json:"active_profile,omitempty"`  // 当前激活的 Profile ID
+	InboundPorts  []InboundPort   `json:"inbound_ports,omitempty"`   // 自定义入站端口
+	ProxyChains   []ProxyChain    `json:"proxy_chains,omitempty"`    // 代理链路配置
 }
 
 // DefaultRuleGroups 默认规则组

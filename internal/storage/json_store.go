@@ -374,7 +374,7 @@ func (s *JSONStore) DeleteManualNode(id string) error {
 
 // ==================== 辅助方法 ====================
 
-// GetAllNodes 获取所有启用的节点（订阅节点 + 手动节点）
+// GetAllNodes 获取所有启用的节点（订阅节点 + 手动节点），填充来源信息
 func (s *JSONStore) GetAllNodes() []Node {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -383,16 +383,70 @@ func (s *JSONStore) GetAllNodes() []Node {
 	// 添加订阅节点
 	for _, sub := range s.data.Subscriptions {
 		if sub.Enabled {
-			nodes = append(nodes, sub.Nodes...)
+			for _, node := range sub.Nodes {
+				// 填充来源信息
+				node.Source = sub.ID
+				node.SourceName = sub.Name
+				nodes = append(nodes, node)
+			}
 		}
 	}
 	// 添加手动节点
 	for _, mn := range s.data.ManualNodes {
 		if mn.Enabled {
+			// 填充来源信息
+			mn.Node.Source = "manual"
+			mn.Node.SourceName = "手动添加"
 			nodes = append(nodes, mn.Node)
 		}
 	}
 	return nodes
+}
+
+// GetNodesGrouped 获取按来源分组的节点
+func (s *JSONStore) GetNodesGrouped() []NodeGroup {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var groups []NodeGroup
+
+	// 手动节点分组
+	var manualNodes []Node
+	for _, mn := range s.data.ManualNodes {
+		if mn.Enabled {
+			node := mn.Node
+			node.Source = "manual"
+			node.SourceName = "手动添加"
+			manualNodes = append(manualNodes, node)
+		}
+	}
+	if len(manualNodes) > 0 {
+		groups = append(groups, NodeGroup{
+			Source:     "manual",
+			SourceName: "手动添加",
+			Nodes:      manualNodes,
+		})
+	}
+
+	// 订阅分组
+	for _, sub := range s.data.Subscriptions {
+		if !sub.Enabled || len(sub.Nodes) == 0 {
+			continue
+		}
+		var subNodes []Node
+		for _, node := range sub.Nodes {
+			node.Source = sub.ID
+			node.SourceName = sub.Name
+			subNodes = append(subNodes, node)
+		}
+		groups = append(groups, NodeGroup{
+			Source:     sub.ID,
+			SourceName: sub.Name,
+			Nodes:      subNodes,
+		})
+	}
+
+	return groups
 }
 
 // GetNodesByCountry 按国家获取节点
@@ -460,4 +514,311 @@ func (s *JSONStore) GetCountryGroups() []CountryGroup {
 // GetDataDir 获取数据目录
 func (s *JSONStore) GetDataDir() string {
 	return s.dataDir
+}
+
+// Reload 重新加载数据
+func (s *JSONStore) Reload() error {
+	return s.load()
+}
+
+// ==================== Profile 操作 ====================
+
+// GetProfiles 获取所有 Profile 元数据
+func (s *JSONStore) GetProfiles() []Profile {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.data.Profiles
+}
+
+// GetProfile 获取单个 Profile
+func (s *JSONStore) GetProfile(id string) *Profile {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for i := range s.data.Profiles {
+		if s.data.Profiles[i].ID == id {
+			return &s.data.Profiles[i]
+		}
+	}
+	return nil
+}
+
+// AddProfile 添加 Profile
+func (s *JSONStore) AddProfile(profile Profile) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.data.Profiles = append(s.data.Profiles, profile)
+	return s.saveInternal()
+}
+
+// UpdateProfile 更新 Profile 元数据
+func (s *JSONStore) UpdateProfile(profile Profile) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.data.Profiles {
+		if s.data.Profiles[i].ID == profile.ID {
+			s.data.Profiles[i] = profile
+			return s.saveInternal()
+		}
+	}
+	return fmt.Errorf("Profile 不存在: %s", profile.ID)
+}
+
+// DeleteProfile 删除 Profile
+func (s *JSONStore) DeleteProfile(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.data.Profiles {
+		if s.data.Profiles[i].ID == id {
+			s.data.Profiles = append(s.data.Profiles[:i], s.data.Profiles[i+1:]...)
+			return s.saveInternal()
+		}
+	}
+	return fmt.Errorf("Profile 不存在: %s", id)
+}
+
+// GetActiveProfile 获取当前激活的 Profile ID
+func (s *JSONStore) GetActiveProfile() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.data.ActiveProfile
+}
+
+// SetActiveProfile 设置当前激活的 Profile ID
+func (s *JSONStore) SetActiveProfile(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// 更新所有 Profile 的 IsActive 状态
+	for i := range s.data.Profiles {
+		s.data.Profiles[i].IsActive = (s.data.Profiles[i].ID == id)
+	}
+
+	s.data.ActiveProfile = id
+	return s.saveInternal()
+}
+
+// GetProfilesDir 获取 profiles 目录
+func (s *JSONStore) GetProfilesDir() string {
+	return filepath.Join(s.dataDir, "profiles")
+}
+
+// EnsureProfilesDir 确保 profiles 目录存在
+func (s *JSONStore) EnsureProfilesDir() error {
+	return os.MkdirAll(s.GetProfilesDir(), 0755)
+}
+
+// SaveProfileData 保存 Profile 完整数据到文件
+func (s *JSONStore) SaveProfileData(id string, data *AppData) error {
+	if err := s.EnsureProfilesDir(); err != nil {
+		return err
+	}
+
+	profileFile := filepath.Join(s.GetProfilesDir(), id+".json")
+	content, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return fmt.Errorf("序列化 Profile 数据失败: %w", err)
+	}
+
+	return os.WriteFile(profileFile, content, 0644)
+}
+
+// LoadProfileData 从文件加载 Profile 完整数据
+func (s *JSONStore) LoadProfileData(id string) (*AppData, error) {
+	profileFile := filepath.Join(s.GetProfilesDir(), id+".json")
+	content, err := os.ReadFile(profileFile)
+	if err != nil {
+		return nil, fmt.Errorf("读取 Profile 数据失败: %w", err)
+	}
+
+	var data AppData
+	if err := json.Unmarshal(content, &data); err != nil {
+		return nil, fmt.Errorf("解析 Profile 数据失败: %w", err)
+	}
+
+	return &data, nil
+}
+
+// DeleteProfileData 删除 Profile 数据文件
+func (s *JSONStore) DeleteProfileData(id string) error {
+	profileFile := filepath.Join(s.GetProfilesDir(), id+".json")
+	if _, err := os.Stat(profileFile); os.IsNotExist(err) {
+		return nil // 文件不存在，无需删除
+	}
+	return os.Remove(profileFile)
+}
+
+// CreateSnapshotData 创建当前配置的快照数据
+func (s *JSONStore) CreateSnapshotData() *AppData {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// 深拷贝当前数据（不包含 Profiles 和 ActiveProfile）
+	snapshot := &AppData{
+		Subscriptions: make([]Subscription, len(s.data.Subscriptions)),
+		ManualNodes:   make([]ManualNode, len(s.data.ManualNodes)),
+		Filters:       make([]Filter, len(s.data.Filters)),
+		Rules:         make([]Rule, len(s.data.Rules)),
+		RuleGroups:    make([]RuleGroup, len(s.data.RuleGroups)),
+		InboundPorts:  make([]InboundPort, len(s.data.InboundPorts)),
+		ProxyChains:   make([]ProxyChain, len(s.data.ProxyChains)),
+		Settings:      s.data.Settings,
+	}
+
+	copy(snapshot.Subscriptions, s.data.Subscriptions)
+	copy(snapshot.ManualNodes, s.data.ManualNodes)
+	copy(snapshot.Filters, s.data.Filters)
+	copy(snapshot.Rules, s.data.Rules)
+	copy(snapshot.RuleGroups, s.data.RuleGroups)
+	copy(snapshot.InboundPorts, s.data.InboundPorts)
+	copy(snapshot.ProxyChains, s.data.ProxyChains)
+
+	return snapshot
+}
+
+// RestoreFromProfileData 从 Profile 数据恢复配置
+func (s *JSONStore) RestoreFromProfileData(data *AppData) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// 保留 Profiles 和 ActiveProfile
+	profiles := s.data.Profiles
+	activeProfile := s.data.ActiveProfile
+
+	// 恢复数据
+	s.data.Subscriptions = data.Subscriptions
+	s.data.ManualNodes = data.ManualNodes
+	s.data.Filters = data.Filters
+	s.data.Rules = data.Rules
+	s.data.RuleGroups = data.RuleGroups
+	s.data.Settings = data.Settings
+	s.data.InboundPorts = data.InboundPorts
+	s.data.ProxyChains = data.ProxyChains
+
+	// 恢复 Profiles 相关
+	s.data.Profiles = profiles
+	s.data.ActiveProfile = activeProfile
+
+	return s.saveInternal()
+}
+
+// ==================== InboundPort 操作 ====================
+
+// GetInboundPorts 获取所有入站端口
+func (s *JSONStore) GetInboundPorts() []InboundPort {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.data.InboundPorts
+}
+
+// GetInboundPort 获取单个入站端口
+func (s *JSONStore) GetInboundPort(id string) *InboundPort {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for i := range s.data.InboundPorts {
+		if s.data.InboundPorts[i].ID == id {
+			return &s.data.InboundPorts[i]
+		}
+	}
+	return nil
+}
+
+// AddInboundPort 添加入站端口
+func (s *JSONStore) AddInboundPort(port InboundPort) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.data.InboundPorts = append(s.data.InboundPorts, port)
+	return s.saveInternal()
+}
+
+// UpdateInboundPort 更新入站端口
+func (s *JSONStore) UpdateInboundPort(port InboundPort) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.data.InboundPorts {
+		if s.data.InboundPorts[i].ID == port.ID {
+			s.data.InboundPorts[i] = port
+			return s.saveInternal()
+		}
+	}
+	return fmt.Errorf("入站端口不存在: %s", port.ID)
+}
+
+// DeleteInboundPort 删除入站端口
+func (s *JSONStore) DeleteInboundPort(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.data.InboundPorts {
+		if s.data.InboundPorts[i].ID == id {
+			s.data.InboundPorts = append(s.data.InboundPorts[:i], s.data.InboundPorts[i+1:]...)
+			return s.saveInternal()
+		}
+	}
+	return fmt.Errorf("入站端口不存在: %s", id)
+}
+
+// ==================== ProxyChain 操作 ====================
+
+// GetProxyChains 获取所有代理链路
+func (s *JSONStore) GetProxyChains() []ProxyChain {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.data.ProxyChains
+}
+
+// GetProxyChain 获取单个代理链路
+func (s *JSONStore) GetProxyChain(id string) *ProxyChain {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for i := range s.data.ProxyChains {
+		if s.data.ProxyChains[i].ID == id {
+			return &s.data.ProxyChains[i]
+		}
+	}
+	return nil
+}
+
+// AddProxyChain 添加代理链路
+func (s *JSONStore) AddProxyChain(chain ProxyChain) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.data.ProxyChains = append(s.data.ProxyChains, chain)
+	return s.saveInternal()
+}
+
+// UpdateProxyChain 更新代理链路
+func (s *JSONStore) UpdateProxyChain(chain ProxyChain) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.data.ProxyChains {
+		if s.data.ProxyChains[i].ID == chain.ID {
+			s.data.ProxyChains[i] = chain
+			return s.saveInternal()
+		}
+	}
+	return fmt.Errorf("代理链路不存在: %s", chain.ID)
+}
+
+// DeleteProxyChain 删除代理链路
+func (s *JSONStore) DeleteProxyChain(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.data.ProxyChains {
+		if s.data.ProxyChains[i].ID == id {
+			s.data.ProxyChains = append(s.data.ProxyChains[:i], s.data.ProxyChains[i+1:]...)
+			return s.saveInternal()
+		}
+	}
+	return fmt.Errorf("代理链路不存在: %s", id)
 }

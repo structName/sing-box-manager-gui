@@ -1,9 +1,9 @@
 import { useEffect, useState, useRef } from 'react';
 import { Card, CardBody, CardHeader, Input, Button, Switch, Chip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Select, SelectItem, Progress, Textarea, useDisclosure } from '@nextui-org/react';
-import { Save, Download, Upload, Terminal, CheckCircle, AlertCircle, Plus, Pencil, Trash2, Server } from 'lucide-react';
+import { Save, Download, Upload, Terminal, CheckCircle, AlertCircle, Plus, Pencil, Trash2, Server, FileDown, FileUp, Copy, Network } from 'lucide-react';
 import { useStore } from '../store';
 import type { Settings as SettingsType, HostEntry } from '../store';
-import { daemonApi, kernelApi, settingsApi } from '../api';
+import { daemonApi, kernelApi, settingsApi, configApi, backupApi, inboundPortApi, filterApi, proxyChainApi } from '../api';
 import { toast } from '../components/Toast';
 
 // 内核信息类型
@@ -30,6 +30,35 @@ interface GithubRelease {
   name: string;
 }
 
+// 入站端口类型
+interface InboundPort {
+  id: string;
+  name: string;
+  type: string;
+  listen: string;
+  port: number;
+  auth?: {
+    username: string;
+    password: string;
+  };
+  outbound: string;
+  enabled: boolean;
+}
+
+// 过滤器类型
+interface Filter {
+  id: string;
+  name: string;
+  enabled: boolean;
+}
+
+// 代理链路类型
+interface ProxyChain {
+  id: string;
+  name: string;
+  enabled: boolean;
+}
+
 export default function Settings() {
   const { settings, fetchSettings, updateSettings } = useStore();
   const [formData, setFormData] = useState<SettingsType | null>(null);
@@ -51,11 +80,35 @@ export default function Settings() {
   const [hostFormData, setHostFormData] = useState({ domain: '', enabled: true });
   const [ipsText, setIpsText] = useState('');
 
+  // 导入导出相关状态
+  const backupInputRef = useRef<HTMLInputElement>(null);
+  const [isRestoring, setIsRestoring] = useState(false);
+
+  // 入站端口相关状态
+  const [inboundPorts, setInboundPorts] = useState<InboundPort[]>([]);
+  const [filters, setFilters] = useState<Filter[]>([]);
+  const [proxyChains, setProxyChains] = useState<ProxyChain[]>([]);
+  const { isOpen: isPortModalOpen, onOpen: onPortModalOpen, onClose: onPortModalClose } = useDisclosure();
+  const [editingPort, setEditingPort] = useState<InboundPort | null>(null);
+  const [portFormData, setPortFormData] = useState({
+    name: '',
+    type: 'mixed',
+    listen: '0.0.0.0',
+    port: 2081,
+    username: '',
+    password: '',
+    outbound: 'Proxy',
+    enabled: true,
+  });
+
   useEffect(() => {
     fetchSettings();
     fetchDaemonStatus();
     fetchKernelInfo();
     fetchSystemHosts();
+    fetchInboundPorts();
+    fetchFilters();
+    fetchProxyChains();
   }, []);
 
   useEffect(() => {
@@ -88,6 +141,126 @@ export default function Settings() {
       setSystemHosts(res.data.data || []);
     } catch (error) {
       console.error('获取系统 hosts 失败:', error);
+    }
+  };
+
+  const fetchInboundPorts = async () => {
+    try {
+      const res = await inboundPortApi.getAll();
+      setInboundPorts(res.data.data || []);
+    } catch (error) {
+      console.error('获取入站端口失败:', error);
+    }
+  };
+
+  const fetchFilters = async () => {
+    try {
+      const res = await filterApi.getAll();
+      setFilters(res.data.data || []);
+    } catch (error) {
+      console.error('获取过滤器列表失败:', error);
+    }
+  };
+
+  const fetchProxyChains = async () => {
+    try {
+      const res = await proxyChainApi.getAll();
+      setProxyChains(res.data.data || []);
+    } catch (error) {
+      console.error('获取代理链路失败:', error);
+    }
+  };
+
+  // 入站端口处理函数
+  const handleAddPort = () => {
+    setEditingPort(null);
+    setPortFormData({
+      name: '',
+      type: 'mixed',
+      listen: '0.0.0.0',
+      port: 2081,
+      username: '',
+      password: '',
+      outbound: 'Proxy',
+      enabled: true,
+    });
+    onPortModalOpen();
+  };
+
+  const handleEditPort = (port: InboundPort) => {
+    setEditingPort(port);
+    setPortFormData({
+      name: port.name,
+      type: port.type,
+      listen: port.listen,
+      port: port.port,
+      username: port.auth?.username || '',
+      password: port.auth?.password || '',
+      outbound: port.outbound,
+      enabled: port.enabled,
+    });
+    onPortModalOpen();
+  };
+
+  const handleDeletePort = async (id: string) => {
+    if (!confirm('确定要删除这个入站端口吗？')) return;
+    try {
+      await inboundPortApi.delete(id);
+      toast.success('端口已删除');
+      fetchInboundPorts();
+    } catch (error: any) {
+      toast.error(error.response?.data?.error || '删除失败');
+    }
+  };
+
+  const handleTogglePort = async (port: InboundPort) => {
+    try {
+      await inboundPortApi.update(port.id, { ...port, enabled: !port.enabled });
+      fetchInboundPorts();
+    } catch (error: any) {
+      toast.error(error.response?.data?.error || '更新失败');
+    }
+  };
+
+  const handleSubmitPort = async () => {
+    if (!portFormData.name.trim()) {
+      toast.error('请输入端口名称');
+      return;
+    }
+    if (portFormData.port < 1 || portFormData.port > 65535) {
+      toast.error('端口号必须在 1-65535 之间');
+      return;
+    }
+
+    const data: any = {
+      name: portFormData.name,
+      type: portFormData.type,
+      listen: portFormData.listen,
+      port: portFormData.port,
+      outbound: portFormData.outbound,
+      enabled: portFormData.enabled,
+    };
+
+    // 如果有用户名和密码，添加认证
+    if (portFormData.username && portFormData.password) {
+      data.auth = {
+        username: portFormData.username,
+        password: portFormData.password,
+      };
+    }
+
+    try {
+      if (editingPort) {
+        await inboundPortApi.update(editingPort.id, data);
+        toast.success('端口已更新');
+      } else {
+        await inboundPortApi.add(data);
+        toast.success('端口已添加');
+      }
+      onPortModalClose();
+      fetchInboundPorts();
+    } catch (error: any) {
+      toast.error(error.response?.data?.error || '操作失败');
     }
   };
 
@@ -248,6 +421,62 @@ export default function Settings() {
     }
   };
 
+  // 导出 sing-box 配置
+  const handleExportConfig = () => {
+    window.open(configApi.exportUrl(), '_blank');
+    toast.success('配置文件已开始下载');
+  };
+
+  // 复制 sing-box 配置到剪贴板
+  const handleCopyConfig = async () => {
+    try {
+      const res = await configApi.preview();
+      await navigator.clipboard.writeText(res.data);
+      toast.success('配置已复制到剪贴板');
+    } catch (error: any) {
+      toast.error('复制失败: ' + (error.message || '未知错误'));
+    }
+  };
+
+  // 导出备份
+  const handleExportBackup = () => {
+    window.open(backupApi.exportUrl(), '_blank');
+    toast.success('备份文件已开始下载');
+  };
+
+  // 导入备份
+  const handleImportBackup = () => {
+    backupInputRef.current?.click();
+  };
+
+  const handleBackupFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.name.endsWith('.json')) {
+      toast.error('请选择 JSON 格式的备份文件');
+      return;
+    }
+
+    if (!confirm('导入备份将覆盖当前所有配置，确定继续吗？')) {
+      e.target.value = '';
+      return;
+    }
+
+    setIsRestoring(true);
+    try {
+      const res = await backupApi.restore(file);
+      toast.success(res.data.message || '数据已恢复');
+      // 刷新页面以加载新数据
+      window.location.reload();
+    } catch (error: any) {
+      toast.error(error.response?.data?.error || '恢复失败');
+    } finally {
+      setIsRestoring(false);
+      e.target.value = '';
+    }
+  };
+
   const openDownloadModal = async () => {
     await fetchReleases();
     setDownloadProgress(null);
@@ -398,6 +627,71 @@ export default function Settings() {
         </CardBody>
       </Card>
 
+      {/* 多端口管理 */}
+      <Card>
+        <CardHeader className="flex justify-between items-center">
+          <div className="flex items-center">
+            <Network className="w-5 h-5 mr-2" />
+            <h2 className="text-lg font-semibold">多端口管理</h2>
+          </div>
+          <Button
+            color="primary"
+            size="sm"
+            startContent={<Plus className="w-4 h-4" />}
+            onPress={handleAddPort}
+          >
+            添加端口
+          </Button>
+        </CardHeader>
+        <CardBody className="space-y-4">
+          <p className="text-sm text-gray-500">
+            配置多个入站端口，每个端口可以使用不同的出站线路，支持用户名密码认证
+          </p>
+
+          {inboundPorts.length === 0 ? (
+            <div className="text-center py-8 text-gray-500">
+              <Network className="w-12 h-12 mx-auto mb-4 opacity-50" />
+              <p>暂无自定义入站端口</p>
+              <p className="text-sm mt-1">点击"添加端口"创建新的入站端口</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {inboundPorts.map((port) => (
+                <div
+                  key={port.id}
+                  className="flex items-center justify-between p-4 bg-default-100 rounded-lg"
+                >
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium">{port.name}</span>
+                      <Chip size="sm" variant="flat">{port.type}</Chip>
+                      {port.auth && <Chip size="sm" color="warning" variant="flat">需认证</Chip>}
+                      {!port.enabled && <Chip size="sm" variant="flat">已禁用</Chip>}
+                    </div>
+                    <p className="text-sm text-gray-500 mt-1">
+                      {port.listen}:{port.port} → {port.outbound}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <Button isIconOnly size="sm" variant="light" onPress={() => handleEditPort(port)}>
+                      <Pencil className="w-4 h-4" />
+                    </Button>
+                    <Button isIconOnly size="sm" variant="light" color="danger" onPress={() => handleDeletePort(port.id)}>
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                    <Switch
+                      size="sm"
+                      isSelected={port.enabled}
+                      onValueChange={() => handleTogglePort(port)}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardBody>
+      </Card>
+
       {/* DNS 配置 */}
       <Card>
         <CardHeader>
@@ -417,6 +711,17 @@ export default function Settings() {
             value={formData.direct_dns}
             onChange={(e) => setFormData({ ...formData, direct_dns: e.target.value })}
           />
+
+          <div className="flex items-center justify-between p-3 bg-default-100 rounded-lg">
+            <div>
+              <p className="font-medium">FakeIP 模式</p>
+              <p className="text-sm text-gray-500">启用 FakeIP 可加快连接速度，但可能与某些应用不兼容</p>
+            </div>
+            <Switch
+              isSelected={formData.fakeip_enabled || false}
+              onValueChange={(checked) => setFormData({ ...formData, fakeip_enabled: checked })}
+            />
+          </div>
 
           {/* Hosts 映射 */}
           <div className="mt-6 pt-4 border-t border-divider">
@@ -567,6 +872,73 @@ export default function Settings() {
         </CardBody>
       </Card>
 
+      {/* 导入导出 */}
+      <Card>
+        <CardHeader>
+          <FileDown className="w-5 h-5 mr-2" />
+          <h2 className="text-lg font-semibold">导入导出</h2>
+        </CardHeader>
+        <CardBody className="space-y-4">
+          {/* sing-box 配置导出 */}
+          <div className="flex items-center justify-between p-4 bg-default-100 rounded-lg">
+            <div>
+              <h3 className="font-medium">sing-box 配置</h3>
+              <p className="text-sm text-gray-500">导出可直接在 sing-box 使用的配置文件</p>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                variant="flat"
+                startContent={<Copy className="w-4 h-4" />}
+                onPress={handleCopyConfig}
+              >
+                复制
+              </Button>
+              <Button
+                color="primary"
+                startContent={<FileDown className="w-4 h-4" />}
+                onPress={handleExportConfig}
+              >
+                下载
+              </Button>
+            </div>
+          </div>
+
+          {/* 应用数据备份 */}
+          <div className="flex items-center justify-between p-4 bg-default-100 rounded-lg">
+            <div>
+              <h3 className="font-medium">应用数据备份</h3>
+              <p className="text-sm text-gray-500">导出全部订阅、规则、设置等配置数据</p>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                variant="flat"
+                startContent={<FileUp className="w-4 h-4" />}
+                onPress={handleImportBackup}
+                isLoading={isRestoring}
+              >
+                恢复
+              </Button>
+              <Button
+                color="primary"
+                startContent={<FileDown className="w-4 h-4" />}
+                onPress={handleExportBackup}
+              >
+                备份
+              </Button>
+            </div>
+          </div>
+
+          {/* 隐藏的文件输入 */}
+          <input
+            ref={backupInputRef}
+            type="file"
+            accept=".json"
+            className="hidden"
+            onChange={handleBackupFileChange}
+          />
+        </CardBody>
+      </Card>
+
       {/* 后台服务管理 */}
       {daemonStatus?.supported && (
         <Card>
@@ -712,6 +1084,109 @@ export default function Settings() {
               isDisabled={!hostFormData.domain || !ipsText.trim()}
             >
               {editingHost ? '保存' : '添加'}
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+
+      {/* 入站端口编辑弹窗 */}
+      <Modal isOpen={isPortModalOpen} onClose={onPortModalClose} size="lg">
+        <ModalContent>
+          <ModalHeader>{editingPort ? '编辑入站端口' : '添加入站端口'}</ModalHeader>
+          <ModalBody className="gap-4">
+            <Input
+              label="端口名称"
+              placeholder="例如：家人专用、办公室"
+              value={portFormData.name}
+              onChange={(e) => setPortFormData({ ...portFormData, name: e.target.value })}
+            />
+            <div className="grid grid-cols-2 gap-4">
+              <Select
+                label="协议类型"
+                selectedKeys={[portFormData.type]}
+                onSelectionChange={(keys) => {
+                  const selected = Array.from(keys)[0] as string;
+                  if (selected) setPortFormData({ ...portFormData, type: selected });
+                }}
+              >
+                <SelectItem key="mixed">Mixed (HTTP + SOCKS5)</SelectItem>
+                <SelectItem key="http">HTTP</SelectItem>
+                <SelectItem key="socks">SOCKS5</SelectItem>
+              </Select>
+              <Input
+                type="number"
+                label="端口号"
+                placeholder="2081"
+                value={String(portFormData.port)}
+                onChange={(e) => setPortFormData({ ...portFormData, port: parseInt(e.target.value) || 2081 })}
+              />
+            </div>
+            <Input
+              label="监听地址"
+              placeholder="0.0.0.0"
+              description="0.0.0.0 表示监听所有网卡，127.0.0.1 表示仅本地"
+              value={portFormData.listen}
+              onChange={(e) => setPortFormData({ ...portFormData, listen: e.target.value })}
+            />
+            <Select
+              label="出站线路"
+              selectedKeys={[portFormData.outbound]}
+              onSelectionChange={(keys) => {
+                const selected = Array.from(keys)[0] as string;
+                if (selected) setPortFormData({ ...portFormData, outbound: selected });
+              }}
+              items={[
+                { key: 'Proxy', label: 'Proxy（主代理）' },
+                { key: 'DIRECT', label: 'DIRECT（直连）' },
+                { key: 'Auto', label: 'Auto（自动选择）' },
+                ...filters.filter(f => f.enabled).map((filter) => ({
+                  key: filter.name,
+                  label: `${filter.name}（过滤器）`
+                })),
+                ...proxyChains.filter(c => c.enabled).map((chain) => ({
+                  key: chain.name,
+                  label: `${chain.name}（链路）`
+                }))
+              ]}
+            >
+              {(item) => <SelectItem key={item.key}>{item.label}</SelectItem>}
+            </Select>
+
+            <div className="mt-2 pt-4 border-t border-divider">
+              <p className="text-sm font-medium mb-3">用户认证（可选）</p>
+              <div className="grid grid-cols-2 gap-4">
+                <Input
+                  label="用户名"
+                  placeholder="留空表示无需认证"
+                  value={portFormData.username}
+                  onChange={(e) => setPortFormData({ ...portFormData, username: e.target.value })}
+                />
+                <Input
+                  label="密码"
+                  type="password"
+                  placeholder="留空表示无需认证"
+                  value={portFormData.password}
+                  onChange={(e) => setPortFormData({ ...portFormData, password: e.target.value })}
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span>启用</span>
+              <Switch
+                isSelected={portFormData.enabled}
+                onValueChange={(enabled) => setPortFormData({ ...portFormData, enabled })}
+              />
+            </div>
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="flat" onPress={onPortModalClose}>取消</Button>
+            <Button
+              color="primary"
+              onPress={handleSubmitPort}
+              isDisabled={!portFormData.name.trim()}
+            >
+              {editingPort ? '保存' : '添加'}
             </Button>
           </ModalFooter>
         </ModalContent>
