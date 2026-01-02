@@ -374,7 +374,7 @@ func (s *JSONStore) DeleteManualNode(id string) error {
 
 // ==================== 辅助方法 ====================
 
-// GetAllNodes 获取所有启用的节点（订阅节点 + 手动节点）
+// GetAllNodes 获取所有启用的节点（订阅节点 + 手动节点），填充来源信息
 func (s *JSONStore) GetAllNodes() []Node {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -383,16 +383,70 @@ func (s *JSONStore) GetAllNodes() []Node {
 	// 添加订阅节点
 	for _, sub := range s.data.Subscriptions {
 		if sub.Enabled {
-			nodes = append(nodes, sub.Nodes...)
+			for _, node := range sub.Nodes {
+				// 填充来源信息
+				node.Source = sub.ID
+				node.SourceName = sub.Name
+				nodes = append(nodes, node)
+			}
 		}
 	}
 	// 添加手动节点
 	for _, mn := range s.data.ManualNodes {
 		if mn.Enabled {
+			// 填充来源信息
+			mn.Node.Source = "manual"
+			mn.Node.SourceName = "手动添加"
 			nodes = append(nodes, mn.Node)
 		}
 	}
 	return nodes
+}
+
+// GetNodesGrouped 获取按来源分组的节点
+func (s *JSONStore) GetNodesGrouped() []NodeGroup {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var groups []NodeGroup
+
+	// 手动节点分组
+	var manualNodes []Node
+	for _, mn := range s.data.ManualNodes {
+		if mn.Enabled {
+			node := mn.Node
+			node.Source = "manual"
+			node.SourceName = "手动添加"
+			manualNodes = append(manualNodes, node)
+		}
+	}
+	if len(manualNodes) > 0 {
+		groups = append(groups, NodeGroup{
+			Source:     "manual",
+			SourceName: "手动添加",
+			Nodes:      manualNodes,
+		})
+	}
+
+	// 订阅分组
+	for _, sub := range s.data.Subscriptions {
+		if !sub.Enabled || len(sub.Nodes) == 0 {
+			continue
+		}
+		var subNodes []Node
+		for _, node := range sub.Nodes {
+			node.Source = sub.ID
+			node.SourceName = sub.Name
+			subNodes = append(subNodes, node)
+		}
+		groups = append(groups, NodeGroup{
+			Source:     sub.ID,
+			SourceName: sub.Name,
+			Nodes:      subNodes,
+		})
+	}
+
+	return groups
 }
 
 // GetNodesByCountry 按国家获取节点

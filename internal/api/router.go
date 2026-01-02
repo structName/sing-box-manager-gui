@@ -29,40 +29,51 @@ import (
 
 // Server API 服务器
 type Server struct {
-	store          *storage.JSONStore
-	subService     *service.SubscriptionService
-	processManager *daemon.ProcessManager
-	launchdManager *daemon.LaunchdManager
-	systemdManager *daemon.SystemdManager
-	kernelManager  *kernel.Manager
-	scheduler      *service.Scheduler
-	router         *gin.Engine
-	sbmPath        string // sbm 可执行文件路径
-	port           int    // Web 服务端口
-	version        string // sbm 版本号
+	store           *storage.JSONStore
+	subService      *service.SubscriptionService
+	processManager  *daemon.ProcessManager
+	launchdManager  *daemon.LaunchdManager
+	systemdManager  *daemon.SystemdManager
+	kernelManager   *kernel.Manager
+	scheduler       *service.Scheduler
+	chainSyncSvc    *service.ChainSyncService
+	healthCheckSvc  *service.HealthCheckService
+	router          *gin.Engine
+	sbmPath         string // sbm 可执行文件路径
+	port            int    // Web 服务端口
+	version         string // sbm 版本号
 }
 
 // NewServer 创建 API 服务器
 func NewServer(store *storage.JSONStore, processManager *daemon.ProcessManager, launchdManager *daemon.LaunchdManager, systemdManager *daemon.SystemdManager, sbmPath string, port int, version string) *Server {
 	gin.SetMode(gin.ReleaseMode)
 
-	subService := service.NewSubscriptionService(store)
+	// 创建链路同步服务
+	chainSyncSvc := service.NewChainSyncService(store)
+
+	// 创建订阅服务，并注入链路同步服务
+	subService := service.NewSubscriptionService(store, chainSyncSvc)
 
 	// 创建内核管理器
 	kernelManager := kernel.NewManager(store.GetDataDir(), store.GetSettings)
 
+	// 创建健康检测服务
+	healthCheckSvc := service.NewHealthCheckService(store)
+
 	s := &Server{
-		store:          store,
-		subService:     subService,
-		processManager: processManager,
-		launchdManager: launchdManager,
-		systemdManager: systemdManager,
-		kernelManager:  kernelManager,
-		scheduler:      service.NewScheduler(store, subService),
-		router:         gin.Default(),
-		sbmPath:        sbmPath,
-		port:           port,
-		version:        version,
+		store:           store,
+		subService:      subService,
+		processManager:  processManager,
+		launchdManager:  launchdManager,
+		systemdManager:  systemdManager,
+		kernelManager:   kernelManager,
+		scheduler:       service.NewScheduler(store, subService),
+		chainSyncSvc:    chainSyncSvc,
+		healthCheckSvc:  healthCheckSvc,
+		router:          gin.Default(),
+		sbmPath:         sbmPath,
+		port:            port,
+		version:         version,
 	}
 
 	// 设置调度器的更新回调
@@ -185,6 +196,7 @@ func (s *Server) setupRoutes() {
 
 		// 节点
 		api.GET("/nodes", s.getAllNodes)
+		api.GET("/nodes/grouped", s.getNodesGrouped)
 		api.GET("/nodes/countries", s.getCountryGroups)
 		api.GET("/nodes/country/:code", s.getNodesByCountry)
 		api.POST("/nodes/parse", s.parseNodeURL)
@@ -206,6 +218,11 @@ func (s *Server) setupRoutes() {
 		api.POST("/proxy-chains", s.addProxyChain)
 		api.PUT("/proxy-chains/:id", s.updateProxyChain)
 		api.DELETE("/proxy-chains/:id", s.deleteProxyChain)
+
+		// 代理链路健康检测
+		api.GET("/proxy-chains/health", s.getAllChainHealth)
+		api.GET("/proxy-chains/:id/health", s.getChainHealth)
+		api.POST("/proxy-chains/:id/health/check", s.checkChainHealth)
 
 		// 内核管理
 		api.GET("/kernel/info", s.getKernelInfo)
@@ -704,6 +721,7 @@ func (s *Server) buildConfig() (string, error) {
 	proxyChains := s.store.GetProxyChains()
 
 	b := builder.NewConfigBuilder(settings, nodes, filters, rules, ruleGroups, inboundPorts, proxyChains)
+	b.SetDataDir(s.store.GetDataDir()) // 设置数据目录用于生成绝对路径
 	return b.BuildJSON()
 }
 
@@ -1616,6 +1634,11 @@ func (s *Server) getAllNodes(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": nodes})
 }
 
+func (s *Server) getNodesGrouped(c *gin.Context) {
+	groups := s.store.GetNodesGrouped()
+	c.JSON(http.StatusOK, gin.H{"data": groups})
+}
+
 func (s *Server) getCountryGroups(c *gin.Context) {
 	groups := s.store.GetCountryGroups()
 	c.JSON(http.StatusOK, gin.H{"data": groups})
@@ -1861,6 +1884,9 @@ func (s *Server) addProxyChain(c *gin.Context) {
 	// 生成 ID
 	chain.ID = uuid.New().String()
 
+	// 自动生成 ChainNodes（从 Nodes 生成副本信息）
+	chain.ChainNodes = s.generateChainNodes(chain.Name, chain.Nodes)
+
 	if err := s.store.AddProxyChain(chain); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1885,6 +1911,10 @@ func (s *Server) updateProxyChain(c *gin.Context) {
 	}
 
 	chain.ID = id
+
+	// 自动生成 ChainNodes（从 Nodes 生成副本信息）
+	chain.ChainNodes = s.generateChainNodes(chain.Name, chain.Nodes)
+
 	if err := s.store.UpdateProxyChain(chain); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1914,4 +1944,51 @@ func (s *Server) deleteProxyChain(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "删除成功"})
+}
+
+// generateChainNodes 根据节点 Tag 列表生成 ChainNode 列表
+func (s *Server) generateChainNodes(chainName string, nodeTags []string) []storage.ChainNode {
+	allNodes := s.store.GetAllNodes()
+	nodeMap := make(map[string]storage.Node)
+	for _, n := range allNodes {
+		nodeMap[n.Tag] = n
+	}
+
+	result := make([]storage.ChainNode, 0, len(nodeTags))
+	for _, tag := range nodeTags {
+		node, exists := nodeMap[tag]
+		source := ""
+		if exists {
+			source = node.Source
+		}
+		result = append(result, storage.ChainNode{
+			OriginalTag: tag,
+			CopyTag:     storage.GenerateChainNodeCopyTag(chainName, tag),
+			Source:      source,
+		})
+	}
+	return result
+}
+
+// ==================== 链路健康检测 API ====================
+
+func (s *Server) getAllChainHealth(c *gin.Context) {
+	statuses := s.healthCheckSvc.GetAllCachedStatuses()
+	c.JSON(http.StatusOK, gin.H{"data": statuses})
+}
+
+func (s *Server) getChainHealth(c *gin.Context) {
+	id := c.Param("id")
+	status := s.healthCheckSvc.GetCachedStatus(id)
+	c.JSON(http.StatusOK, gin.H{"data": status})
+}
+
+func (s *Server) checkChainHealth(c *gin.Context) {
+	id := c.Param("id")
+	status, err := s.healthCheckSvc.CheckChain(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": status})
 }

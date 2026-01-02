@@ -9,3 +9,6 @@ web/dist/*
 .claude/config.json
 data/
 data/*
+
+# Build artifacts
+sbm

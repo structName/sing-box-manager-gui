@@ -128,6 +128,7 @@ export const monitorApi = {
 // 节点 API
 export const nodeApi = {
   getAll: () => api.get('/nodes'),
+  getGrouped: () => api.get('/nodes/grouped'),
   getCountries: () => api.get('/nodes/countries'),
   getByCountry: (code: string) => api.get(`/nodes/country/${code}`),
   parse: (url: string) => api.post('/nodes/parse', { url }),
@@ -155,6 +156,10 @@ export const proxyChainApi = {
   add: (data: any) => api.post('/proxy-chains', data),
   update: (id: string, data: any) => api.put(`/proxy-chains/${id}`, data),
   delete: (id: string) => api.delete(`/proxy-chains/${id}`),
+  // 健康检测
+  getAllHealth: () => api.get('/proxy-chains/health'),
+  getHealth: (id: string) => api.get(`/proxy-chains/${id}/health`),
+  checkHealth: (id: string) => api.post(`/proxy-chains/${id}/health/check`),
 };
 
 // 内核管理 API

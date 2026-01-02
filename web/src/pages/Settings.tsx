@@ -712,6 +712,17 @@ export default function Settings() {
             onChange={(e) => setFormData({ ...formData, direct_dns: e.target.value })}
           />
 
+          <div className="flex items-center justify-between p-3 bg-default-100 rounded-lg">
+            <div>
+              <p className="font-medium">FakeIP 模式</p>
+              <p className="text-sm text-gray-500">启用 FakeIP 可加快连接速度，但可能与某些应用不兼容</p>
+            </div>
+            <Switch
+              isSelected={formData.fakeip_enabled || false}
+              onValueChange={(checked) => setFormData({ ...formData, fakeip_enabled: checked })}
+            />
+          </div>
+
           {/* Hosts 映射 */}
           <div className="mt-6 pt-4 border-t border-divider">
             <div className="flex justify-between items-center mb-4">
@@ -1124,18 +1135,21 @@ export default function Settings() {
                 const selected = Array.from(keys)[0] as string;
                 if (selected) setPortFormData({ ...portFormData, outbound: selected });
               }}
-            >
-              {[
-                <SelectItem key="Proxy">Proxy（主代理）</SelectItem>,
-                <SelectItem key="DIRECT">DIRECT（直连）</SelectItem>,
-                <SelectItem key="Auto">Auto（自动选择）</SelectItem>,
-                ...filters.filter(f => f.enabled).map((filter) => (
-                  <SelectItem key={filter.name}>{filter.name}（过滤器）</SelectItem>
-                )),
-                ...proxyChains.filter(c => c.enabled).map((chain) => (
-                  <SelectItem key={chain.name}>{chain.name}（链路）</SelectItem>
-                ))
+              items={[
+                { key: 'Proxy', label: 'Proxy（主代理）' },
+                { key: 'DIRECT', label: 'DIRECT（直连）' },
+                { key: 'Auto', label: 'Auto（自动选择）' },
+                ...filters.filter(f => f.enabled).map((filter) => ({
+                  key: filter.name,
+                  label: `${filter.name}（过滤器）`
+                })),
+                ...proxyChains.filter(c => c.enabled).map((chain) => ({
+                  key: chain.name,
+                  label: `${chain.name}（链路）`
+                }))
               ]}
+            >
+              {(item) => <SelectItem key={item.key}>{item.label}</SelectItem>}
             </Select>
 
             <div className="mt-2 pt-4 border-t border-divider">

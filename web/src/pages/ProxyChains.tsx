@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Card, CardBody, CardHeader, Button, Chip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Input, Textarea, useDisclosure, Switch, Select, SelectItem } from '@nextui-org/react';
-import { Plus, Link2, Trash2, Pencil, ArrowRight, ChevronUp, ChevronDown } from 'lucide-react';
+import { Card, CardBody, CardHeader, Button, Chip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Input, Textarea, useDisclosure, Switch, Select, SelectItem, Accordion, AccordionItem } from '@nextui-org/react';
+import { Plus, Link2, Trash2, Pencil, ArrowRight, ChevronUp, ChevronDown, Activity, RefreshCw } from 'lucide-react';
 import { proxyChainApi, nodeApi } from '../api';
 import { toast } from '../components/Toast';
 
@@ -23,12 +23,20 @@ const countryOptions = [
   { code: 'TR', name: '土耳其', emoji: '🇹🇷' },
 ];
 
+// ChainNode 类型
+interface ChainNode {
+  original_tag: string;
+  copy_tag: string;
+  source: string;
+}
+
 // ProxyChain 类型
 interface ProxyChain {
   id: string;
   name: string;
   description: string;
   nodes: string[];
+  chain_nodes?: ChainNode[];
   enabled: boolean;
 }
 
@@ -39,12 +47,38 @@ interface Node {
   server: string;
   country?: string;
   country_emoji?: string;
+  source?: string;
+  source_name?: string;
+}
+
+// NodeGroup 类型
+interface NodeGroup {
+  source: string;
+  source_name: string;
+  nodes: Node[];
+}
+
+// ChainHealthStatus 类型
+interface ChainHealthStatus {
+  chain_id: string;
+  last_check: string;
+  status: 'healthy' | 'degraded' | 'unhealthy';
+  latency: number;
+  node_statuses: {
+    tag: string;
+    status: string;
+    latency: number;
+    error?: string;
+  }[];
 }
 
 export default function ProxyChains() {
   const [chains, setChains] = useState<ProxyChain[]>([]);
   const [nodes, setNodes] = useState<Node[]>([]);
+  const [nodeGroups, setNodeGroups] = useState<NodeGroup[]>([]);
+  const [healthStatuses, setHealthStatuses] = useState<Record<string, ChainHealthStatus>>({});
   const [loading, setLoading] = useState(true);
+  const [testingChain, setTestingChain] = useState<string | null>(null);
 
   // 创建/编辑 Modal
   const { isOpen, onOpen, onClose } = useDisclosure();
@@ -60,10 +94,13 @@ export default function ProxyChains() {
   // 节点选择状态
   const [searchText, setSearchText] = useState('');
   const [selectedCountry, setSelectedCountry] = useState('');
+  const [selectedSource, setSelectedSource] = useState('');
 
   useEffect(() => {
     fetchChains();
     fetchNodes();
+    fetchNodeGroups();
+    fetchAllHealth();
   }, []);
 
   const fetchChains = async () => {
@@ -86,11 +123,46 @@ export default function ProxyChains() {
     }
   };
 
+  const fetchNodeGroups = async () => {
+    try {
+      const res = await nodeApi.getGrouped();
+      setNodeGroups(res.data.data || []);
+    } catch (error: any) {
+      console.error('获取节点分组失败:', error);
+    }
+  };
+
+  const fetchAllHealth = async () => {
+    try {
+      const res = await proxyChainApi.getAllHealth();
+      setHealthStatuses(res.data.data || {});
+    } catch (error: any) {
+      console.error('获取健康状态失败:', error);
+    }
+  };
+
+  const checkChainHealth = async (chainId: string) => {
+    setTestingChain(chainId);
+    try {
+      const res = await proxyChainApi.checkHealth(chainId);
+      setHealthStatuses(prev => ({
+        ...prev,
+        [chainId]: res.data.data
+      }));
+      toast.success('健康检测完成');
+    } catch (error: any) {
+      toast.error('健康检测失败');
+    } finally {
+      setTestingChain(null);
+    }
+  };
+
   const handleCreate = () => {
     setEditingChain(null);
     setFormData({ name: '', description: '', nodes: [], enabled: true });
     setSearchText('');
     setSelectedCountry('');
+    setSelectedSource('');
     onOpen();
   };
 
@@ -104,6 +176,7 @@ export default function ProxyChains() {
     });
     setSearchText('');
     setSelectedCountry('');
+    setSelectedSource('');
     onOpen();
   };
 
@@ -183,15 +256,28 @@ export default function ProxyChains() {
     }
   };
 
-  // 过滤可用节点
-  const filteredNodes = nodes.filter(node => {
-    const matchSearch = !searchText ||
-      node.tag.toLowerCase().includes(searchText.toLowerCase()) ||
-      node.server.toLowerCase().includes(searchText.toLowerCase());
-    const matchCountry = !selectedCountry || node.country === selectedCountry;
-    const notInChain = !formData.nodes.includes(node.tag);
-    return matchSearch && matchCountry && notInChain;
-  });
+  // 过滤可用节点（从分组数据中过滤）
+  const getFilteredNodesByGroup = () => {
+    let groups = nodeGroups;
+
+    // 按来源筛选
+    if (selectedSource) {
+      groups = groups.filter(g => g.source === selectedSource);
+    }
+
+    // 对每个分组内的节点进行筛选
+    return groups.map(group => ({
+      ...group,
+      nodes: group.nodes.filter(node => {
+        const matchSearch = !searchText ||
+          node.tag.toLowerCase().includes(searchText.toLowerCase()) ||
+          node.server.toLowerCase().includes(searchText.toLowerCase());
+        const matchCountry = !selectedCountry || node.country === selectedCountry;
+        const notInChain = !formData.nodes.includes(node.tag);
+        return matchSearch && matchCountry && notInChain;
+      })
+    })).filter(group => group.nodes.length > 0);
+  };
 
   // 获取当前节点中存在的国家列表
   const availableCountries = countryOptions.filter(
@@ -203,6 +289,26 @@ export default function ProxyChains() {
     return nodes.find(n => n.tag === tag);
   };
 
+  // 获取健康状态颜色
+  const getHealthColor = (status?: string) => {
+    switch (status) {
+      case 'healthy': return 'success';
+      case 'degraded': return 'warning';
+      case 'unhealthy': return 'danger';
+      default: return 'default';
+    }
+  };
+
+  // 获取健康状态文本
+  const getHealthText = (status?: string) => {
+    switch (status) {
+      case 'healthy': return '正常';
+      case 'degraded': return '部分可用';
+      case 'unhealthy': return '不可用';
+      default: return '未检测';
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -210,6 +316,8 @@ export default function ProxyChains() {
       </div>
     );
   }
+
+  const filteredGroups = getFilteredNodesByGroup();
 
   return (
     <div className="space-y-6">
@@ -246,65 +354,90 @@ export default function ProxyChains() {
         </Card>
       ) : (
         <div className="space-y-4">
-          {chains.map((chain) => (
-            <Card key={chain.id}>
-              <CardBody className="p-4">
-                <div className="flex justify-between items-start">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Link2 className="w-5 h-5 text-primary" />
-                      <h3 className="font-semibold text-lg">{chain.name}</h3>
-                      {!chain.enabled && (
-                        <Chip size="sm" variant="flat">已禁用</Chip>
+          {chains.map((chain) => {
+            const health = healthStatuses[chain.id];
+            return (
+              <Card key={chain.id}>
+                <CardBody className="p-4">
+                  <div className="flex justify-between items-start">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-2">
+                        <Link2 className="w-5 h-5 text-primary" />
+                        <h3 className="font-semibold text-lg">{chain.name}</h3>
+                        {!chain.enabled && (
+                          <Chip size="sm" variant="flat">已禁用</Chip>
+                        )}
+                        {/* 健康状态指示器 */}
+                        {health && (
+                          <Chip size="sm" color={getHealthColor(health.status)} variant="flat">
+                            {getHealthText(health.status)}
+                            {health.latency > 0 && ` ${health.latency}ms`}
+                          </Chip>
+                        )}
+                      </div>
+                      {chain.description && (
+                        <p className="text-sm text-gray-500 mb-3">{chain.description}</p>
                       )}
-                    </div>
-                    {chain.description && (
-                      <p className="text-sm text-gray-500 mb-3">{chain.description}</p>
-                    )}
 
-                    {/* 链路可视化 */}
-                    <div className="flex items-center gap-2 flex-wrap">
-                      {chain.nodes.map((nodeTag, index) => {
-                        const node = getNodeInfo(nodeTag);
-                        return (
-                          <div key={index} className="flex items-center gap-2">
-                            <Chip
-                              variant="bordered"
-                              startContent={node?.country_emoji}
-                            >
-                              {nodeTag}
-                            </Chip>
-                            {index < chain.nodes.length - 1 && (
-                              <ArrowRight className="w-4 h-4 text-gray-400" />
-                            )}
-                          </div>
-                        );
-                      })}
+                      {/* 链路可视化 */}
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {chain.nodes.map((nodeTag, index) => {
+                          const node = getNodeInfo(nodeTag);
+                          const nodeHealth = health?.node_statuses?.find(ns => ns.tag === nodeTag);
+                          return (
+                            <div key={index} className="flex items-center gap-2">
+                              <Chip
+                                variant="bordered"
+                                startContent={node?.country_emoji}
+                                color={nodeHealth ? getHealthColor(nodeHealth.status) : 'default'}
+                              >
+                                {nodeTag}
+                                {nodeHealth && nodeHealth.latency && nodeHealth.latency > 0 && (
+                                  <span className="text-xs ml-1 opacity-70">{nodeHealth.latency}ms</span>
+                                )}
+                              </Chip>
+                              {index < chain.nodes.length - 1 && (
+                                <ArrowRight className="w-4 h-4 text-gray-400" />
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1">
+                      <Button
+                        isIconOnly
+                        size="sm"
+                        variant="light"
+                        onPress={() => checkChainHealth(chain.id)}
+                        isLoading={testingChain === chain.id}
+                        title="测速"
+                      >
+                        <Activity className="w-4 h-4" />
+                      </Button>
+                      <Button isIconOnly size="sm" variant="light" onPress={() => handleEdit(chain)}>
+                        <Pencil className="w-4 h-4" />
+                      </Button>
+                      <Button isIconOnly size="sm" variant="light" color="danger" onPress={() => handleDelete(chain)}>
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                      <Switch
+                        size="sm"
+                        isSelected={chain.enabled}
+                        onValueChange={() => handleToggle(chain)}
+                      />
                     </div>
                   </div>
-
-                  <div className="flex items-center gap-1">
-                    <Button isIconOnly size="sm" variant="light" onPress={() => handleEdit(chain)}>
-                      <Pencil className="w-4 h-4" />
-                    </Button>
-                    <Button isIconOnly size="sm" variant="light" color="danger" onPress={() => handleDelete(chain)}>
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
-                    <Switch
-                      size="sm"
-                      isSelected={chain.enabled}
-                      onValueChange={() => handleToggle(chain)}
-                    />
-                  </div>
-                </div>
-              </CardBody>
-            </Card>
-          ))}
+                </CardBody>
+              </Card>
+            );
+          })}
         </div>
       )}
 
       {/* 创建/编辑 Modal */}
-      <Modal isOpen={isOpen} onClose={onClose} size="3xl">
+      <Modal isOpen={isOpen} onClose={onClose} size="4xl">
         <ModalContent>
           <ModalHeader>
             {editingChain ? '编辑链路' : '新建链路'}
@@ -347,10 +480,15 @@ export default function ProxyChains() {
                             key={index}
                             className="flex items-center justify-between p-2 bg-default-100 rounded-lg"
                           >
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 flex-1 min-w-0">
                               <span className="text-xs text-gray-500 w-6">{index + 1}.</span>
                               {node?.country_emoji && <span>{node.country_emoji}</span>}
-                              <span className="text-sm">{nodeTag}</span>
+                              <div className="flex flex-col min-w-0">
+                                <span className="text-sm truncate">{nodeTag}</span>
+                                {node?.source_name && (
+                                  <span className="text-xs text-gray-400 truncate">{node.source_name}</span>
+                                )}
+                              </div>
                             </div>
                             <div className="flex items-center gap-1">
                               <Button
@@ -387,18 +525,17 @@ export default function ProxyChains() {
                     </div>
                   )}
 
-                  {/* 链路预览 */}
-                  {formData.nodes.length >= 2 && (
+                  {/* 链路预览 - 显示副本 Tag */}
+                  {formData.nodes.length >= 2 && formData.name && (
                     <div className="mt-4 pt-3 border-t border-divider">
-                      <p className="text-xs text-gray-500 mb-2">链路预览：</p>
-                      <div className="flex items-center gap-1 flex-wrap">
+                      <p className="text-xs text-gray-500 mb-2">生成的副本节点：</p>
+                      <div className="space-y-1">
                         {formData.nodes.map((tag, index) => (
-                          <div key={index} className="flex items-center gap-1">
-                            <Chip size="sm" variant="flat">
-                              {getNodeInfo(tag)?.country_emoji || ''} {tag}
-                            </Chip>
+                          <div key={index} className="flex items-center gap-2 text-xs">
+                            <span className="text-gray-400">{index + 1}.</span>
+                            <span className="font-mono text-primary">{formData.name}-{tag}</span>
                             {index < formData.nodes.length - 1 && (
-                              <ArrowRight className="w-3 h-3 text-gray-400" />
+                              <span className="text-gray-400">→ detour: {formData.name}-{formData.nodes[index + 1]}</span>
                             )}
                           </div>
                         ))}
@@ -408,13 +545,37 @@ export default function ProxyChains() {
                 </CardBody>
               </Card>
 
-              {/* 可用节点 */}
+              {/* 可用节点 - 按来源分组 */}
               <Card>
-                <CardHeader>
-                  <h3 className="font-medium">可用节点（{filteredNodes.length}）</h3>
+                <CardHeader className="flex justify-between items-center">
+                  <h3 className="font-medium">可用节点</h3>
+                  <Button
+                    size="sm"
+                    variant="light"
+                    startContent={<RefreshCw className="w-3 h-3" />}
+                    onPress={fetchNodeGroups}
+                  >
+                    刷新
+                  </Button>
                 </CardHeader>
                 <CardBody className="pt-0">
                   <div className="flex gap-2 mb-3">
+                    <Select
+                      placeholder="筛选来源"
+                      size="sm"
+                      selectedKeys={selectedSource ? [selectedSource] : []}
+                      onSelectionChange={(keys) => {
+                        const selected = Array.from(keys)[0] as string;
+                        setSelectedSource(selected || '');
+                      }}
+                      className="w-32"
+                    >
+                      {nodeGroups.map((group) => (
+                        <SelectItem key={group.source} textValue={group.source_name}>
+                          {group.source_name} ({group.nodes.length})
+                        </SelectItem>
+                      ))}
+                    </Select>
                     <Select
                       placeholder="筛选国家"
                       size="sm"
@@ -439,30 +600,63 @@ export default function ProxyChains() {
                       className="flex-1"
                     />
                   </div>
-                  <div className="space-y-1 max-h-64 overflow-y-auto">
-                    {filteredNodes.length === 0 ? (
+
+                  {/* 按来源分组显示节点 */}
+                  <div className="max-h-72 overflow-y-auto">
+                    {filteredGroups.length === 0 ? (
                       <p className="text-gray-500 text-center py-4">
                         没有可用节点
                       </p>
                     ) : (
-                      filteredNodes.slice(0, 50).map((node) => (
-                        <div
-                          key={node.tag}
-                          className="flex items-center justify-between p-2 hover:bg-default-100 rounded-lg cursor-pointer"
-                          onClick={() => addNodeToChain(node.tag)}
-                        >
-                          <div className="flex items-center gap-2 flex-1 min-w-0">
-                            {node.country_emoji && <span>{node.country_emoji}</span>}
-                            <span className="text-sm truncate">{node.tag}</span>
-                          </div>
-                          <Chip size="sm" variant="flat">{node.type}</Chip>
-                        </div>
-                      ))
-                    )}
-                    {filteredNodes.length > 50 && (
-                      <p className="text-xs text-gray-500 text-center py-2">
-                        还有 {filteredNodes.length - 50} 个节点，请使用搜索
-                      </p>
+                      <Accordion
+                        selectionMode="multiple"
+                        defaultExpandedKeys={filteredGroups.map(g => g.source)}
+                        className="p-0"
+                      >
+                        {filteredGroups.map((group) => (
+                          <AccordionItem
+                            key={group.source}
+                            title={
+                              <div className="flex items-center gap-2">
+                                <Chip
+                                  size="sm"
+                                  color={group.source === 'manual' ? 'primary' : 'secondary'}
+                                  variant="flat"
+                                >
+                                  {group.source_name}
+                                </Chip>
+                                <span className="text-xs text-gray-500">
+                                  {group.nodes.length} 个节点
+                                </span>
+                              </div>
+                            }
+                            classNames={{
+                              content: "p-0",
+                            }}
+                          >
+                            <div className="space-y-1">
+                              {group.nodes.slice(0, 30).map((node) => (
+                                <div
+                                  key={node.tag}
+                                  className="flex items-center justify-between p-2 hover:bg-default-100 rounded-lg cursor-pointer"
+                                  onClick={() => addNodeToChain(node.tag)}
+                                >
+                                  <div className="flex items-center gap-2 flex-1 min-w-0">
+                                    {node.country_emoji && <span>{node.country_emoji}</span>}
+                                    <span className="text-sm truncate">{node.tag}</span>
+                                  </div>
+                                  <Chip size="sm" variant="flat">{node.type}</Chip>
+                                </div>
+                              ))}
+                              {group.nodes.length > 30 && (
+                                <p className="text-xs text-gray-500 text-center py-2">
+                                  还有 {group.nodes.length - 30} 个节点，请使用搜索
+                                </p>
+                              )}
+                            </div>
+                          </AccordionItem>
+                        ))}
+                      </Accordion>
                     )}
                   </div>
                 </CardBody>

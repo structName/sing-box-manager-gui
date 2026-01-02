@@ -12,13 +12,15 @@ import (
 
 // SubscriptionService 订阅服务
 type SubscriptionService struct {
-	store *storage.JSONStore
+	store        *storage.JSONStore
+	chainSyncSvc *ChainSyncService
 }
 
 // NewSubscriptionService 创建订阅服务
-func NewSubscriptionService(store *storage.JSONStore) *SubscriptionService {
+func NewSubscriptionService(store *storage.JSONStore, chainSyncSvc *ChainSyncService) *SubscriptionService {
 	return &SubscriptionService{
-		store: store,
+		store:        store,
+		chainSyncSvc: chainSyncSvc,
 	}
 }
 
@@ -78,7 +80,16 @@ func (s *SubscriptionService) Refresh(id string) error {
 		return err
 	}
 
-	return s.store.UpdateSubscription(*sub)
+	if err := s.store.UpdateSubscription(*sub); err != nil {
+		return err
+	}
+
+	// 同步链路节点
+	if s.chainSyncSvc != nil {
+		s.chainSyncSvc.SyncChainNodesForSubscription(id)
+	}
+
+	return nil
 }
 
 // RefreshAll 刷新所有订阅
@@ -95,6 +106,12 @@ func (s *SubscriptionService) RefreshAll() error {
 			}
 		}
 	}
+
+	// 同步所有链路节点
+	if s.chainSyncSvc != nil {
+		s.chainSyncSvc.SyncChainNodes()
+	}
+
 	return nil
 }
 
