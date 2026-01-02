@@ -1,11 +1,12 @@
 import { useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Globe, FileText, Settings, Activity, ScrollText, Layers, Link2 } from 'lucide-react';
+import { LayoutDashboard, Globe, FileText, Settings, Activity, ScrollText, Layers, Link2, Network } from 'lucide-react';
 import { useStore } from '../store';
 
 const menuItems = [
   { path: '/', icon: LayoutDashboard, label: '仪表盘' },
   { path: '/subscriptions', icon: Globe, label: '节点' },
+  { path: '/inbound-ports', icon: Network, label: '入站' },
   { path: '/rules', icon: FileText, label: '规则' },
   { path: '/proxy-chains', icon: Link2, label: '链路' },
   { path: '/profiles', icon: Layers, label: '配置方案' },

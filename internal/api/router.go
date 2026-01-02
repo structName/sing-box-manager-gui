@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -200,6 +201,8 @@ func (s *Server) setupRoutes() {
 		api.GET("/nodes/countries", s.getCountryGroups)
 		api.GET("/nodes/country/:code", s.getNodesByCountry)
 		api.POST("/nodes/parse", s.parseNodeURL)
+		api.GET("/nodes/delays", s.getNodeDelays)
+		api.POST("/nodes/:tag/delay", s.testNodeDelay)
 
 		// 手动节点
 		api.GET("/manual-nodes", s.getManualNodes)
@@ -1668,6 +1671,95 @@ func (s *Server) parseNodeURL(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"data": node})
+}
+
+// getNodeDelays 从 Clash API 获取所有节点的延迟
+func (s *Server) getNodeDelays(c *gin.Context) {
+	settings := s.store.GetSettings()
+	if settings.ClashAPIPort <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Clash API 未启用"})
+		return
+	}
+
+	// 调用 Clash API 获取所有代理信息
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/proxies", settings.ClashAPIPort))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "无法连接 Clash API: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Proxies map[string]struct {
+			Name    string `json:"name"`
+			Type    string `json:"type"`
+			History []struct {
+				Delay int `json:"delay"`
+			} `json:"history"`
+		} `json:"proxies"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "解析响应失败: " + err.Error()})
+		return
+	}
+
+	// 提取延迟信息
+	delays := make(map[string]int)
+	for name, proxy := range result.Proxies {
+		if len(proxy.History) > 0 {
+			delays[name] = proxy.History[len(proxy.History)-1].Delay
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": delays})
+}
+
+// testNodeDelay 测试单个节点的延迟
+func (s *Server) testNodeDelay(c *gin.Context) {
+	tag := c.Param("tag")
+	settings := s.store.GetSettings()
+	if settings.ClashAPIPort <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Clash API 未启用"})
+		return
+	}
+
+	// 调用 Clash API 测试延迟
+	testURL := "https://www.gstatic.com/generate_204"
+	timeout := 5000 // ms
+
+	apiURL := fmt.Sprintf("http://127.0.0.1:%d/proxies/%s/delay?url=%s&timeout=%d",
+		settings.ClashAPIPort,
+		url.PathEscape(tag),
+		url.QueryEscape(testURL),
+		timeout,
+	)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(apiURL)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "测试失败: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Delay   int    `json:"delay"`
+		Message string `json:"message,omitempty"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "解析响应失败: " + err.Error()})
+		return
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{"tag": tag, "delay": 0, "error": result.Message}})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"tag": tag, "delay": result.Delay}})
 }
 
 // ==================== 手动节点 API ====================

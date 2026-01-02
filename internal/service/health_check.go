@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -14,6 +15,31 @@ import (
 	"github.com/xiaobei/singbox-manager/internal/storage"
 	"golang.org/x/net/proxy"
 )
+
+// 延迟测试 URL 列表
+var delayTestURLs = []string{
+	"https://www.google.com/generate_204",
+	"https://www.gstatic.com/generate_204",
+	"https://www.apple.com/library/test/success.html",
+	"http://www.msftconnecttest.com/connecttest.txt",
+}
+
+// 速度测试 URL 列表
+var speedTestURLs = []string{
+	"https://speed.cloudflare.com/__down?bytes=10000000",  // 10MB
+	"https://speed.cloudflare.com/__down?bytes=50000000",  // 50MB
+	"https://cachefly.cachefly.net/10mb.test",             // 10MB
+}
+
+// getRandomDelayTestURL 随机获取延迟测试 URL
+func getRandomDelayTestURL() string {
+	return delayTestURLs[rand.Intn(len(delayTestURLs))]
+}
+
+// getRandomSpeedTestURL 随机获取速度测试 URL
+func getRandomSpeedTestURL() string {
+	return speedTestURLs[rand.Intn(len(speedTestURLs))]
+}
 
 // HealthCheckService 健康检测服务
 type HealthCheckService struct {
@@ -50,8 +76,8 @@ type ClashDelayResponse struct {
 }
 
 // CheckChain 检测单个链路
-// 使用 Clash API 测试每个节点的延迟
-// 参考 v2rayN/Clash 的实现：通过代理发送 HTTP 请求到测试 URL
+// 入口/中转节点：TCP 连接测试（测试到节点服务器的连通性）
+// 出口节点：HTTP 端到端测试（通过整个链路访问测试 URL）
 func (h *HealthCheckService) CheckChain(chainID string) (*storage.ChainHealthStatus, error) {
 	chain := h.store.GetProxyChain(chainID)
 	if chain == nil {
@@ -88,45 +114,61 @@ func (h *HealthCheckService) CheckChain(chainID string) (*storage.ChainHealthSta
 		return status, nil
 	}
 
-	// 检查 Clash API 是否可用
-	clashAPIPort := settings.ClashAPIPort
-	if clashAPIPort <= 0 {
-		// Clash API 未启用，回退到简单测试
-		return h.checkChainSimple(chain, config, status)
+	// 获取所有节点信息（用于 TCP 测试）
+	allNodes := h.store.GetAllNodes()
+	nodeMap := make(map[string]storage.Node)
+	for _, n := range allNodes {
+		nodeMap[n.Tag] = n
 	}
 
 	timeout := time.Duration(config.Timeout) * time.Second
 	testURL := config.URL
 	if testURL == "" {
-		testURL = "https://www.gstatic.com/generate_204"
+		testURL = getRandomDelayTestURL() // 随机选择测试 URL
 	}
 
-	// 分别测试每个节点的延迟
-	// 每个节点的副本 Tag 格式为：{链路名}-{节点Tag}
-	// 入口节点直接连接，后续节点通过前置节点 detour
+	clashAPIPort := settings.ClashAPIPort
 	unhealthyCount := 0
 	var totalLatency int
 
 	for i, nodeTag := range chain.Nodes {
-		copyTag := storage.GenerateChainNodeCopyTag(chain.Name, nodeTag)
-
-		// 通过 Clash API 测试该节点的延迟
-		latency, err := h.testViaClashAPI(clashAPIPort, copyTag, testURL, timeout)
+		isExitNode := (i == len(chain.Nodes)-1)
 
 		nodeStatus := storage.NodeHealthStatus{
 			Tag: nodeTag,
 		}
 
-		if err != nil {
-			nodeStatus.Status = "unhealthy"
-			nodeStatus.Error = err.Error()
-			unhealthyCount++
-		} else {
-			nodeStatus.Status = "healthy"
-			nodeStatus.Latency = latency
-			// 最后一个节点的延迟就是端到端延迟
-			if i == len(chain.Nodes)-1 {
+		if isExitNode && clashAPIPort > 0 {
+			// 出口节点：通过 Clash API 测试端到端 HTTP 延迟
+			// 这会测试整个链路：客户端 → 入口 → 中转... → 出口 → 测试URL
+			copyTag := storage.GenerateChainNodeCopyTag(chain.Name, nodeTag)
+			latency, err := h.testViaClashAPI(clashAPIPort, copyTag, testURL, timeout)
+
+			if err != nil {
+				nodeStatus.Status = "unhealthy"
+				nodeStatus.Error = err.Error()
+				unhealthyCount++
+			} else {
+				nodeStatus.Status = "healthy"
+				nodeStatus.Latency = latency
 				totalLatency = latency
+			}
+		} else {
+			// 入口/中转节点：TCP 连接测试
+			// 测试能否连接到节点服务器
+			node, exists := nodeMap[nodeTag]
+			if !exists {
+				nodeStatus.Status = "unhealthy"
+				nodeStatus.Error = "节点不存在"
+				unhealthyCount++
+			} else {
+				tcpResult := h.testNodeTCP(node, timeout)
+				nodeStatus.Status = tcpResult.Status
+				nodeStatus.Latency = tcpResult.Latency
+				nodeStatus.Error = tcpResult.Error
+				if tcpResult.Status != "healthy" {
+					unhealthyCount++
+				}
 			}
 		}
 
@@ -168,8 +210,8 @@ func (h *HealthCheckService) CheckChainSpeed(chainID string) (*storage.ChainSpee
 	}
 
 	// 测速配置
-	// 使用 Cloudflare 的测速服务，下载 10MB 数据
-	speedTestURL := "https://speed.cloudflare.com/__down?bytes=10000000"
+	// 随机选择测速服务
+	speedTestURL := getRandomSpeedTestURL()
 	timeout := 30 * time.Second
 
 	// 创建通过代理的 HTTP 客户端
