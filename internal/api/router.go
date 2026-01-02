@@ -223,6 +223,7 @@ func (s *Server) setupRoutes() {
 		api.GET("/proxy-chains/health", s.getAllChainHealth)
 		api.GET("/proxy-chains/:id/health", s.getChainHealth)
 		api.POST("/proxy-chains/:id/health/check", s.checkChainHealth)
+		api.POST("/proxy-chains/:id/speed", s.checkChainSpeed)
 
 		// 内核管理
 		api.GET("/kernel/info", s.getKernelInfo)
@@ -1991,4 +1992,14 @@ func (s *Server) checkChainHealth(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": status})
+}
+
+func (s *Server) checkChainSpeed(c *gin.Context) {
+	id := c.Param("id")
+	result, err := s.healthCheckSvc.CheckChainSpeed(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
 }

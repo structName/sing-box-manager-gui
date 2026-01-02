@@ -160,6 +160,8 @@ export const proxyChainApi = {
   getAllHealth: () => api.get('/proxy-chains/health'),
   getHealth: (id: string) => api.get(`/proxy-chains/${id}/health`),
   checkHealth: (id: string) => api.post(`/proxy-chains/${id}/health/check`),
+  // 速度测试
+  checkSpeed: (id: string) => api.post(`/proxy-chains/${id}/speed`),
 };
 
 // 内核管理 API

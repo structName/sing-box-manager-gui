@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -22,10 +23,12 @@ const (
 type Logger struct {
 	mu          sync.Mutex
 	file        *os.File
-	filePath    string
+	filePath    string // 基础路径，如 logs/singbox.log
+	currentFile string // 当前实际文件路径，如 logs/singbox-2026-01-02.log
 	maxSize     int64
 	maxBackups  int
 	currentSize int64
+	currentDate string // 当前日期，用于检测日期变化
 	logger      *log.Logger
 	prefix      string
 }
@@ -64,9 +67,19 @@ func NewLogger(filePath string, prefix string) (*Logger, error) {
 	return l, nil
 }
 
-// openFile 打开或创建日志文件
+// getDailyFilePath 获取按日期的文件路径
+func (l *Logger) getDailyFilePath(date string) string {
+	ext := filepath.Ext(l.filePath)
+	base := strings.TrimSuffix(l.filePath, ext)
+	return fmt.Sprintf("%s-%s%s", base, date, ext)
+}
+
+// openFile 打开或创建日志文件（按日期）
 func (l *Logger) openFile() error {
-	file, err := os.OpenFile(l.filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	today := time.Now().Format("2006-01-02")
+	dailyPath := l.getDailyFilePath(today)
+
+	file, err := os.OpenFile(dailyPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
 		return fmt.Errorf("打开日志文件失败: %w", err)
 	}
@@ -78,40 +91,162 @@ func (l *Logger) openFile() error {
 	}
 
 	l.file = file
+	l.currentFile = dailyPath
+	l.currentDate = today
 	l.currentSize = info.Size()
 	l.logger = log.New(file, l.prefix, log.LstdFlags)
+
+	// 清理过期的日志文件
+	go l.cleanOldLogs()
 
 	return nil
 }
 
-// rotate 轮转日志文件
+// checkDateChange 检查日期是否变化，如果变化则切换到新文件（调用前必须持有锁）
+func (l *Logger) checkDateChange() error {
+	today := time.Now().Format("2006-01-02")
+	if today == l.currentDate {
+		return nil
+	}
+
+	// 日期变化，切换到新文件
+	if l.file != nil {
+		l.file.Close()
+	}
+
+	return l.openFileUnlocked()
+}
+
+// openFileUnlocked 打开或创建日志文件（不加锁版本，供内部使用）
+func (l *Logger) openFileUnlocked() error {
+	today := time.Now().Format("2006-01-02")
+	dailyPath := l.getDailyFilePath(today)
+
+	file, err := os.OpenFile(dailyPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("打开日志文件失败: %w", err)
+	}
+
+	info, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return fmt.Errorf("获取文件信息失败: %w", err)
+	}
+
+	l.file = file
+	l.currentFile = dailyPath
+	l.currentDate = today
+	l.currentSize = info.Size()
+	l.logger = log.New(file, l.prefix, log.LstdFlags)
+
+	// 清理过期的日志文件
+	go l.cleanOldLogs()
+
+	return nil
+}
+
+// cleanOldLogs 清理过期的日志文件
+func (l *Logger) cleanOldLogs() {
+	dir := filepath.Dir(l.filePath)
+	ext := filepath.Ext(l.filePath)
+	base := filepath.Base(strings.TrimSuffix(l.filePath, ext))
+
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+
+	// 收集匹配的日志文件
+	var logFiles []string
+	for _, f := range files {
+		if f.IsDir() {
+			continue
+		}
+		name := f.Name()
+		// 匹配格式: base-YYYY-MM-DD.ext
+		if strings.HasPrefix(name, base+"-") && strings.HasSuffix(name, ext) {
+			logFiles = append(logFiles, filepath.Join(dir, name))
+		}
+	}
+
+	// 按修改时间排序，保留最近的 maxBackups 个文件
+	if len(logFiles) <= l.maxBackups {
+		return
+	}
+
+	// 获取文件信息并按时间排序
+	type fileInfo struct {
+		path    string
+		modTime time.Time
+	}
+	var infos []fileInfo
+	for _, path := range logFiles {
+		if stat, err := os.Stat(path); err == nil {
+			infos = append(infos, fileInfo{path: path, modTime: stat.ModTime()})
+		}
+	}
+
+	// 按时间降序排序
+	for i := 0; i < len(infos)-1; i++ {
+		for j := i + 1; j < len(infos); j++ {
+			if infos[j].modTime.After(infos[i].modTime) {
+				infos[i], infos[j] = infos[j], infos[i]
+			}
+		}
+	}
+
+	// 删除超出保留数量的旧文件
+	for i := l.maxBackups; i < len(infos); i++ {
+		os.Remove(infos[i].path)
+	}
+}
+
+// rotate 轮转日志文件（当单日文件过大时）
 func (l *Logger) rotate() error {
 	if l.file != nil {
 		l.file.Close()
 	}
 
+	// 当天文件重命名添加序号
+	base := strings.TrimSuffix(l.currentFile, filepath.Ext(l.currentFile))
+	ext := filepath.Ext(l.currentFile)
+
 	// 删除最旧的备份
-	oldestBackup := fmt.Sprintf("%s.%d", l.filePath, l.maxBackups)
+	oldestBackup := fmt.Sprintf("%s.%d%s", base, l.maxBackups, ext)
 	os.Remove(oldestBackup)
 
 	// 移动现有备份
 	for i := l.maxBackups - 1; i >= 1; i-- {
-		oldPath := fmt.Sprintf("%s.%d", l.filePath, i)
-		newPath := fmt.Sprintf("%s.%d", l.filePath, i+1)
+		oldPath := fmt.Sprintf("%s.%d%s", base, i, ext)
+		newPath := fmt.Sprintf("%s.%d%s", base, i+1, ext)
 		os.Rename(oldPath, newPath)
 	}
 
 	// 移动当前日志到 .1
-	os.Rename(l.filePath, l.filePath+".1")
+	os.Rename(l.currentFile, fmt.Sprintf("%s.1%s", base, ext))
 
 	// 创建新文件
-	return l.openFile()
+	file, err := os.OpenFile(l.currentFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("创建新日志文件失败: %w", err)
+	}
+
+	l.file = file
+	l.currentSize = 0
+	l.logger = log.New(file, l.prefix, log.LstdFlags)
+
+	return nil
 }
 
 // Write 实现 io.Writer 接口
 func (l *Logger) Write(p []byte) (n int, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	// 检查日期变化
+	if err := l.checkDateChange(); err != nil {
+		return 0, err
+	}
 
 	// 检查是否需要轮转
 	if l.currentSize+int64(len(p)) > l.maxSize {
@@ -157,6 +292,12 @@ func (l *Logger) WriteRaw(line string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	// 检查日期变化
+	if err := l.checkDateChange(); err != nil {
+		fmt.Fprintf(os.Stderr, "日期切换失败: %v\n", err)
+		return
+	}
+
 	data := line + "\n"
 
 	// 检查是否需要轮转
@@ -182,7 +323,7 @@ func (l *Logger) Close() error {
 	return nil
 }
 
-// ReadLastLines 读取最后 n 行日志
+// ReadLastLines 读取最后 n 行日志（从当天的日志文件）
 func (l *Logger) ReadLastLines(n int) ([]string, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -192,8 +333,8 @@ func (l *Logger) ReadLastLines(n int) ([]string, error) {
 		l.file.Sync()
 	}
 
-	// 读取文件
-	file, err := os.Open(l.filePath)
+	// 读取当天的日志文件
+	file, err := os.Open(l.currentFile)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return []string{}, nil
@@ -346,6 +487,37 @@ func ReadSingboxLogs(lines int) ([]string, error) {
 		return []string{}, nil
 	}
 	return manager.singboxLogger.ReadLastLines(lines)
+}
+
+// ClearSingboxLogs 清空 sing-box 日志文件
+func ClearSingboxLogs() error {
+	if manager == nil || manager.singboxLogger == nil {
+		return nil
+	}
+	return manager.singboxLogger.Clear()
+}
+
+// Clear 清空日志文件（当天的日志文件）
+func (l *Logger) Clear() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	// 关闭当前文件
+	if l.file != nil {
+		l.file.Close()
+	}
+
+	// 截断当天的日志文件
+	file, err := os.OpenFile(l.currentFile, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("清空日志文件失败: %w", err)
+	}
+
+	l.file = file
+	l.currentSize = 0
+	l.logger = log.New(file, l.prefix, log.LstdFlags)
+
+	return nil
 }
 
 // MultiWriter 同时写入多个目标
