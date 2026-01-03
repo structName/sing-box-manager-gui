@@ -75,6 +75,15 @@ type NodeHealthStatus struct {
 	Error   string `json:"error,omitempty"`
 }
 
+// ChainSpeedResult 链路速度测试结果
+type ChainSpeedResult struct {
+	ChainID    string    `json:"chain_id"`
+	TestTime   time.Time `json:"test_time"`
+	SpeedMbps  float64   `json:"speed_mbps"`  // 下载速度 Mbps
+	BytesTotal int64     `json:"bytes_total"` // 下载字节数
+	Duration   int64     `json:"duration"`    // 耗时 ms
+}
+
 // GenerateChainNodeCopyTag 生成链路节点副本 Tag
 func GenerateChainNodeCopyTag(chainName, originalTag string) string {
 	return chainName + "-" + originalTag

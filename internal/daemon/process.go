@@ -254,6 +254,14 @@ func (pm *ProcessManager) Start() error {
 		return fmt.Errorf("配置文件不存在: %s", pm.configPath)
 	}
 
+	// 清空 sing-box 日志文件，以便只显示本次运行的日志
+	if err := logger.ClearSingboxLogs(); err != nil {
+		logger.Printf("清空 sing-box 日志失败: %v", err)
+	}
+
+	// 清空内存中的日志
+	pm.logs = make([]string, 0)
+
 	pm.cmd = exec.Command(pm.singboxPath, "run", "-c", pm.configPath)
 	pm.cmd.Dir = pm.dataDir // 设置工作目录，确保相对路径（如 external_ui）正确解析
 

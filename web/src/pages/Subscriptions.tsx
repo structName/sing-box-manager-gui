@@ -642,18 +642,19 @@ export default function Subscriptions() {
 
                       <Select
                         label="国家/地区"
-                        selectedKeys={[nodeForm.country || 'HK']}
-                        onChange={(e) => {
-                          const country = countryOptions.find(c => c.code === e.target.value);
+                        selectedKeys={nodeForm.country ? new Set([nodeForm.country]) : new Set(['HK'])}
+                        onSelectionChange={(keys) => {
+                          const selected = Array.from(keys)[0] as string;
+                          const country = countryOptions.find(c => c.code === selected);
                           setNodeForm({
                             ...nodeForm,
-                            country: e.target.value,
+                            country: selected,
                             country_emoji: country?.emoji || '🌐',
                           });
                         }}
                       >
                         {countryOptions.map((opt) => (
-                          <SelectItem key={opt.code} value={opt.code}>
+                          <SelectItem key={opt.code}>
                             {opt.emoji} {opt.name}
                           </SelectItem>
                         ))}
@@ -887,9 +888,46 @@ interface SubscriptionCardProps {
 
 function SubscriptionCard({ subscription: sub, onRefresh, onEdit, onDelete, onToggle, loading }: SubscriptionCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
+  const [nodeDelays, setNodeDelays] = useState<Record<string, number>>({});
+  const [loadingDelays, setLoadingDelays] = useState(false);
+  const [testingNode, setTestingNode] = useState<string | null>(null);
 
   // 确保 nodes 是数组，处理 null 或 undefined 情况
   const nodes = sub.nodes || [];
+
+  // 获取所有节点的延迟
+  const fetchDelays = async () => {
+    setLoadingDelays(true);
+    try {
+      const response = await nodeApi.getDelays();
+      setNodeDelays(response.data.data || {});
+    } catch (error) {
+      console.error('获取延迟失败:', error);
+    } finally {
+      setLoadingDelays(false);
+    }
+  };
+
+  // 测试单个节点延迟
+  const testNodeDelay = async (tag: string) => {
+    setTestingNode(tag);
+    try {
+      const response = await nodeApi.testDelay(tag);
+      const { delay } = response.data.data;
+      setNodeDelays(prev => ({ ...prev, [tag]: delay }));
+    } catch (error) {
+      console.error('测速失败:', error);
+    } finally {
+      setTestingNode(null);
+    }
+  };
+
+  // 展开时获取延迟
+  useEffect(() => {
+    if (isExpanded && Object.keys(nodeDelays).length === 0) {
+      fetchDelays();
+    }
+  }, [isExpanded]);
 
   // 按国家分组节点
   const nodesByCountry = nodes.reduce((acc, node) => {
@@ -903,6 +941,22 @@ function SubscriptionCard({ subscription: sub, onRefresh, onEdit, onDelete, onTo
     acc[country].nodes.push(node);
     return acc;
   }, {} as Record<string, { emoji: string; nodes: Node[] }>);
+
+  // 格式化延迟显示
+  const formatDelay = (delay: number | undefined) => {
+    if (delay === undefined || delay === 0) return null;
+    if (delay < 0) return '超时';
+    return `${delay}ms`;
+  };
+
+  // 延迟颜色
+  const getDelayColor = (delay: number | undefined): 'success' | 'warning' | 'danger' | 'default' => {
+    if (delay === undefined || delay === 0) return 'default';
+    if (delay < 0) return 'danger';
+    if (delay < 200) return 'success';
+    if (delay < 500) return 'warning';
+    return 'danger';
+  };
 
   return (
     <Card>
@@ -985,6 +1039,20 @@ function SubscriptionCard({ subscription: sub, onRefresh, onEdit, onDelete, onTo
             </div>
           )}
 
+          {/* 测速按钮 */}
+          <div className="flex justify-end mb-2">
+            <Button
+              size="sm"
+              variant="flat"
+              color="secondary"
+              startContent={loadingDelays ? <Spinner size="sm" /> : <RefreshCw className="w-3 h-3" />}
+              onPress={fetchDelays}
+              isDisabled={loadingDelays}
+            >
+              刷新延迟
+            </Button>
+          </div>
+
           {/* 按国家分组的节点列表 */}
           <Accordion variant="bordered" selectionMode="multiple">
             {Object.entries(nodesByCountry).map(([country, data]) => (
@@ -1000,17 +1068,36 @@ function SubscriptionCard({ subscription: sub, onRefresh, onEdit, onDelete, onTo
                 }
               >
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-                  {data.nodes.map((node, idx) => (
-                    <div
-                      key={idx}
-                      className="flex items-center gap-2 p-2 bg-gray-50 dark:bg-gray-800 rounded text-sm"
-                    >
-                      <span className="truncate flex-1">{node.tag}</span>
-                      <Chip size="sm" variant="flat">
-                        {node.type}
-                      </Chip>
-                    </div>
-                  ))}
+                  {data.nodes.map((node, idx) => {
+                    const delay = nodeDelays[node.tag];
+                    const delayText = formatDelay(delay);
+                    return (
+                      <div
+                        key={idx}
+                        className="flex items-center gap-2 p-2 bg-gray-50 dark:bg-gray-800 rounded text-sm group"
+                      >
+                        <span className="truncate flex-1">{node.tag}</span>
+                        {delayText && (
+                          <Chip size="sm" variant="flat" color={getDelayColor(delay)}>
+                            {delayText}
+                          </Chip>
+                        )}
+                        <Chip size="sm" variant="flat">
+                          {node.type}
+                        </Chip>
+                        <Button
+                          isIconOnly
+                          size="sm"
+                          variant="light"
+                          className="opacity-0 group-hover:opacity-100 transition-opacity"
+                          onPress={() => testNodeDelay(node.tag)}
+                          isLoading={testingNode === node.tag}
+                        >
+                          <RefreshCw className="w-3 h-3" />
+                        </Button>
+                      </div>
+                    );
+                  })}
                 </div>
               </AccordionItem>
             ))}

@@ -1,19 +1,45 @@
 package service
 
 import (
-	"bufio"
 	"context"
-	"crypto/tls"
-	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
 	"github.com/xiaobei/singbox-manager/internal/storage"
+	"golang.org/x/net/proxy"
 )
+
+// 延迟测试 URL 列表
+var delayTestURLs = []string{
+	"https://www.google.com/generate_204",
+	"https://www.gstatic.com/generate_204",
+	"https://www.apple.com/library/test/success.html",
+	"http://www.msftconnecttest.com/connecttest.txt",
+}
+
+// 速度测试 URL 列表
+var speedTestURLs = []string{
+	"https://speed.cloudflare.com/__down?bytes=10000000",  // 10MB
+	"https://speed.cloudflare.com/__down?bytes=50000000",  // 50MB
+	"https://cachefly.cachefly.net/10mb.test",             // 10MB
+}
+
+// getRandomDelayTestURL 随机获取延迟测试 URL
+func getRandomDelayTestURL() string {
+	return delayTestURLs[rand.Intn(len(delayTestURLs))]
+}
+
+// getRandomSpeedTestURL 随机获取速度测试 URL
+func getRandomSpeedTestURL() string {
+	return speedTestURLs[rand.Intn(len(speedTestURLs))]
+}
 
 // HealthCheckService 健康检测服务
 type HealthCheckService struct {
@@ -43,8 +69,15 @@ func (h *HealthCheckService) SetAlertCallback(callback func(chainID, message str
 	h.alertCallback = callback
 }
 
-// CheckChain 检测单个链路（级联测试）
-// 严格按照链路节点顺序进行测试，避免直接连接后续节点导致 IP 泄露
+// ClashDelayResponse Clash API 延迟测试响应
+type ClashDelayResponse struct {
+	Delay   int    `json:"delay"`
+	Message string `json:"message,omitempty"`
+}
+
+// CheckChain 检测单个链路
+// 入口/中转节点：TCP 连接测试（测试到节点服务器的连通性）
+// 出口节点：HTTP 端到端测试（通过整个链路访问测试 URL）
 func (h *HealthCheckService) CheckChain(chainID string) (*storage.ChainHealthStatus, error) {
 	chain := h.store.GetProxyChain(chainID)
 	if chain == nil {
@@ -69,80 +102,82 @@ func (h *HealthCheckService) CheckChain(chainID string) (*storage.ChainHealthSta
 		NodeStatuses: make([]storage.NodeHealthStatus, 0, len(chain.Nodes)),
 	}
 
+	// 验证链路节点
+	if len(chain.Nodes) < 1 {
+		status.Status = "unhealthy"
+		status.NodeStatuses = append(status.NodeStatuses, storage.NodeHealthStatus{
+			Tag:    "chain",
+			Status: "unhealthy",
+			Error:  "链路至少需要1个节点",
+		})
+		h.cacheStatus(chainID, status)
+		return status, nil
+	}
+
+	// 获取所有节点信息（用于 TCP 测试）
 	allNodes := h.store.GetAllNodes()
 	nodeMap := make(map[string]storage.Node)
 	for _, n := range allNodes {
 		nodeMap[n.Tag] = n
 	}
 
-	// 收集链路中的节点
-	var chainNodes []storage.Node
-	for _, nodeTag := range chain.Nodes {
-		node, exists := nodeMap[nodeTag]
-		if !exists {
-			nodeStatus := storage.NodeHealthStatus{
-				Tag:    nodeTag,
-				Status: "unhealthy",
-				Error:  "node not found",
-			}
-			status.NodeStatuses = append(status.NodeStatuses, nodeStatus)
-			status.Status = "unhealthy"
-			h.cacheStatus(chainID, status)
-			return status, nil
-		}
-		chainNodes = append(chainNodes, node)
-	}
-
-	if len(chainNodes) == 0 {
-		status.Status = "unhealthy"
-		h.cacheStatus(chainID, status)
-		return status, nil
-	}
-
-	// 级联测试：按顺序逐个测试节点
-	// 第一个节点：直接 TCP 连接测试
-	// 后续节点：通过前一个节点作为代理进行测试
 	timeout := time.Duration(config.Timeout) * time.Second
-	totalLatency := 0
+	testURL := config.URL
+	if testURL == "" {
+		testURL = getRandomDelayTestURL() // 随机选择测试 URL
+	}
+
+	clashAPIPort := settings.ClashAPIPort
 	unhealthyCount := 0
-	var lastProxyConn net.Conn
+	var totalLatency int
 
-	for i, node := range chainNodes {
-		var nodeStatus storage.NodeHealthStatus
+	for i, nodeTag := range chain.Nodes {
+		isExitNode := (i == len(chain.Nodes)-1)
 
-		if i == 0 {
-			// 第一个节点：直接 TCP 连接
-			nodeStatus = h.testNodeDirect(node, timeout)
+		nodeStatus := storage.NodeHealthStatus{
+			Tag: nodeTag,
+		}
+
+		if isExitNode && clashAPIPort > 0 {
+			// 出口节点：通过 Clash API 测试端到端 HTTP 延迟
+			// 这会测试整个链路：客户端 → 入口 → 中转... → 出口 → 测试URL
+			copyTag := storage.GenerateChainNodeCopyTag(chain.Name, nodeTag)
+			latency, err := h.testViaClashAPI(clashAPIPort, copyTag, testURL, timeout)
+
+			if err != nil {
+				nodeStatus.Status = "unhealthy"
+				nodeStatus.Error = err.Error()
+				unhealthyCount++
+			} else {
+				nodeStatus.Status = "healthy"
+				nodeStatus.Latency = latency
+				totalLatency = latency
+			}
 		} else {
-			// 后续节点：通过前面的代理链路连接
-			// 使用前一个节点建立的连接作为代理
-			nodeStatus = h.testNodeViaChain(chainNodes[:i], node, timeout)
+			// 入口/中转节点：TCP 连接测试
+			// 测试能否连接到节点服务器
+			node, exists := nodeMap[nodeTag]
+			if !exists {
+				nodeStatus.Status = "unhealthy"
+				nodeStatus.Error = "节点不存在"
+				unhealthyCount++
+			} else {
+				tcpResult := h.testNodeTCP(node, timeout)
+				nodeStatus.Status = tcpResult.Status
+				nodeStatus.Latency = tcpResult.Latency
+				nodeStatus.Error = tcpResult.Error
+				if tcpResult.Status != "healthy" {
+					unhealthyCount++
+				}
+			}
 		}
 
 		status.NodeStatuses = append(status.NodeStatuses, nodeStatus)
-
-		if nodeStatus.Status != "healthy" {
-			unhealthyCount++
-			// 如果某个节点不可用，后续节点都无法测试
-			for j := i + 1; j < len(chainNodes); j++ {
-				status.NodeStatuses = append(status.NodeStatuses, storage.NodeHealthStatus{
-					Tag:    chainNodes[j].Tag,
-					Status: "unknown",
-					Error:  "previous node unavailable",
-				})
-			}
-			break
-		}
-		totalLatency += nodeStatus.Latency
 	}
 
-	if lastProxyConn != nil {
-		lastProxyConn.Close()
-	}
-
+	// 设置整体状态
 	status.Latency = totalLatency
 
-	// 确定整体状态
 	if unhealthyCount == 0 {
 		status.Status = "healthy"
 	} else if unhealthyCount < len(chain.Nodes) {
@@ -151,10 +186,8 @@ func (h *HealthCheckService) CheckChain(chainID string) (*storage.ChainHealthSta
 		status.Status = "unhealthy"
 	}
 
-	// 缓存结果
 	h.cacheStatus(chainID, status)
 
-	// 如果不健康且启用告警，发送告警
 	if status.Status == "unhealthy" && config.AlertEnabled && h.alertCallback != nil {
 		h.alertCallback(chainID, fmt.Sprintf("链路 %s 不可用", chain.Name))
 	}
@@ -162,20 +195,193 @@ func (h *HealthCheckService) CheckChain(chainID string) (*storage.ChainHealthSta
 	return status, nil
 }
 
-// cacheStatus 缓存健康状态
-func (h *HealthCheckService) cacheStatus(chainID string, status *storage.ChainHealthStatus) {
-	h.cacheMu.Lock()
-	h.healthCache[chainID] = status
-	h.cacheMu.Unlock()
+// CheckChainSpeed 测试链路下载速度
+// 通过代理下载文件测量带宽
+func (h *HealthCheckService) CheckChainSpeed(chainID string) (*storage.ChainSpeedResult, error) {
+	chain := h.store.GetProxyChain(chainID)
+	if chain == nil {
+		return nil, fmt.Errorf("chain not found: %s", chainID)
+	}
+
+	settings := h.store.GetSettings()
+	mixedPort := settings.MixedPort
+	if mixedPort <= 0 {
+		return nil, fmt.Errorf("代理端口未配置")
+	}
+
+	// 测速配置
+	// 随机选择测速服务
+	speedTestURL := getRandomSpeedTestURL()
+	timeout := 30 * time.Second
+
+	// 创建通过代理的 HTTP 客户端
+	proxyDialer, err := proxy.SOCKS5("tcp", fmt.Sprintf("127.0.0.1:%d", mixedPort), nil, proxy.Direct)
+	if err != nil {
+		return nil, fmt.Errorf("创建代理失败: %w", err)
+	}
+
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return proxyDialer.Dial(network, addr)
+		},
+	}
+
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   timeout,
+	}
+
+	// 开始测速
+	start := time.Now()
+
+	resp, err := client.Get(speedTestURL)
+	if err != nil {
+		return nil, fmt.Errorf("下载失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// 读取数据并计算速度
+	var totalBytes int64
+	buf := make([]byte, 32*1024) // 32KB buffer
+
+	for {
+		n, err := resp.Body.Read(buf)
+		totalBytes += int64(n)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			// 超时或其他错误，使用已下载的数据计算速度
+			break
+		}
+	}
+
+	duration := time.Since(start)
+
+	// 计算速度 (Mbps)
+	speedMbps := float64(totalBytes*8) / duration.Seconds() / 1000000
+
+	result := &storage.ChainSpeedResult{
+		ChainID:    chainID,
+		TestTime:   time.Now(),
+		SpeedMbps:  speedMbps,
+		BytesTotal: totalBytes,
+		Duration:   duration.Milliseconds(),
+	}
+
+	return result, nil
 }
 
-// testNodeDirect 直接测试节点连通性（TCP 连接测试）
-func (h *HealthCheckService) testNodeDirect(node storage.Node, timeout time.Duration) storage.NodeHealthStatus {
+// testViaClashAPI 通过 Clash API 测试代理延迟
+// 这是 v2rayN/Clash 使用的标准测速方式
+func (h *HealthCheckService) testViaClashAPI(port int, proxyName, testURL string, timeout time.Duration) (int, error) {
+	// 构建 Clash API URL
+	// GET /proxies/{name}/delay?url=xxx&timeout=xxx
+	apiURL := fmt.Sprintf("http://127.0.0.1:%d/proxies/%s/delay", port, url.PathEscape(proxyName))
+
+	params := url.Values{}
+	params.Set("url", testURL)
+	params.Set("timeout", fmt.Sprintf("%d", int(timeout.Milliseconds())))
+
+	fullURL := apiURL + "?" + params.Encode()
+
+	client := &http.Client{
+		Timeout: timeout + 2*time.Second, // 额外留 2 秒给 API 响应
+	}
+
+	resp, err := client.Get(fullURL)
+	if err != nil {
+		return 0, fmt.Errorf("Clash API 请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, fmt.Errorf("读取响应失败: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		// 尝试解析错误消息
+		var errResp ClashDelayResponse
+		if json.Unmarshal(body, &errResp) == nil && errResp.Message != "" {
+			return 0, fmt.Errorf("测试失败: %s", errResp.Message)
+		}
+		return 0, fmt.Errorf("测试失败: HTTP %d", resp.StatusCode)
+	}
+
+	var result ClashDelayResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return 0, fmt.Errorf("解析响应失败: %w", err)
+	}
+
+	if result.Delay <= 0 {
+		return 0, fmt.Errorf("测试超时或失败")
+	}
+
+	return result.Delay, nil
+}
+
+// checkChainSimple 简单测试（当 Clash API 不可用时）
+// 只测试各节点的 TCP 连通性
+func (h *HealthCheckService) checkChainSimple(chain *storage.ProxyChain, config *storage.ChainHealthConfig, status *storage.ChainHealthStatus) (*storage.ChainHealthStatus, error) {
+	allNodes := h.store.GetAllNodes()
+	nodeMap := make(map[string]storage.Node)
+	for _, n := range allNodes {
+		nodeMap[n.Tag] = n
+	}
+
+	timeout := time.Duration(config.Timeout) * time.Second
+	unhealthyCount := 0
+
+	for _, nodeTag := range chain.Nodes {
+		node, exists := nodeMap[nodeTag]
+		if !exists {
+			status.NodeStatuses = append(status.NodeStatuses, storage.NodeHealthStatus{
+				Tag:    nodeTag,
+				Status: "unhealthy",
+				Error:  "节点不存在",
+			})
+			unhealthyCount++
+			continue
+		}
+
+		// 简单的 TCP 连接测试
+		nodeStatus := h.testNodeTCP(node, timeout)
+		status.NodeStatuses = append(status.NodeStatuses, nodeStatus)
+
+		if nodeStatus.Status != "healthy" {
+			unhealthyCount++
+		}
+	}
+
+	if unhealthyCount == 0 {
+		status.Status = "healthy"
+	} else if unhealthyCount < len(chain.Nodes) {
+		status.Status = "degraded"
+	} else {
+		status.Status = "unhealthy"
+	}
+
+	// 简单测试无法获取端到端延迟
+	status.Latency = 0
+
+	h.cacheStatus(chain.ID, status)
+
+	if status.Status == "unhealthy" && config.AlertEnabled && h.alertCallback != nil {
+		h.alertCallback(chain.ID, fmt.Sprintf("链路 %s 不可用（简单测试）", chain.Name))
+	}
+
+	return status, nil
+}
+
+// testNodeTCP 简单的 TCP 连接测试
+func (h *HealthCheckService) testNodeTCP(node storage.Node, timeout time.Duration) storage.NodeHealthStatus {
 	start := time.Now()
 
 	address := fmt.Sprintf("%s:%d", node.Server, node.ServerPort)
-	conn, err := net.DialTimeout("tcp", address, timeout)
 
+	// 尝试建立 TCP 连接
+	conn, err := net.DialTimeout("tcp", address, timeout)
 	latency := int(time.Since(start).Milliseconds())
 
 	if err != nil {
@@ -195,268 +401,11 @@ func (h *HealthCheckService) testNodeDirect(node storage.Node, timeout time.Dura
 	}
 }
 
-// testNodeViaChain 通过代理链路测试节点
-// proxyChain: 前置代理节点列表
-// targetNode: 要测试的目标节点
-func (h *HealthCheckService) testNodeViaChain(proxyChain []storage.Node, targetNode storage.Node, timeout time.Duration) storage.NodeHealthStatus {
-	start := time.Now()
-
-	// 连接到第一个代理节点
-	firstNode := proxyChain[0]
-	firstAddr := fmt.Sprintf("%s:%d", firstNode.Server, firstNode.ServerPort)
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	dialer := &net.Dialer{}
-	conn, err := dialer.DialContext(ctx, "tcp", firstAddr)
-	if err != nil {
-		return storage.NodeHealthStatus{
-			Tag:     targetNode.Tag,
-			Status:  "unhealthy",
-			Latency: int(time.Since(start).Milliseconds()),
-			Error:   fmt.Sprintf("connect to first proxy failed: %s", err.Error()),
-		}
-	}
-	defer conn.Close()
-
-	// 通过代理链路逐级连接
-	currentConn := conn
-	for i := 0; i < len(proxyChain); i++ {
-		var nextAddr string
-		if i < len(proxyChain)-1 {
-			// 连接到下一个代理节点
-			nextNode := proxyChain[i+1]
-			nextAddr = fmt.Sprintf("%s:%d", nextNode.Server, nextNode.ServerPort)
-		} else {
-			// 最后一个代理，连接到目标节点
-			nextAddr = fmt.Sprintf("%s:%d", targetNode.Server, targetNode.ServerPort)
-		}
-
-		// 根据节点类型执行代理握手
-		node := proxyChain[i]
-		err = h.proxyHandshake(currentConn, node, nextAddr, timeout)
-		if err != nil {
-			return storage.NodeHealthStatus{
-				Tag:     targetNode.Tag,
-				Status:  "unhealthy",
-				Latency: int(time.Since(start).Milliseconds()),
-				Error:   fmt.Sprintf("proxy handshake failed at %s: %s", node.Tag, err.Error()),
-			}
-		}
-	}
-
-	latency := int(time.Since(start).Milliseconds())
-
-	return storage.NodeHealthStatus{
-		Tag:     targetNode.Tag,
-		Status:  "healthy",
-		Latency: latency,
-	}
-}
-
-// proxyHandshake 执行代理握手
-func (h *HealthCheckService) proxyHandshake(conn net.Conn, node storage.Node, targetAddr string, timeout time.Duration) error {
-	conn.SetDeadline(time.Now().Add(timeout))
-
-	switch node.Type {
-	case "shadowsocks":
-		// Shadowsocks 不需要握手，直接可以发送数据
-		// 但我们需要验证连接是否有效，发送一个简单的连接请求
-		return h.shadowsocksConnect(conn, node, targetAddr)
-	case "trojan":
-		return h.trojanConnect(conn, node, targetAddr)
-	case "vmess", "vless":
-		// VMess/VLESS 协议较复杂，这里简化为验证 TLS 握手（如果启用）
-		return h.vmessConnect(conn, node, targetAddr)
-	case "hysteria2", "tuic":
-		// QUIC 协议，需要特殊处理
-		// 这里简化为 TCP 连接测试
-		return nil
-	case "socks", "socks5":
-		return h.socks5Connect(conn, targetAddr)
-	case "http":
-		return h.httpProxyConnect(conn, node, targetAddr)
-	default:
-		// 未知协议，假设可以直接使用
-		return nil
-	}
-}
-
-// socks5Connect SOCKS5 代理连接
-func (h *HealthCheckService) socks5Connect(conn net.Conn, targetAddr string) error {
-	host, portStr, err := net.SplitHostPort(targetAddr)
-	if err != nil {
-		return err
-	}
-	port, err := net.LookupPort("tcp", portStr)
-	if err != nil {
-		return err
-	}
-
-	// SOCKS5 握手
-	// 1. 发送认证方法
-	_, err = conn.Write([]byte{0x05, 0x01, 0x00}) // SOCKS5, 1 method, no auth
-	if err != nil {
-		return err
-	}
-
-	// 2. 读取服务器响应
-	buf := make([]byte, 2)
-	_, err = io.ReadFull(conn, buf)
-	if err != nil {
-		return err
-	}
-	if buf[0] != 0x05 || buf[1] != 0x00 {
-		return fmt.Errorf("SOCKS5 auth failed")
-	}
-
-	// 3. 发送连接请求
-	req := []byte{0x05, 0x01, 0x00, 0x03} // SOCKS5, CONNECT, RSV, DOMAIN
-	req = append(req, byte(len(host)))
-	req = append(req, []byte(host)...)
-	portBytes := make([]byte, 2)
-	binary.BigEndian.PutUint16(portBytes, uint16(port))
-	req = append(req, portBytes...)
-
-	_, err = conn.Write(req)
-	if err != nil {
-		return err
-	}
-
-	// 4. 读取连接响应
-	resp := make([]byte, 10)
-	_, err = io.ReadFull(conn, resp[:4])
-	if err != nil {
-		return err
-	}
-	if resp[1] != 0x00 {
-		return fmt.Errorf("SOCKS5 connect failed: %d", resp[1])
-	}
-
-	// 跳过地址部分
-	switch resp[3] {
-	case 0x01: // IPv4
-		_, err = io.ReadFull(conn, resp[4:10])
-	case 0x03: // Domain
-		_, err = io.ReadFull(conn, resp[4:5])
-		if err == nil {
-			domainLen := int(resp[4])
-			_, err = io.ReadFull(conn, make([]byte, domainLen+2))
-		}
-	case 0x04: // IPv6
-		_, err = io.ReadFull(conn, make([]byte, 18))
-	}
-
-	return err
-}
-
-// httpProxyConnect HTTP 代理连接
-func (h *HealthCheckService) httpProxyConnect(conn net.Conn, node storage.Node, targetAddr string) error {
-	req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n", targetAddr, targetAddr)
-
-	// 添加认证（如果有）
-	if username, ok := node.Extra["username"].(string); ok && username != "" {
-		password, _ := node.Extra["password"].(string)
-		auth := fmt.Sprintf("%s:%s", username, password)
-		// Base64 编码
-		encoded := base64Encode([]byte(auth))
-		req += fmt.Sprintf("Proxy-Authorization: Basic %s\r\n", encoded)
-	}
-	req += "\r\n"
-
-	_, err := conn.Write([]byte(req))
-	if err != nil {
-		return err
-	}
-
-	// 读取响应
-	reader := bufio.NewReader(conn)
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		return err
-	}
-
-	// 检查 HTTP 状态码
-	if len(line) < 12 || line[9:12] != "200" {
-		return fmt.Errorf("HTTP CONNECT failed: %s", line)
-	}
-
-	// 读取剩余的响应头
-	for {
-		line, err = reader.ReadString('\n')
-		if err != nil {
-			return err
-		}
-		if line == "\r\n" {
-			break
-		}
-	}
-
-	return nil
-}
-
-// shadowsocksConnect Shadowsocks 连接测试
-// Shadowsocks 是加密协议，无法直接验证连接
-// 这里只验证 TCP 连接是否建立
-func (h *HealthCheckService) shadowsocksConnect(conn net.Conn, node storage.Node, targetAddr string) error {
-	// Shadowsocks 协议需要加密，这里简化处理
-	// 实际上我们已经连接到 SS 服务器，认为连接成功
-	return nil
-}
-
-// trojanConnect Trojan 连接测试
-func (h *HealthCheckService) trojanConnect(conn net.Conn, node storage.Node, targetAddr string) error {
-	// Trojan 通常需要 TLS
-	tlsConn := tls.Client(conn, &tls.Config{
-		InsecureSkipVerify: true, // 测试用，跳过证书验证
-	})
-	err := tlsConn.Handshake()
-	if err != nil {
-		return fmt.Errorf("TLS handshake failed: %s", err.Error())
-	}
-	// TLS 握手成功即认为节点可用
-	return nil
-}
-
-// vmessConnect VMess/VLESS 连接测试
-func (h *HealthCheckService) vmessConnect(conn net.Conn, node storage.Node, targetAddr string) error {
-	// 检查是否需要 TLS
-	if tls_, ok := node.Extra["tls"].(map[string]interface{}); ok {
-		if enabled, ok := tls_["enabled"].(bool); ok && enabled {
-			tlsConn := tls.Client(conn, &tls.Config{
-				InsecureSkipVerify: true,
-			})
-			err := tlsConn.Handshake()
-			if err != nil {
-				return fmt.Errorf("TLS handshake failed: %s", err.Error())
-			}
-		}
-	}
-	// VMess/VLESS 协议复杂，这里简化为 TLS 握手或 TCP 连接成功
-	return nil
-}
-
-// base64Encode 简单的 Base64 编码
-func base64Encode(data []byte) string {
-	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-	var result []byte
-
-	for i := 0; i < len(data); i += 3 {
-		var n uint32
-		remaining := len(data) - i
-		if remaining >= 3 {
-			n = uint32(data[i])<<16 | uint32(data[i+1])<<8 | uint32(data[i+2])
-			result = append(result, alphabet[n>>18&0x3F], alphabet[n>>12&0x3F], alphabet[n>>6&0x3F], alphabet[n&0x3F])
-		} else if remaining == 2 {
-			n = uint32(data[i])<<16 | uint32(data[i+1])<<8
-			result = append(result, alphabet[n>>18&0x3F], alphabet[n>>12&0x3F], alphabet[n>>6&0x3F], '=')
-		} else {
-			n = uint32(data[i]) << 16
-			result = append(result, alphabet[n>>18&0x3F], alphabet[n>>12&0x3F], '=', '=')
-		}
-	}
-	return string(result)
+// cacheStatus 缓存健康状态
+func (h *HealthCheckService) cacheStatus(chainID string, status *storage.ChainHealthStatus) {
+	h.cacheMu.Lock()
+	h.healthCache[chainID] = status
+	h.cacheMu.Unlock()
 }
 
 // Start 启动定时健康检测
@@ -552,6 +501,3 @@ func (h *HealthCheckService) IsRunning() bool {
 	defer h.mu.Unlock()
 	return h.running
 }
-
-// Unused imports placeholder to avoid compile error
-var _ = http.StatusOK

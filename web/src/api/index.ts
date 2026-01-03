@@ -132,6 +132,10 @@ export const nodeApi = {
   getCountries: () => api.get('/nodes/countries'),
   getByCountry: (code: string) => api.get(`/nodes/country/${code}`),
   parse: (url: string) => api.post('/nodes/parse', { url }),
+  // 获取所有节点的延迟（从 Clash API 缓存）
+  getDelays: () => api.get('/nodes/delays'),
+  // 测试单个节点的延迟
+  testDelay: (tag: string) => api.post(`/nodes/${encodeURIComponent(tag)}/delay`),
 };
 
 // 手动节点 API
@@ -160,6 +164,8 @@ export const proxyChainApi = {
   getAllHealth: () => api.get('/proxy-chains/health'),
   getHealth: (id: string) => api.get(`/proxy-chains/${id}/health`),
   checkHealth: (id: string) => api.post(`/proxy-chains/${id}/health/check`),
+  // 速度测试
+  checkSpeed: (id: string) => api.post(`/proxy-chains/${id}/speed`),
 };
 
 // 内核管理 API

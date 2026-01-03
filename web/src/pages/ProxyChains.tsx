@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Card, CardBody, CardHeader, Button, Chip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Input, Textarea, useDisclosure, Switch, Select, SelectItem, Accordion, AccordionItem } from '@nextui-org/react';
-import { Plus, Link2, Trash2, Pencil, ArrowRight, ChevronUp, ChevronDown, Activity, RefreshCw } from 'lucide-react';
+import { Plus, Link2, Trash2, Pencil, ArrowRight, ChevronUp, ChevronDown, Activity, RefreshCw, Download } from 'lucide-react';
 import { proxyChainApi, nodeApi } from '../api';
 import { toast } from '../components/Toast';
 
@@ -72,13 +72,24 @@ interface ChainHealthStatus {
   }[];
 }
 
+// ChainSpeedResult 类型
+interface ChainSpeedResult {
+  chain_id: string;
+  test_time: string;
+  speed_mbps: number;
+  bytes_total: number;
+  duration: number;
+}
+
 export default function ProxyChains() {
   const [chains, setChains] = useState<ProxyChain[]>([]);
   const [nodes, setNodes] = useState<Node[]>([]);
   const [nodeGroups, setNodeGroups] = useState<NodeGroup[]>([]);
   const [healthStatuses, setHealthStatuses] = useState<Record<string, ChainHealthStatus>>({});
+  const [speedResults, setSpeedResults] = useState<Record<string, ChainSpeedResult>>({});
   const [loading, setLoading] = useState(true);
   const [testingChain, setTestingChain] = useState<string | null>(null);
+  const [speedTestingChain, setSpeedTestingChain] = useState<string | null>(null);
 
   // 创建/编辑 Modal
   const { isOpen, onOpen, onClose } = useDisclosure();
@@ -149,11 +160,27 @@ export default function ProxyChains() {
         ...prev,
         [chainId]: res.data.data
       }));
-      toast.success('健康检测完成');
+      toast.success('延迟检测完成');
     } catch (error: any) {
-      toast.error('健康检测失败');
+      toast.error('延迟检测失败');
     } finally {
       setTestingChain(null);
+    }
+  };
+
+  const checkChainSpeed = async (chainId: string) => {
+    setSpeedTestingChain(chainId);
+    try {
+      const res = await proxyChainApi.checkSpeed(chainId);
+      setSpeedResults(prev => ({
+        ...prev,
+        [chainId]: res.data.data
+      }));
+      toast.success(`测速完成: ${res.data.data.speed_mbps.toFixed(2)} Mbps`);
+    } catch (error: any) {
+      toast.error('测速失败: ' + (error.response?.data?.error || error.message));
+    } finally {
+      setSpeedTestingChain(null);
     }
   };
 
@@ -356,6 +383,7 @@ export default function ProxyChains() {
         <div className="space-y-4">
           {chains.map((chain) => {
             const health = healthStatuses[chain.id];
+            const speed = speedResults[chain.id];
             return (
               <Card key={chain.id}>
                 <CardBody className="p-4">
@@ -372,6 +400,12 @@ export default function ProxyChains() {
                           <Chip size="sm" color={getHealthColor(health.status)} variant="flat">
                             {getHealthText(health.status)}
                             {health.latency > 0 && ` ${health.latency}ms`}
+                          </Chip>
+                        )}
+                        {/* 速度测试结果 */}
+                        {speed && (
+                          <Chip size="sm" color="secondary" variant="flat">
+                            {speed.speed_mbps.toFixed(2)} Mbps
                           </Chip>
                         )}
                       </div>
@@ -392,7 +426,8 @@ export default function ProxyChains() {
                                 color={nodeHealth ? getHealthColor(nodeHealth.status) : 'default'}
                               >
                                 {nodeTag}
-                                {nodeHealth && nodeHealth.latency && nodeHealth.latency > 0 && (
+                                {/* 显示每个节点的延迟 */}
+                                {nodeHealth && nodeHealth.latency > 0 && (
                                   <span className="text-xs ml-1 opacity-70">{nodeHealth.latency}ms</span>
                                 )}
                               </Chip>
@@ -412,9 +447,19 @@ export default function ProxyChains() {
                         variant="light"
                         onPress={() => checkChainHealth(chain.id)}
                         isLoading={testingChain === chain.id}
-                        title="测速"
+                        title="延迟测试"
                       >
                         <Activity className="w-4 h-4" />
+                      </Button>
+                      <Button
+                        isIconOnly
+                        size="sm"
+                        variant="light"
+                        onPress={() => checkChainSpeed(chain.id)}
+                        isLoading={speedTestingChain === chain.id}
+                        title="速度测试"
+                      >
+                        <Download className="w-4 h-4" />
                       </Button>
                       <Button isIconOnly size="sm" variant="light" onPress={() => handleEdit(chain)}>
                         <Pencil className="w-4 h-4" />
