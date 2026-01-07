@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -223,6 +222,9 @@ func (e *Executor) executeTask(task *models.SpeedTestTask, profile *models.Speed
 	} else {
 		latencyConcurrency = 50 // 默认延迟并发
 	}
+	if latencyConcurrency < 1 {
+		latencyConcurrency = 1
+	}
 	if latencyConcurrency > 200 {
 		latencyConcurrency = 200
 	}
@@ -232,13 +234,16 @@ func (e *Executor) executeTask(task *models.SpeedTestTask, profile *models.Speed
 	} else {
 		speedConcurrency = 5 // 默认速度并发
 	}
+	if speedConcurrency < 1 {
+		speedConcurrency = 1
+	}
 	if speedConcurrency > 32 {
 		speedConcurrency = 32
 	}
 
-	// 统计
-	var successCount, failCount int32
-	var completedCount int32
+	// 统计 (使用 mutex 保护，不需要 atomic)
+	var successCount, failCount int
+	var completedCount int
 	var cancelled bool
 	var mu sync.Mutex
 
@@ -283,18 +288,18 @@ func (e *Executor) executeTask(task *models.SpeedTestTask, profile *models.Speed
 			results[idx] = result
 
 			mu.Lock()
-			atomic.AddInt32(&completedCount, 1)
+			completedCount++
 
 			if result.Status == "success" {
-				atomic.AddInt32(&successCount, 1)
+				successCount++
 			} else {
-				atomic.AddInt32(&failCount, 1)
+				failCount++
 			}
 
 			// 更新任务进度
-			task.Completed = int(completedCount)
-			task.Success = int(successCount)
-			task.Failed = int(failCount)
+			task.Completed = completedCount
+			task.Success = successCount
+			task.Failed = failCount
 			task.CurrentNode = n.Tag
 			mu.Unlock()
 
@@ -319,8 +324,8 @@ func (e *Executor) executeTask(task *models.SpeedTestTask, profile *models.Speed
 	if profile.Mode == TestModeSpeed {
 		logger.Info("阶段二: 开始速度测试, 并发数: %d", speedConcurrency)
 
-		// 重置计数
-		completedCount = 0
+		// 重置阶段二计数（用于进度展示，保留阶段一统计）
+		speedCompletedCount := 0
 		speedSem := make(chan struct{}, speedConcurrency)
 		var speedWg sync.WaitGroup
 
@@ -340,7 +345,9 @@ func (e *Executor) executeTask(task *models.SpeedTestTask, profile *models.Speed
 
 			// 跳过延迟测试失败的节点
 			if results[i].Status != "success" {
-				atomic.AddInt32(&completedCount, 1)
+				mu.Lock()
+				speedCompletedCount++
+				mu.Unlock()
 				continue
 			}
 
@@ -362,15 +369,10 @@ func (e *Executor) executeTask(task *models.SpeedTestTask, profile *models.Speed
 
 				mu.Lock()
 				results[idx] = result
-				atomic.AddInt32(&completedCount, 1)
+				speedCompletedCount++
 
-				if result.Status == "success" {
-					// 速度测试成功计入成功数
-				} else {
-					// 速度测试失败但延迟成功的情况
-				}
-
-				task.Completed = len(nodes) + int(completedCount)
+				// 阶段二进度：显示为 len(nodes) + speedCompletedCount，但不超过 2*len(nodes)
+				task.Completed = len(nodes) + speedCompletedCount
 				task.CurrentNode = node.Tag
 				mu.Unlock()
 

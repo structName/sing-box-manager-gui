@@ -5,11 +5,13 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/metacubex/mihomo/adapter"
@@ -18,6 +20,16 @@ import (
 	"github.com/xiaobei/singbox-manager/internal/logger"
 	"gopkg.in/yaml.v3"
 )
+
+// float64ToBits 将 float64 转换为 uint64 位模式
+func float64ToBits(f float64) uint64 {
+	return math.Float64bits(f)
+}
+
+// float64FromBits 将 uint64 位模式转换为 float64
+func float64FromBits(bits uint64) float64 {
+	return math.Float64frombits(bits)
+}
 
 // TestResult 测速结果
 type TestResult struct {
@@ -31,14 +43,59 @@ type TestResult struct {
 
 // Tester 测速器
 type Tester struct {
-	LatencyURL       string
-	SpeedURL         string
-	Timeout          time.Duration
-	IncludeHandshake bool
-	DetectCountry    bool
-	LandingIPURL     string
-	SpeedRecordMode  string // average/peak
-	PeakSampleInterval int  // 峰值采样间隔 (ms)
+	LatencyURL         string
+	SpeedURL           string
+	Timeout            time.Duration
+	IncludeHandshake   bool
+	DetectCountry      bool
+	LandingIPURL       string
+	SpeedRecordMode    string // average/peak
+	PeakSampleInterval int    // 峰值采样间隔 (ms)
+}
+
+// validateTestURL 验证测速 URL 安全性（防止 SSRF）
+func validateTestURL(rawURL string) (string, error) {
+	if rawURL == "" {
+		return "", fmt.Errorf("URL 不能为空")
+	}
+
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("无效的 URL: %w", err)
+	}
+
+	// 只允许 http/https 协议
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", fmt.Errorf("不支持的协议: %s，仅支持 http/https", scheme)
+	}
+
+	// 检查是否为内网地址
+	host := parsed.Hostname()
+	if isPrivateAddress(host) {
+		return "", fmt.Errorf("不允许访问内网地址: %s", host)
+	}
+
+	return rawURL, nil
+}
+
+// isPrivateAddress 检查是否为内网地址
+func isPrivateAddress(host string) bool {
+	// 常见的内网域名
+	lowerHost := strings.ToLower(host)
+	if lowerHost == "localhost" || strings.HasSuffix(lowerHost, ".local") {
+		return true
+	}
+
+	// 解析 IP 地址
+	ip := net.ParseIP(host)
+	if ip == nil {
+		// 不是 IP，可能是域名，允许通过
+		return false
+	}
+
+	// 检查是否为私有 IP
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
 }
 
 // NewTester 创建测速器
@@ -48,19 +105,34 @@ func NewTester(profile *models.SpeedTestProfile) *Tester {
 		timeout = 7 * time.Second
 	}
 
-	latencyURL := profile.LatencyURL
-	if latencyURL == "" {
-		latencyURL = "https://cp.cloudflare.com/generate_204"
+	// 默认 URL
+	latencyURL := "https://cp.cloudflare.com/generate_204"
+	speedURL := "https://speed.cloudflare.com/__down?bytes=5000000"
+	landingIPURL := "https://api.ipify.org"
+
+	// 验证自定义 URL
+	if profile.LatencyURL != "" {
+		if validated, err := validateTestURL(profile.LatencyURL); err != nil {
+			logger.Warn("延迟测试 URL 无效: %v, 使用默认值", err)
+		} else {
+			latencyURL = validated
+		}
 	}
 
-	speedURL := profile.SpeedURL
-	if speedURL == "" {
-		speedURL = "https://speed.cloudflare.com/__down?bytes=5000000"
+	if profile.SpeedURL != "" {
+		if validated, err := validateTestURL(profile.SpeedURL); err != nil {
+			logger.Warn("速度测试 URL 无效: %v, 使用默认值", err)
+		} else {
+			speedURL = validated
+		}
 	}
 
-	landingIPURL := profile.LandingIPURL
-	if landingIPURL == "" {
-		landingIPURL = "https://api.ipify.org"
+	if profile.LandingIPURL != "" {
+		if validated, err := validateTestURL(profile.LandingIPURL); err != nil {
+			logger.Warn("落地 IP URL 无效: %v, 使用默认值", err)
+		} else {
+			landingIPURL = validated
+		}
 	}
 
 	speedRecordMode := profile.SpeedRecordMode
@@ -479,20 +551,19 @@ func (t *Tester) TestSpeed(node *models.Node) TestResult {
 
 	// 读取数据测速
 	buf := make([]byte, 32*1024)
-	var totalRead int64
+	var totalRead int64 // 使用 atomic 操作
 	readStart := time.Now()
 
-	// 峰值速度采样
-	var peakSpeed float64
+	// 峰值速度采样 (使用 atomic 避免数据竞争)
+	var peakSpeedBits uint64 // 存储 float64 的位模式
 	var lastSampleBytes int64
-	var lastSampleTime time.Time
 	var sampleTicker *time.Ticker
 	var sampleDone chan struct{}
 
 	if t.SpeedRecordMode == "peak" {
-		lastSampleTime = readStart
 		sampleTicker = time.NewTicker(time.Duration(t.PeakSampleInterval) * time.Millisecond)
 		sampleDone = make(chan struct{})
+		lastSampleTime := readStart
 
 		go func() {
 			defer sampleTicker.Stop()
@@ -500,12 +571,21 @@ func (t *Tester) TestSpeed(node *models.Node) TestResult {
 				select {
 				case <-sampleTicker.C:
 					now := time.Now()
-					currentBytes := totalRead
+					currentBytes := atomic.LoadInt64(&totalRead)
 					elapsed := now.Sub(lastSampleTime).Seconds()
 					if elapsed > 0 {
 						instantSpeed := float64(currentBytes-lastSampleBytes) / 1024 / 1024 / elapsed
-						if instantSpeed > peakSpeed {
-							peakSpeed = instantSpeed
+						// 原子更新峰值速度
+						for {
+							oldBits := atomic.LoadUint64(&peakSpeedBits)
+							oldSpeed := float64FromBits(oldBits)
+							if instantSpeed <= oldSpeed {
+								break
+							}
+							newBits := float64ToBits(instantSpeed)
+							if atomic.CompareAndSwapUint64(&peakSpeedBits, oldBits, newBits) {
+								break
+							}
 						}
 					}
 					lastSampleBytes = currentBytes
@@ -521,7 +601,7 @@ func (t *Tester) TestSpeed(node *models.Node) TestResult {
 
 	for {
 		n, readErr := resp.Body.Read(buf)
-		totalRead += int64(n)
+		atomic.AddInt64(&totalRead, int64(n))
 		if readErr != nil {
 			if readErr == io.EOF {
 				break
@@ -550,6 +630,7 @@ CalculateSpeed:
 		close(sampleDone)
 	}
 
+	finalTotalRead := atomic.LoadInt64(&totalRead)
 	duration := time.Since(readStart)
 	if duration.Seconds() == 0 {
 		result.Status = "success"
@@ -558,16 +639,17 @@ CalculateSpeed:
 
 	// 最小有效下载量校验 (10KB)
 	const minValidBytes int64 = 10 * 1024
-	if totalRead < minValidBytes {
+	if finalTotalRead < minValidBytes {
 		result.Status = "error"
-		result.Error = fmt.Sprintf("下载量过小 (%d 字节 < %d 字节)", totalRead, minValidBytes)
+		result.Error = fmt.Sprintf("下载量过小 (%d 字节 < %d 字节)", finalTotalRead, minValidBytes)
 		return result
 	}
 
+	peakSpeed := float64FromBits(atomic.LoadUint64(&peakSpeedBits))
 	if t.SpeedRecordMode == "peak" && peakSpeed > 0 {
 		result.Speed = peakSpeed
 	} else {
-		result.Speed = float64(totalRead) / 1024 / 1024 / duration.Seconds()
+		result.Speed = float64(finalTotalRead) / 1024 / 1024 / duration.Seconds()
 	}
 
 	result.Status = "success"

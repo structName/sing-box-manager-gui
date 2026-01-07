@@ -1,7 +1,9 @@
 package service
 
 import (
+	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/xiaobei/singbox-manager/internal/database"
@@ -260,18 +262,19 @@ func (e *TagEngine) toString(v interface{}) string {
 	case string:
 		return val
 	case int:
-		return string(rune(val))
+		return strconv.Itoa(val)
 	case int64:
-		return string(rune(val))
+		return strconv.FormatInt(val, 10)
 	case float64:
-		return string(rune(int(val)))
+		return strconv.FormatFloat(val, 'f', -1, 64)
+	case float32:
+		return strconv.FormatFloat(float64(val), 'f', -1, 32)
 	case bool:
-		if val {
-			return "true"
-		}
-		return "false"
-	default:
+		return strconv.FormatBool(val)
+	case nil:
 		return ""
+	default:
+		return fmt.Sprintf("%v", val)
 	}
 }
 
@@ -287,8 +290,11 @@ func (e *TagEngine) toFloat64(v interface{}) float64 {
 	case float32:
 		return float64(val)
 	case string:
-		// 尝试解析
-		return 0
+		f, err := strconv.ParseFloat(val, 64)
+		if err != nil {
+			return 0
+		}
+		return f
 	default:
 		return 0
 	}
