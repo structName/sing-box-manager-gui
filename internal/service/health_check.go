@@ -26,9 +26,8 @@ var delayTestURLs = []string{
 
 // 速度测试 URL 列表
 var speedTestURLs = []string{
-	"https://speed.cloudflare.com/__down?bytes=10000000",  // 10MB
-	"https://speed.cloudflare.com/__down?bytes=50000000",  // 50MB
-	"https://cachefly.cachefly.net/10mb.test",             // 10MB
+	"https://speed.cloudflare.com/__down?bytes=10000000", // 10MB
+	"https://speed.cloudflare.com/__down?bytes=50000000", // 50MB
 }
 
 // getRandomDelayTestURL 随机获取延迟测试 URL

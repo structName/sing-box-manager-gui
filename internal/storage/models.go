@@ -91,15 +91,17 @@ func GenerateChainNodeCopyTag(chainName, originalTag string) string {
 
 // Subscription 订阅
 type Subscription struct {
-	ID        string     `json:"id"`
-	Name      string     `json:"name"`
-	URL       string     `json:"url"`
-	NodeCount int        `json:"node_count"`
-	UpdatedAt time.Time  `json:"updated_at"`
-	ExpireAt  *time.Time `json:"expire_at,omitempty"`
-	Traffic   *Traffic   `json:"traffic,omitempty"`
-	Nodes     []Node     `json:"nodes"`
-	Enabled   bool       `json:"enabled"`
+	ID             string     `json:"id"`
+	Name           string     `json:"name"`
+	URL            string     `json:"url"`
+	NodeCount      int        `json:"node_count"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	ExpireAt       *time.Time `json:"expire_at,omitempty"`
+	Traffic        *Traffic   `json:"traffic,omitempty"`
+	Nodes          []Node     `json:"nodes"`
+	Enabled        bool       `json:"enabled"`
+	AutoUpdate     *bool      `json:"auto_update,omitempty"`     // 是否自动更新
+	UpdateInterval int        `json:"update_interval,omitempty"` // 更新间隔（分钟）
 }
 
 // Traffic 流量信息

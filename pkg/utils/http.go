@@ -20,8 +20,13 @@ type SubscriptionInfo struct {
 
 // FetchSubscription 拉取订阅内容
 func FetchSubscription(url string) (string, *SubscriptionInfo, error) {
+	// 绕过系统代理，直接连接（避免被 sing-box 代理导致 FakeIP 问题）
+	transport := &http.Transport{
+		Proxy: nil, // 不使用代理
+	}
 	client := &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout:   30 * time.Second,
+		Transport: transport,
 	}
 
 	req, err := http.NewRequest("GET", url, nil)

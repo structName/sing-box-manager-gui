@@ -24,6 +24,7 @@ import (
 	"github.com/xiaobei/singbox-manager/internal/kernel"
 	"github.com/xiaobei/singbox-manager/internal/logger"
 	"github.com/xiaobei/singbox-manager/internal/parser"
+	"github.com/xiaobei/singbox-manager/internal/profile"
 	"github.com/xiaobei/singbox-manager/internal/service"
 	"github.com/xiaobei/singbox-manager/internal/speedtest"
 	"github.com/xiaobei/singbox-manager/internal/storage"
@@ -32,6 +33,7 @@ import (
 
 // Server API 服务器
 type Server struct {
+	profileMgr     *profile.Manager
 	store          *storage.JSONStore
 	subService     *service.SubscriptionService
 	processManager *daemon.ProcessManager
@@ -46,6 +48,7 @@ type Server struct {
 	port           int    // Web 服务端口
 	version        string // sbm 版本号
 	swaggerEnabled bool   // 是否启用 Swagger
+	baseDir        string // 基础数据目录
 	// SQLite 存储和测速模块
 	dbStore            *database.Store
 	speedTestExecutor  *speedtest.Executor
@@ -57,8 +60,15 @@ type Server struct {
 }
 
 // NewServer 创建 API 服务器
-func NewServer(store *storage.JSONStore, processManager *daemon.ProcessManager, launchdManager *daemon.LaunchdManager, systemdManager *daemon.SystemdManager, sbmPath string, port int, version string, swaggerEnabled bool) *Server {
+func NewServer(profileMgr *profile.Manager, processManager *daemon.ProcessManager, launchdManager *daemon.LaunchdManager, systemdManager *daemon.SystemdManager, sbmPath string, port int, version string, swaggerEnabled bool) *Server {
 	gin.SetMode(gin.ReleaseMode)
+
+	// 获取当前 Profile 目录，创建 JSONStore（用于兼容旧代码）
+	profileDir := profileMgr.GetProfileDir()
+	store, err := storage.NewJSONStore(profileDir)
+	if err != nil {
+		logger.Error("初始化 JSONStore 失败: %v", err)
+	}
 
 	// 创建链路同步服务
 	chainSyncSvc := service.NewChainSyncService(store)
@@ -66,25 +76,25 @@ func NewServer(store *storage.JSONStore, processManager *daemon.ProcessManager, 
 	// 创建订阅服务，并注入链路同步服务
 	subService := service.NewSubscriptionService(store, chainSyncSvc)
 
-	// 创建内核管理器
-	kernelManager := kernel.NewManager(store.GetDataDir(), store.GetSettings)
+	// 创建内核管理器（内核放在 baseDir，所有 Profile 共享）
+	baseDir := filepath.Dir(profileDir)
+	if filepath.Base(baseDir) == "profiles" {
+		baseDir = filepath.Dir(baseDir)
+	}
+	kernelManager := kernel.NewManager(baseDir, store.GetSettings)
 
 	// 创建健康检测服务
 	healthCheckSvc := service.NewHealthCheckService(store)
 
-	// 初始化 SQLite 数据库和测速模块
-	var dbStore *database.Store
+	// 从 Profile 管理器获取数据库连接
+	dbStore := profileMgr.GetStore()
 	var speedTestExecutor *speedtest.Executor
 	var speedTestScheduler *speedtest.Scheduler
 	var speedTestHandler *SpeedTestHandler
 	var tagEngine *service.TagEngine
 	var tagHandler *TagHandler
 
-	db, err := database.InitDB(store.GetDataDir())
-	if err != nil {
-		logger.Error("初始化 SQLite 数据库失败: %v", err)
-	} else {
-		dbStore = database.NewStore(db)
+	if dbStore != nil {
 		speedTestExecutor = speedtest.NewExecutor(dbStore)
 		speedTestScheduler = speedtest.NewScheduler(dbStore, speedTestExecutor)
 		speedTestHandler = NewSpeedTestHandler(dbStore, speedTestExecutor, speedTestScheduler)
@@ -94,6 +104,7 @@ func NewServer(store *storage.JSONStore, processManager *daemon.ProcessManager, 
 	}
 
 	s := &Server{
+		profileMgr:         profileMgr,
 		store:              store,
 		subService:         subService,
 		processManager:     processManager,
@@ -108,6 +119,7 @@ func NewServer(store *storage.JSONStore, processManager *daemon.ProcessManager, 
 		port:               port,
 		version:            version,
 		swaggerEnabled:     swaggerEnabled,
+		baseDir:            baseDir,
 		dbStore:            dbStore,
 		speedTestExecutor:  speedTestExecutor,
 		speedTestScheduler: speedTestScheduler,
@@ -385,8 +397,10 @@ func (s *Server) getSubscriptions(c *gin.Context) {
 
 func (s *Server) addSubscription(c *gin.Context) {
 	var req struct {
-		Name string `json:"name" binding:"required"`
-		URL  string `json:"url" binding:"required"`
+		Name           string `json:"name" binding:"required"`
+		URL            string `json:"url" binding:"required"`
+		AutoUpdate     *bool  `json:"auto_update"`
+		UpdateInterval int    `json:"update_interval"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -394,7 +408,7 @@ func (s *Server) addSubscription(c *gin.Context) {
 		return
 	}
 
-	sub, err := s.subService.Add(req.Name, req.URL)
+	sub, err := s.subService.Add(req.Name, req.URL, req.AutoUpdate, req.UpdateInterval)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -950,37 +964,39 @@ func (s *Server) importBackup(c *gin.Context) {
 
 // getProfiles 获取所有 Profile
 func (s *Server) getProfiles(c *gin.Context) {
-	profiles := s.store.GetProfiles()
-	activeProfile := s.store.GetActiveProfile()
+	profiles, err := s.profileMgr.List()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	activeProfile := s.profileMgr.GetActiveProfile()
 	c.JSON(http.StatusOK, gin.H{
 		"data":           profiles,
 		"active_profile": activeProfile,
 	})
 }
 
-// getProfileData 获取单个 Profile 完整数据
+// getProfileData 获取单个 Profile 信息
 func (s *Server) getProfileData(c *gin.Context) {
-	id := c.Param("id")
+	name := c.Param("id") // 这里 id 实际上是 profile name
 
-	profile := s.store.GetProfile(id)
-	if profile == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Profile 不存在"})
-		return
-	}
-
-	data, err := s.store.LoadProfileData(id)
+	profiles, err := s.profileMgr.List()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"profile": profile,
-		"data":    data,
-	})
+	for _, p := range profiles {
+		if p.Name == name {
+			c.JSON(http.StatusOK, gin.H{"profile": p})
+			return
+		}
+	}
+
+	c.JSON(http.StatusNotFound, gin.H{"error": "Profile 不存在"})
 }
 
-// createProfile 创建新 Profile（基于当前配置快照）
+// createProfile 创建新 Profile
 func (s *Server) createProfile(c *gin.Context) {
 	var req struct {
 		Name        string `json:"name" binding:"required"`
@@ -992,40 +1008,19 @@ func (s *Server) createProfile(c *gin.Context) {
 		return
 	}
 
-	now := time.Now()
-	profile := storage.Profile{
-		ID:          uuid.New().String(),
-		Name:        req.Name,
-		Description: req.Description,
-		CreatedAt:   now,
-		UpdatedAt:   now,
-		IsActive:    false,
-	}
-
-	// 保存 Profile 元数据
-	if err := s.store.AddProfile(profile); err != nil {
+	if err := s.profileMgr.Create(req.Name, req.Description); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// 保存当前配置快照
-	snapshot := s.store.CreateSnapshotData()
-	if err := s.store.SaveProfileData(profile.ID, snapshot); err != nil {
-		// 回滚 Profile 元数据
-		s.store.DeleteProfile(profile.ID)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存 Profile 数据失败: " + err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"data": profile})
+	c.JSON(http.StatusOK, gin.H{"message": "Profile 创建成功", "name": req.Name})
 }
 
 // updateProfile 更新 Profile 元数据
 func (s *Server) updateProfile(c *gin.Context) {
-	id := c.Param("id")
+	name := c.Param("id")
 
 	var req struct {
-		Name        string `json:"name"`
 		Description string `json:"description"`
 	}
 
@@ -1034,17 +1029,7 @@ func (s *Server) updateProfile(c *gin.Context) {
 		return
 	}
 
-	profile := s.store.GetProfile(id)
-	if profile == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Profile 不存在"})
-		return
-	}
-
-	profile.Name = req.Name
-	profile.Description = req.Description
-	profile.UpdatedAt = time.Now()
-
-	if err := s.store.UpdateProfile(*profile); err != nil {
+	if err := s.profileMgr.UpdateInfo(name, req.Description); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -1054,168 +1039,139 @@ func (s *Server) updateProfile(c *gin.Context) {
 
 // deleteProfile 删除 Profile
 func (s *Server) deleteProfile(c *gin.Context) {
-	id := c.Param("id")
+	name := c.Param("id")
 
-	// 不能删除当前激活的 Profile
-	if s.store.GetActiveProfile() == id {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "不能删除当前激活的 Profile"})
+	if err := s.profileMgr.Delete(name); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-
-	// 删除 Profile 元数据
-	if err := s.store.DeleteProfile(id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	// 删除 Profile 数据文件
-	s.store.DeleteProfileData(id)
 
 	c.JSON(http.StatusOK, gin.H{"message": "删除成功"})
 }
 
 // activateProfile 切换到指定 Profile
 func (s *Server) activateProfile(c *gin.Context) {
-	id := c.Param("id")
+	name := c.Param("id")
 
-	profile := s.store.GetProfile(id)
-	if profile == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Profile 不存在"})
-		return
+	// 停止当前服务
+	if s.processManager != nil {
+		s.processManager.Stop()
 	}
 
-	// 保存当前配置到当前激活的 Profile
-	currentActive := s.store.GetActiveProfile()
-	if currentActive != "" && currentActive != id {
-		snapshot := s.store.CreateSnapshotData()
-		s.store.SaveProfileData(currentActive, snapshot)
-	}
-
-	// 加载目标 Profile 数据
-	data, err := s.store.LoadProfileData(id)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "加载 Profile 数据失败: " + err.Error()})
-		return
-	}
-
-	// 恢复配置
-	if err := s.store.RestoreFromProfileData(data); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "恢复配置失败: " + err.Error()})
-		return
-	}
-
-	// 设置当前激活的 Profile
-	if err := s.store.SetActiveProfile(id); err != nil {
+	// 切换 Profile
+	if err := s.profileMgr.Switch(name); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// 自动应用配置
-	s.autoApplyConfig()
+	// 重新初始化 store 和相关服务
+	profileDir := s.profileMgr.GetProfileDir()
+	newStore, err := storage.NewJSONStore(profileDir)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "初始化存储失败: " + err.Error()})
+		return
+	}
+	s.store = newStore
 
-	c.JSON(http.StatusOK, gin.H{"message": "已切换到 Profile: " + profile.Name})
+	// 更新数据库 Store
+	s.dbStore = s.profileMgr.GetStore()
+
+	// 重新创建相关服务
+	s.chainSyncSvc = service.NewChainSyncService(s.store)
+	s.subService = service.NewSubscriptionService(s.store, s.chainSyncSvc)
+	s.healthCheckSvc = service.NewHealthCheckService(s.store)
+
+	// 更新测速模块
+	if s.dbStore != nil {
+		s.speedTestExecutor = speedtest.NewExecutor(s.dbStore)
+		s.speedTestScheduler = speedtest.NewScheduler(s.dbStore, s.speedTestExecutor)
+		s.speedTestHandler = NewSpeedTestHandler(s.dbStore, s.speedTestExecutor, s.speedTestScheduler)
+		s.tagEngine = service.NewTagEngine(s.dbStore)
+		s.tagHandler = NewTagHandler(s.dbStore, s.tagEngine)
+	}
+
+	// 更新进程管理器的配置路径
+	configPath := filepath.Join(profileDir, "generated", "config.json")
+	os.MkdirAll(filepath.Join(profileDir, "generated"), 0755)
+	s.processManager.SetConfigPath(configPath)
+
+	c.JSON(http.StatusOK, gin.H{"message": "已切换到 Profile: " + name})
 }
 
-// snapshotProfile 更新 Profile 为当前配置快照
+// snapshotProfile 克隆当前 Profile
 func (s *Server) snapshotProfile(c *gin.Context) {
-	id := c.Param("id")
+	name := c.Param("id")
 
-	profile := s.store.GetProfile(id)
-	if profile == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Profile 不存在"})
+	var req struct {
+		DestName string `json:"dest_name" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// 保存当前配置快照
-	snapshot := s.store.CreateSnapshotData()
-	if err := s.store.SaveProfileData(id, snapshot); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存快照失败: " + err.Error()})
-		return
-	}
-
-	// 更新 Profile 时间
-	profile.UpdatedAt = time.Now()
-	s.store.UpdateProfile(*profile)
-
-	c.JSON(http.StatusOK, gin.H{"message": "快照已更新"})
-}
-
-// exportProfile 导出 Profile（下载）
-func (s *Server) exportProfile(c *gin.Context) {
-	id := c.Param("id")
-
-	profile := s.store.GetProfile(id)
-	if profile == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Profile 不存在"})
-		return
-	}
-
-	data, err := s.store.LoadProfileData(id)
-	if err != nil {
+	if err := s.profileMgr.Clone(name, req.DestName); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// 组合导出数据
-	exportData := gin.H{
-		"profile": profile,
-		"data":    data,
-	}
-
-	content, _ := json.MarshalIndent(exportData, "", "  ")
-	filename := fmt.Sprintf("profile-%s-%s.json", profile.Name, time.Now().Format("20060102"))
-	c.Header("Content-Disposition", "attachment; filename="+filename)
-	c.Header("Content-Type", "application/json")
-	c.Data(http.StatusOK, "application/json", content)
+	c.JSON(http.StatusOK, gin.H{"message": "克隆成功", "name": req.DestName})
 }
 
-// importProfile 导入 Profile
+// exportProfile 导出 Profile（下载 zip）
+func (s *Server) exportProfile(c *gin.Context) {
+	name := c.Param("id")
+
+	filename := fmt.Sprintf("profile-%s-%s.zip", name, time.Now().Format("20060102"))
+	c.Header("Content-Disposition", "attachment; filename="+filename)
+	c.Header("Content-Type", "application/zip")
+
+	if err := s.profileMgr.Export(name, c.Writer); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+}
+
+// importProfile 导入 Profile（上传 zip）
 func (s *Server) importProfile(c *gin.Context) {
-	file, _, err := c.Request.FormFile("file")
+	name := c.PostForm("name")
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请提供 Profile 名称"})
+		return
+	}
+
+	file, header, err := c.Request.FormFile("file")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请上传文件"})
 		return
 	}
 	defer file.Close()
 
-	content, err := io.ReadAll(file)
+	// 读取文件内容到临时文件
+	tmpFile, err := os.CreateTemp("", "profile-import-*.zip")
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "读取文件失败"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建临时文件失败"})
+		return
+	}
+	defer os.Remove(tmpFile.Name())
+	defer tmpFile.Close()
+
+	if _, err := io.Copy(tmpFile, file); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存文件失败"})
 		return
 	}
 
-	// 解析导入数据
-	var importData struct {
-		Profile storage.Profile `json:"profile"`
-		Data    storage.AppData `json:"data"`
-	}
+	// 重新打开文件用于读取
+	tmpFile.Seek(0, 0)
+	stat, _ := tmpFile.Stat()
 
-	if err := json.Unmarshal(content, &importData); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的 Profile 文件格式"})
-		return
-	}
-
-	// 生成新 ID
-	now := time.Now()
-	importData.Profile.ID = uuid.New().String()
-	importData.Profile.CreatedAt = now
-	importData.Profile.UpdatedAt = now
-	importData.Profile.IsActive = false
-
-	// 保存 Profile 元数据
-	if err := s.store.AddProfile(importData.Profile); err != nil {
+	if err := s.profileMgr.Import(name, tmpFile, stat.Size()); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// 保存 Profile 数据
-	if err := s.store.SaveProfileData(importData.Profile.ID, &importData.Data); err != nil {
-		s.store.DeleteProfile(importData.Profile.ID)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存 Profile 数据失败"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"data": importData.Profile})
+	c.JSON(http.StatusOK, gin.H{"message": "导入成功", "name": name, "original_file": header.Filename})
 }
 
 // resolvePath 将相对路径解析为基于数据目录的绝对路径

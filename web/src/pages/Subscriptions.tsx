@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   Card,
   CardBody,
@@ -27,7 +27,7 @@ import {
   DropdownItem,
   DropdownSection,
 } from '@nextui-org/react';
-import { Plus, RefreshCw, Trash2, Globe, Server, Pencil, Link, Filter as FilterIcon, ChevronDown, ChevronUp, Zap, Settings, Timer } from 'lucide-react';
+import { Plus, RefreshCw, Trash2, Globe, Server, Pencil, Link, Filter as FilterIcon, ChevronDown, ChevronUp, Zap, Settings, Timer, Search } from 'lucide-react';
 import { useStore } from '../store';
 import { nodeApi, speedtestApi } from '../api';
 import { toast } from '../components/Toast';
@@ -164,6 +164,8 @@ export default function Subscriptions() {
   const { isOpen: isSpeedTestOpen, onOpen: onSpeedTestOpen, onClose: onSpeedTestClose } = useDisclosure();
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
+  const [autoUpdate, setAutoUpdate] = useState(true);
+  const [updateInterval, setUpdateInterval] = useState(60);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [editingSubscription, setEditingSubscription] = useState<Subscription | null>(null);
 
@@ -215,6 +217,8 @@ export default function Subscriptions() {
     setEditingSubscription(null);
     setName('');
     setUrl('');
+    setAutoUpdate(true);
+    setUpdateInterval(60);
     onSubOpen();
   };
 
@@ -222,6 +226,8 @@ export default function Subscriptions() {
     setEditingSubscription(sub);
     setName(sub.name);
     setUrl(sub.url);
+    setAutoUpdate(sub.auto_update ?? true);
+    setUpdateInterval(sub.update_interval ?? 60);
     onSubOpen();
   };
 
@@ -231,9 +237,9 @@ export default function Subscriptions() {
     setIsSubmitting(true);
     try {
       if (editingSubscription) {
-        await updateSubscription(editingSubscription.id, name, url);
+        await updateSubscription(editingSubscription.id, name, url, autoUpdate, updateInterval);
       } else {
-        await addSubscription(name, url);
+        await addSubscription(name, url, autoUpdate, updateInterval);
       }
       setName('');
       setUrl('');
@@ -785,7 +791,7 @@ export default function Subscriptions() {
       <Modal isOpen={isSubOpen} onClose={onSubClose}>
         <ModalContent>
           <ModalHeader>{editingSubscription ? '编辑订阅' : '添加订阅'}</ModalHeader>
-          <ModalBody>
+          <ModalBody className="space-y-4">
             <Input
               label="订阅名称"
               placeholder="输入订阅名称"
@@ -798,6 +804,33 @@ export default function Subscriptions() {
               value={url}
               onChange={(e) => setUrl(e.target.value)}
             />
+            <Divider />
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Timer className="w-4 h-4 text-gray-500" />
+                <span className="text-sm">自动更新</span>
+              </div>
+              <Switch
+                isSelected={autoUpdate}
+                onValueChange={setAutoUpdate}
+                size="sm"
+              />
+            </div>
+            {autoUpdate && (
+              <Select
+                label="更新间隔"
+                selectedKeys={[String(updateInterval)]}
+                onChange={(e) => setUpdateInterval(Number(e.target.value))}
+                size="sm"
+              >
+                <SelectItem key="30">每 30 分钟</SelectItem>
+                <SelectItem key="60">每 1 小时</SelectItem>
+                <SelectItem key="180">每 3 小时</SelectItem>
+                <SelectItem key="360">每 6 小时</SelectItem>
+                <SelectItem key="720">每 12 小时</SelectItem>
+                <SelectItem key="1440">每天</SelectItem>
+              </Select>
+            )}
           </ModalBody>
           <ModalFooter>
             <Button variant="flat" onPress={onSubClose}>
@@ -1574,11 +1607,13 @@ interface CountryNodesListProps {
 }
 
 function CountryNodesList({ countryGroups }: CountryNodesListProps) {
+  const { subscriptions, manualNodes } = useStore();
   const [expandedCountries, setExpandedCountries] = useState<Set<string>>(new Set());
   const [countryNodes, setCountryNodes] = useState<Record<string, Node[]>>({});
   const [loadingCountries, setLoadingCountries] = useState<Set<string>>(new Set());
   const [nodeSpeedInfos, setNodeSpeedInfos] = useState<Record<string, { delay: number; speed: number }>>({});
   const [testingNode, setTestingNode] = useState<string | null>(null);
+  const [searchText, setSearchText] = useState('');
 
   // 获取所有节点的测速信息
   const fetchSpeedInfos = useCallback(async () => {
@@ -1667,18 +1702,68 @@ function CountryNodesList({ countryGroups }: CountryNodesListProps) {
     return 'danger';
   };
 
+  // 搜索过滤逻辑
+  const filteredGroups = useMemo(() => {
+    if (!searchText.trim()) return countryGroups;
+
+    const lowerText = searchText.toLowerCase();
+    // 收集所有节点
+    const allNodes = [
+      ...subscriptions.flatMap(s => s.nodes || []),
+      ...manualNodes.map(m => m.node)
+    ];
+
+    // 过滤匹配搜索词的节点
+    const filteredNodes = allNodes.filter(n =>
+      n.tag.toLowerCase().includes(lowerText) ||
+      n.server.toLowerCase().includes(lowerText)
+    );
+
+    // 按国家分组
+    const groups: Record<string, Node[]> = {};
+    filteredNodes.forEach(n => {
+      const country = n.country || 'OTHER';
+      if (!groups[country]) groups[country] = [];
+      groups[country].push(n);
+    });
+
+    return Object.entries(groups).map(([code, nodes]) => {
+      const existing = countryGroups.find(g => g.code === code);
+      return {
+        code,
+        name: existing?.name || code,
+        emoji: existing?.emoji || '🌐',
+        node_count: nodes.length,
+        _searchNodes: nodes // 搜索模式下直接携带节点数据
+      };
+    });
+  }, [searchText, countryGroups, subscriptions, manualNodes]);
+
   return (
-    <div className="space-y-2 mt-4">
-      {countryGroups.map((group) => {
-        const isExpanded = expandedCountries.has(group.code);
-        const isLoading = loadingCountries.has(group.code);
-        const nodes = countryNodes[group.code] || [];
+    <div className="space-y-4 mt-4">
+      <Input
+        placeholder="搜索节点名称或服务器地址..."
+        value={searchText}
+        onChange={(e) => setSearchText(e.target.value)}
+        startContent={<Search className="w-4 h-4 text-gray-400" />}
+        isClearable
+        onClear={() => setSearchText('')}
+        size="sm"
+      />
+
+      <div className="space-y-2">
+        {filteredGroups.map((group) => {
+          const isSearchMode = !!searchText.trim();
+          const isExpanded = isSearchMode || expandedCountries.has(group.code);
+          const isLoading = !isSearchMode && loadingCountries.has(group.code);
+          // 搜索模式下使用 _searchNodes，普通模式使用懒加载的 countryNodes
+          const nodes = isSearchMode ? ((group as any)._searchNodes || []) : (countryNodes[group.code] || []);
 
         return (
           <Card key={group.code}>
             <CardHeader
-              className="flex justify-between items-center cursor-pointer py-3"
-              onClick={() => toggleCountry(group.code)}
+              className={`flex justify-between items-center py-3 ${!isSearchMode ? 'cursor-pointer' : ''}`}
+              onClick={() => !isSearchMode && toggleCountry(group.code)}
             >
               <div className="flex items-center gap-3">
                 <span className="text-2xl">{group.emoji}</span>
@@ -1688,13 +1773,15 @@ function CountryNodesList({ countryGroups }: CountryNodesListProps) {
                 </div>
                 <Chip size="sm" variant="flat">{group.node_count}</Chip>
               </div>
-              <Button
-                isIconOnly
-                size="sm"
-                variant="light"
-              >
-                {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-              </Button>
+              {!isSearchMode && (
+                <Button
+                  isIconOnly
+                  size="sm"
+                  variant="light"
+                >
+                  {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                </Button>
+              )}
             </CardHeader>
 
             {isExpanded && (
@@ -1705,7 +1792,7 @@ function CountryNodesList({ countryGroups }: CountryNodesListProps) {
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-                    {nodes.map((node, idx) => {
+                    {nodes.map((node: Node, idx: number) => {
                       const speedInfo = nodeSpeedInfos[node.tag];
                       const delayText = formatDelay(speedInfo);
                       const speedText = formatSpeed(speedInfo);
@@ -1748,6 +1835,7 @@ function CountryNodesList({ countryGroups }: CountryNodesListProps) {
           </Card>
         );
       })}
+      </div>
     </div>
   );
 }

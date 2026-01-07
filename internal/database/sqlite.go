@@ -16,49 +16,67 @@ import (
 var (
 	db   *gorm.DB
 	once sync.Once
+	mu   sync.Mutex
 )
 
-// InitDB 初始化数据库
+// InitDB 初始化数据库（兼容旧接口，使用 once 保证单例）
 func InitDB(dataDir string) (*gorm.DB, error) {
 	var err error
 	once.Do(func() {
-		// 确保数据目录存在
-		if mkdirErr := os.MkdirAll(dataDir, 0755); mkdirErr != nil {
-			err = fmt.Errorf("创建数据目录失败: %w", mkdirErr)
-			return
-		}
-
-		dbPath := filepath.Join(dataDir, "sbm.db")
-		logger.Info("初始化 SQLite 数据库: %s", dbPath)
-
-		// 配置 GORM
-		config := &gorm.Config{
-			Logger: gormlogger.Default.LogMode(gormlogger.Warn),
-		}
-
-		// 打开数据库
-		db, err = gorm.Open(sqlite.Open(dbPath+"?_journal_mode=WAL&_busy_timeout=5000"), config)
-		if err != nil {
-			err = fmt.Errorf("打开数据库失败: %w", err)
-			return
-		}
-
-		// 自动迁移表结构
-		if migrateErr := autoMigrate(); migrateErr != nil {
-			err = fmt.Errorf("迁移数据库失败: %w", migrateErr)
-			return
-		}
-
-		// 初始化默认数据
-		if initErr := initDefaultData(); initErr != nil {
-			err = fmt.Errorf("初始化默认数据失败: %w", initErr)
-			return
-		}
-
-		logger.Info("数据库初始化完成")
+		db, err = initDBInternal(dataDir)
 	})
-
 	return db, err
+}
+
+// InitDBWithPath 初始化指定路径的数据库（支持多 Profile）
+func InitDBWithPath(dataDir string) (*gorm.DB, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	return initDBInternal(dataDir)
+}
+
+// ResetDB 重置数据库单例（用于 Profile 切换）
+func ResetDB() {
+	mu.Lock()
+	defer mu.Unlock()
+	once = sync.Once{}
+	db = nil
+}
+
+// initDBInternal 内部初始化逻辑
+func initDBInternal(dataDir string) (*gorm.DB, error) {
+	// 确保数据目录存在
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		return nil, fmt.Errorf("创建数据目录失败: %w", err)
+	}
+
+	dbPath := filepath.Join(dataDir, "sbm.db")
+	logger.Info("初始化 SQLite 数据库: %s", dbPath)
+
+	// 配置 GORM
+	config := &gorm.Config{
+		Logger: gormlogger.Default.LogMode(gormlogger.Warn),
+	}
+
+	// 打开数据库
+	newDB, err := gorm.Open(sqlite.Open(dbPath+"?_journal_mode=WAL&_busy_timeout=5000"), config)
+	if err != nil {
+		return nil, fmt.Errorf("打开数据库失败: %w", err)
+	}
+
+	// 自动迁移表结构
+	if err := autoMigrateDB(newDB); err != nil {
+		return nil, fmt.Errorf("迁移数据库失败: %w", err)
+	}
+
+	// 初始化默认数据
+	if err := initDefaultDataDB(newDB); err != nil {
+		return nil, fmt.Errorf("初始化默认数据失败: %w", err)
+	}
+
+	logger.Info("数据库初始化完成")
+	db = newDB
+	return newDB, nil
 }
 
 // GetDB 获取数据库实例
@@ -66,9 +84,9 @@ func GetDB() *gorm.DB {
 	return db
 }
 
-// autoMigrate 自动迁移表结构
-func autoMigrate() error {
-	return db.AutoMigrate(
+// autoMigrateDB 自动迁移表结构
+func autoMigrateDB(database *gorm.DB) error {
+	return database.AutoMigrate(
 		// 订阅和节点
 		&models.Subscription{},
 		&models.Node{},
@@ -99,14 +117,14 @@ func autoMigrate() error {
 	)
 }
 
-// initDefaultData 初始化默认数据
-func initDefaultData() error {
+// initDefaultDataDB 初始化默认数据
+func initDefaultDataDB(database *gorm.DB) error {
 	// 初始化默认设置
 	for key, value := range models.DefaultSettings {
 		var count int64
-		db.Model(&models.Setting{}).Where("key = ?", key).Count(&count)
+		database.Model(&models.Setting{}).Where("key = ?", key).Count(&count)
 		if count == 0 {
-			if err := db.Create(&models.Setting{Key: key, Value: value}).Error; err != nil {
+			if err := database.Create(&models.Setting{Key: key, Value: value}).Error; err != nil {
 				return err
 			}
 		}
@@ -115,9 +133,9 @@ func initDefaultData() error {
 	// 初始化默认规则组
 	for _, rg := range models.DefaultRuleGroups {
 		var count int64
-		db.Model(&models.RuleGroup{}).Where("id = ?", rg.ID).Count(&count)
+		database.Model(&models.RuleGroup{}).Where("id = ?", rg.ID).Count(&count)
 		if count == 0 {
-			if err := db.Create(&rg).Error; err != nil {
+			if err := database.Create(&rg).Error; err != nil {
 				return err
 			}
 		}
@@ -125,7 +143,7 @@ func initDefaultData() error {
 
 	// 初始化默认测速策略
 	var profileCount int64
-	db.Model(&models.SpeedTestProfile{}).Count(&profileCount)
+	database.Model(&models.SpeedTestProfile{}).Count(&profileCount)
 	if profileCount == 0 {
 		defaultProfile := &models.SpeedTestProfile{
 			Name:               "默认策略",
@@ -143,7 +161,7 @@ func initDefaultData() error {
 			SpeedRecordMode:    "average",
 			PeakSampleInterval: 100,
 		}
-		if err := db.Create(defaultProfile).Error; err != nil {
+		if err := database.Create(defaultProfile).Error; err != nil {
 			return err
 		}
 	}

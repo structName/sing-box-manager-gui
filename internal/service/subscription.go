@@ -35,15 +35,26 @@ func (s *SubscriptionService) Get(id string) *storage.Subscription {
 }
 
 // Add 添加订阅
-func (s *SubscriptionService) Add(name, url string) (*storage.Subscription, error) {
+func (s *SubscriptionService) Add(name, url string, autoUpdate *bool, updateInterval int) (*storage.Subscription, error) {
+	// 默认值处理
+	defaultAutoUpdate := true
+	if autoUpdate == nil {
+		autoUpdate = &defaultAutoUpdate
+	}
+	if updateInterval <= 0 {
+		updateInterval = 60 // 默认 60 分钟
+	}
+
 	sub := storage.Subscription{
-		ID:        uuid.New().String(),
-		Name:      name,
-		URL:       url,
-		NodeCount: 0,
-		UpdatedAt: time.Now(),
-		Nodes:     []storage.Node{},
-		Enabled:   true,
+		ID:             uuid.New().String(),
+		Name:           name,
+		URL:            url,
+		NodeCount:      0,
+		UpdatedAt:      time.Now(),
+		Nodes:          []storage.Node{},
+		Enabled:        true,
+		AutoUpdate:     autoUpdate,
+		UpdateInterval: updateInterval,
 	}
 
 	// 拉取并解析订阅

@@ -8,7 +8,8 @@ const api = axios.create({
 // 订阅 API
 export const subscriptionApi = {
   getAll: () => api.get('/subscriptions'),
-  add: (name: string, url: string) => api.post('/subscriptions', { name, url }),
+  add: (name: string, url: string, auto_update?: boolean, update_interval?: number) =>
+    api.post('/subscriptions', { name, url, auto_update, update_interval }),
   update: (id: string, data: any) => api.put(`/subscriptions/${id}`, data),
   delete: (id: string) => api.delete(`/subscriptions/${id}`),
   refresh: (id: string) => api.post(`/subscriptions/${id}/refresh`),

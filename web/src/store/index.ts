@@ -17,6 +17,8 @@ export interface Subscription {
   };
   nodes: Node[];
   enabled: boolean;
+  auto_update?: boolean;      // 是否自动更新
+  update_interval?: number;   // 更新间隔（分钟）
 }
 
 export interface Node {
@@ -151,8 +153,8 @@ interface AppState {
   fetchServiceStatus: () => Promise<void>;
   fetchSystemInfo: () => Promise<void>;
 
-  addSubscription: (name: string, url: string) => Promise<void>;
-  updateSubscription: (id: string, name: string, url: string) => Promise<void>;
+  addSubscription: (name: string, url: string, autoUpdate?: boolean, updateInterval?: number) => Promise<void>;
+  updateSubscription: (id: string, name: string, url: string, autoUpdate?: boolean, updateInterval?: number) => Promise<void>;
   deleteSubscription: (id: string) => Promise<void>;
   refreshSubscription: (id: string) => Promise<void>;
   toggleSubscription: (id: string, enabled: boolean) => Promise<void>;
@@ -273,10 +275,10 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  addSubscription: async (name: string, url: string) => {
+  addSubscription: async (name: string, url: string, autoUpdate?: boolean, updateInterval?: number) => {
     set({ loading: true });
     try {
-      await subscriptionApi.add(name, url);
+      await subscriptionApi.add(name, url, autoUpdate, updateInterval);
       await get().fetchSubscriptions();
       toast.success('订阅添加成功');
     } catch (error: any) {
@@ -287,10 +289,10 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  updateSubscription: async (id: string, name: string, url: string) => {
+  updateSubscription: async (id: string, name: string, url: string, autoUpdate?: boolean, updateInterval?: number) => {
     set({ loading: true });
     try {
-      await subscriptionApi.update(id, { name, url });
+      await subscriptionApi.update(id, { name, url, auto_update: autoUpdate, update_interval: updateInterval });
       await get().fetchSubscriptions();
       toast.success('订阅更新成功');
     } catch (error: any) {

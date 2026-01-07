@@ -9,7 +9,7 @@ import (
 	"github.com/xiaobei/singbox-manager/internal/api"
 	"github.com/xiaobei/singbox-manager/internal/daemon"
 	"github.com/xiaobei/singbox-manager/internal/logger"
-	"github.com/xiaobei/singbox-manager/internal/storage"
+	"github.com/xiaobei/singbox-manager/internal/profile"
 )
 
 var (
@@ -61,17 +61,22 @@ func main() {
 	logger.Printf("数据目录: %s", dataDir)
 	logger.Printf("Web 端口: %d", port)
 
-	// 初始化存储
-	store, err := storage.NewJSONStore(dataDir)
+	// 初始化 Profile 管理器
+	profileMgr, err := profile.NewManager(dataDir)
 	if err != nil {
-		logger.Printf("初始化存储失败: %v", err)
+		logger.Printf("初始化 Profile 管理器失败: %v", err)
 		os.Exit(1)
 	}
+	logger.Printf("当前 Profile: %s", profileMgr.GetActiveProfile())
 
 	// 初始化进程管理器
 	// sing-box 二进制文件路径固定为 dataDir/bin/sing-box
 	singboxPath := filepath.Join(dataDir, "bin", "sing-box")
-	configPath := filepath.Join(dataDir, "generated", "config.json")
+	// 配置文件放在当前 Profile 目录下
+	profileDir := profileMgr.GetProfileDir()
+	configPath := filepath.Join(profileDir, "generated", "config.json")
+	// 确保 generated 目录存在
+	os.MkdirAll(filepath.Join(profileDir, "generated"), 0755)
 	processManager := daemon.NewProcessManager(singboxPath, configPath, dataDir)
 
 	// 初始化 launchd 管理器
@@ -87,7 +92,7 @@ func main() {
 	}
 
 	// 创建 API 服务器
-	server := api.NewServer(store, processManager, launchdManager, systemdManager, execPath, port, version, swaggerEnabled)
+	server := api.NewServer(profileMgr, processManager, launchdManager, systemdManager, execPath, port, version, swaggerEnabled)
 
 	if swaggerOut != "" {
 		if err := server.WriteOpenAPISpec(swaggerOut); err != nil {
