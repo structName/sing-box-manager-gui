@@ -57,6 +57,13 @@ type Server struct {
 	// 标签模块
 	tagEngine  *service.TagEngine
 	tagHandler *TagHandler
+	// 任务管理模块
+	taskManager  *service.TaskManager
+	taskHandler  *TaskHandler
+	eventTrigger *service.EventTrigger
+	// 统一调度器
+	unifiedScheduler *service.UnifiedScheduler
+	schedulerHandler *SchedulerHandler
 }
 
 // NewServer 创建 API 服务器
@@ -93,6 +100,11 @@ func NewServer(profileMgr *profile.Manager, processManager *daemon.ProcessManage
 	var speedTestHandler *SpeedTestHandler
 	var tagEngine *service.TagEngine
 	var tagHandler *TagHandler
+	var taskManager *service.TaskManager
+	var taskHandler *TaskHandler
+	var eventTrigger *service.EventTrigger
+	var unifiedScheduler *service.UnifiedScheduler
+	var schedulerHandler *SchedulerHandler
 
 	if dbStore != nil {
 		speedTestExecutor = speedtest.NewExecutor(dbStore)
@@ -100,7 +112,15 @@ func NewServer(profileMgr *profile.Manager, processManager *daemon.ProcessManage
 		speedTestHandler = NewSpeedTestHandler(dbStore, speedTestExecutor, speedTestScheduler)
 		tagEngine = service.NewTagEngine(dbStore)
 		tagHandler = NewTagHandler(dbStore, tagEngine)
-		logger.Info("测速和标签模块初始化完成")
+		taskManager = service.NewTaskManager(dbStore)
+		taskHandler = NewTaskHandler(dbStore, taskManager)
+		eventTrigger = service.NewEventTrigger(dbStore, taskManager)
+		eventTrigger.SetTagEngine(tagEngine)
+		unifiedScheduler = service.NewUnifiedScheduler(dbStore, taskManager)
+		schedulerHandler = NewSchedulerHandler(unifiedScheduler)
+		// 设置 SpeedTestHandler 的统一调度器引用
+		speedTestHandler.SetUnifiedScheduler(unifiedScheduler)
+		logger.Info("测速、标签、任务和调度模块初始化完成")
 	}
 
 	s := &Server{
@@ -126,17 +146,24 @@ func NewServer(profileMgr *profile.Manager, processManager *daemon.ProcessManage
 		speedTestHandler:   speedTestHandler,
 		tagEngine:          tagEngine,
 		tagHandler:         tagHandler,
+		taskManager:        taskManager,
+		taskHandler:        taskHandler,
+		eventTrigger:       eventTrigger,
+		unifiedScheduler:   unifiedScheduler,
+		schedulerHandler:   schedulerHandler,
 	}
 
 	// 设置调度器的更新回调
 	s.scheduler.SetUpdateCallback(s.autoApplyConfig)
 
-	// 初始同步节点到 SQLite（用于测速模块）
+	// 初始同步节点到 SQLite（仅在 SQLite 为空时）
 	if s.dbStore != nil {
-		if err := s.syncNodesToSQLite(); err != nil {
-			logger.Warn("启动时同步节点到 SQLite 失败: %v", err)
-		} else {
-			logger.Info("节点已同步到 SQLite 数据库")
+		if nodes, _ := s.dbStore.GetNodes(); len(nodes) == 0 {
+			if err := s.syncNodesToSQLite(); err != nil {
+				logger.Warn("启动时同步节点到 SQLite 失败: %v", err)
+			} else {
+				logger.Info("节点已同步到 SQLite 数据库")
+			}
 		}
 	}
 
@@ -168,6 +195,103 @@ func (s *Server) StopSpeedTestScheduler() {
 	if s.speedTestScheduler != nil {
 		s.speedTestScheduler.Stop()
 	}
+}
+
+// StartUnifiedScheduler 启动统一调度器
+func (s *Server) StartUnifiedScheduler() {
+	if s.unifiedScheduler != nil {
+		s.unifiedScheduler.Start()
+		s.initScheduleEntries()
+	}
+}
+
+// StopUnifiedScheduler 停止统一调度器
+func (s *Server) StopUnifiedScheduler() {
+	if s.unifiedScheduler != nil {
+		s.unifiedScheduler.Stop()
+	}
+}
+
+// initScheduleEntries 初始化调度条目
+func (s *Server) initScheduleEntries() {
+	if s.unifiedScheduler == nil {
+		return
+	}
+
+	// 1. 订阅定时更新
+	subs := s.store.GetSubscriptions()
+	for _, sub := range subs {
+		if sub.Enabled && sub.AutoUpdate != nil && *sub.AutoUpdate && sub.UpdateInterval > 0 {
+			subID := sub.ID
+			subName := sub.Name
+			cronExpr := service.IntervalToCron(sub.UpdateInterval)
+			s.unifiedScheduler.AddSchedule(
+				service.ScheduleTypeSubUpdate,
+				subID,
+				"订阅更新: "+subName,
+				cronExpr,
+				func() {
+					s.subService.Refresh(subID)
+					s.syncNodesToSQLite()
+					s.autoApplyConfig()
+				},
+			)
+		}
+	}
+
+	// 2. 测速策略定时执行
+	if s.dbStore != nil {
+		profiles, _ := s.dbStore.GetSpeedTestProfiles()
+		for _, profile := range profiles {
+			if profile.AutoTest {
+				profileID := profile.ID
+				profileName := profile.Name
+				var cronExpr string
+				if profile.ScheduleType == "cron" && profile.ScheduleCron != "" {
+					cronExpr = profile.ScheduleCron
+				} else {
+					cronExpr = service.IntervalToCron(profile.ScheduleInterval)
+				}
+				s.unifiedScheduler.AddSchedule(
+					service.ScheduleTypeSpeedTest,
+					fmt.Sprintf("%d", profileID),
+					"定时测速: "+profileName,
+					cronExpr,
+					func() {
+						if s.speedTestExecutor != nil {
+							s.speedTestExecutor.RunWithProfile(profileID, nil, speedtest.TriggerTypeScheduled)
+						}
+					},
+				)
+			}
+		}
+	}
+
+	// 3. 链路健康检测
+	settings := s.store.GetSettings()
+	if settings.ChainHealthConfig != nil && settings.ChainHealthConfig.Enabled {
+		interval := settings.ChainHealthConfig.Interval
+		if interval < 30 {
+			interval = 30
+		}
+		cronExpr := service.IntervalToCron(interval / 60) // 转换为分钟
+		s.unifiedScheduler.AddSchedule(
+			service.ScheduleTypeChainCheck,
+			"global",
+			"链路健康检测",
+			cronExpr,
+			func() {
+				chains := s.store.GetProxyChains()
+				for _, chain := range chains {
+					if chain.Enabled {
+						s.healthCheckSvc.CheckChain(chain.ID)
+					}
+				}
+			},
+		)
+	}
+
+	logger.Info("调度条目初始化完成")
 }
 
 // setupRoutes 设置路由
@@ -356,6 +480,27 @@ func (s *Server) setupRoutes() {
 			// 规则执行
 			api.POST("/tags/apply-rules", s.tagHandler.ApplyTagRules)
 		}
+
+		// 任务管理（需要 taskHandler 已初始化）
+		if s.taskHandler != nil {
+			api.GET("/tasks", s.taskHandler.GetTasks)
+			api.GET("/tasks/:id", s.taskHandler.GetTask)
+			api.POST("/tasks/:id/cancel", s.taskHandler.CancelTask)
+			api.GET("/tasks/running", s.taskHandler.GetRunningTasks)
+			api.GET("/tasks/stats", s.taskHandler.GetTaskStats)
+			api.DELETE("/tasks/history", s.taskHandler.CleanupTasks)
+		}
+
+		// 调度管理（需要 schedulerHandler 已初始化）
+		if s.schedulerHandler != nil {
+			api.GET("/scheduler/status", s.schedulerHandler.GetStatus)
+			api.GET("/scheduler/entries", s.schedulerHandler.GetEntries)
+			api.POST("/scheduler/entries/:key/enable", s.schedulerHandler.EnableEntry)
+			api.POST("/scheduler/entries/:key/disable", s.schedulerHandler.DisableEntry)
+			api.POST("/scheduler/entries/:key/trigger", s.schedulerHandler.TriggerEntry)
+			api.POST("/scheduler/pause", s.schedulerHandler.PauseScheduler)
+			api.POST("/scheduler/resume", s.schedulerHandler.ResumeScheduler)
+		}
 	}
 
 	// Swagger 文档（默认关闭）
@@ -408,15 +553,36 @@ func (s *Server) addSubscription(c *gin.Context) {
 		return
 	}
 
+	// 创建任务记录
+	var task *models.Task
+	if s.taskManager != nil {
+		task, _, _ = s.taskManager.CreateTask(models.TaskTypeSubUpdate, "添加订阅: "+req.Name, models.TaskTriggerManual, 0)
+		s.taskManager.StartTask(task.ID)
+	}
+
 	sub, err := s.subService.Add(req.Name, req.URL, req.AutoUpdate, req.UpdateInterval)
 	if err != nil {
+		if task != nil {
+			s.taskManager.FailTask(task.ID, err.Error())
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	// 同步节点到 SQLite（用于测速模块）
-	if err := s.syncNodesToSQLite(); err != nil {
-		logger.Warn("同步节点到 SQLite 失败: %v", err)
+	nodeIDs := s.syncNodesToSQLiteAndGetIDs()
+
+	// 触发订阅更新事件
+	if s.eventTrigger != nil {
+		s.eventTrigger.OnSubscriptionUpdate(sub.ID, nodeIDs)
+	}
+
+	// 完成任务
+	if task != nil {
+		s.taskManager.CompleteTask(task.ID, "订阅添加成功", map[string]interface{}{
+			"subscription_id": sub.ID,
+			"node_count":      sub.NodeCount,
+		})
 	}
 
 	// 自动应用配置
@@ -477,14 +643,42 @@ func (s *Server) deleteSubscription(c *gin.Context) {
 func (s *Server) refreshSubscription(c *gin.Context) {
 	id := c.Param("id")
 
+	// 获取订阅信息用于任务名称
+	sub := s.subService.Get(id)
+	subName := "订阅"
+	if sub != nil {
+		subName = sub.Name
+	}
+
+	// 创建任务记录
+	var task *models.Task
+	if s.taskManager != nil {
+		task, _, _ = s.taskManager.CreateTask(models.TaskTypeSubUpdate, "更新订阅: "+subName, models.TaskTriggerManual, 0)
+		s.taskManager.StartTask(task.ID)
+	}
+
 	if err := s.subService.Refresh(id); err != nil {
+		if task != nil {
+			s.taskManager.FailTask(task.ID, err.Error())
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	// 同步节点到 SQLite（用于测速模块）
-	if err := s.syncNodesToSQLite(); err != nil {
-		logger.Warn("同步节点到 SQLite 失败: %v", err)
+	nodeIDs := s.syncNodesToSQLiteAndGetIDs()
+
+	// 触发订阅更新事件（应用标签规则等）
+	if s.eventTrigger != nil {
+		s.eventTrigger.OnSubscriptionUpdate(id, nodeIDs)
+	}
+
+	// 完成任务
+	if task != nil {
+		s.taskManager.CompleteTask(task.ID, "订阅更新成功", map[string]interface{}{
+			"subscription_id": id,
+			"node_count":      len(nodeIDs),
+		})
 	}
 
 	// 自动应用配置
@@ -497,14 +691,34 @@ func (s *Server) refreshSubscription(c *gin.Context) {
 }
 
 func (s *Server) refreshAllSubscriptions(c *gin.Context) {
+	// 创建任务记录
+	var task *models.Task
+	if s.taskManager != nil {
+		task, _, _ = s.taskManager.CreateTask(models.TaskTypeSubUpdate, "更新全部订阅", models.TaskTriggerManual, 0)
+		s.taskManager.StartTask(task.ID)
+	}
+
 	if err := s.subService.RefreshAll(); err != nil {
+		if task != nil {
+			s.taskManager.FailTask(task.ID, err.Error())
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	// 同步节点到 SQLite（用于测速模块）
-	if err := s.syncNodesToSQLite(); err != nil {
-		logger.Warn("同步节点到 SQLite 失败: %v", err)
+	nodeIDs := s.syncNodesToSQLiteAndGetIDs()
+
+	// 触发订阅更新事件
+	if s.eventTrigger != nil {
+		s.eventTrigger.OnSubscriptionUpdate("all", nodeIDs)
+	}
+
+	// 完成任务
+	if task != nil {
+		s.taskManager.CompleteTask(task.ID, "全部订阅更新成功", map[string]interface{}{
+			"node_count": len(nodeIDs),
+		})
 	}
 
 	// 自动应用配置
@@ -2365,4 +2579,30 @@ func (s *Server) syncNodesToSQLite() error {
 
 	logger.Debug("节点同步完成")
 	return nil
+}
+
+// syncNodesToSQLiteAndGetIDs 同步节点并返回所有节点 ID
+func (s *Server) syncNodesToSQLiteAndGetIDs() []uint {
+	if err := s.syncNodesToSQLite(); err != nil {
+		logger.Warn("同步节点到 SQLite 失败: %v", err)
+		return nil
+	}
+
+	// 获取所有启用的节点 ID
+	if s.dbStore == nil {
+		return nil
+	}
+
+	nodes, err := s.dbStore.GetNodes()
+	if err != nil {
+		return nil
+	}
+
+	var ids []uint
+	for _, node := range nodes {
+		if node.Enabled {
+			ids = append(ids, node.ID)
+		}
+	}
+	return ids
 }

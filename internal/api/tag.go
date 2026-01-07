@@ -33,7 +33,7 @@ func (h *TagHandler) GetTags(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, tags)
+	c.JSON(http.StatusOK, gin.H{"data": tags})
 }
 
 // GetTag 获取单个标签
@@ -166,7 +166,7 @@ func (h *TagHandler) GetTagGroups(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, groups)
+	c.JSON(http.StatusOK, gin.H{"data": groups})
 }
 
 // ==================== 标签规则 API ====================
@@ -178,7 +178,7 @@ func (h *TagHandler) GetTagRules(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, rules)
+	c.JSON(http.StatusOK, gin.H{"data": rules})
 }
 
 // GetTagRule 获取单个标签规则
@@ -443,5 +443,5 @@ func (h *TagHandler) ApplyTagRules(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, result)
+	c.JSON(http.StatusOK, gin.H{"data": result})
 }

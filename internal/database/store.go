@@ -3,6 +3,7 @@ package database
 import (
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/xiaobei/singbox-manager/internal/database/models"
 	"gorm.io/gorm"
@@ -875,4 +876,64 @@ func (s *Store) BatchRemoveNodeTags(nodeIDs []uint, tagID uint) error {
 		return nil
 	}
 	return s.db.Exec("DELETE FROM node_tags WHERE node_id IN ? AND tag_id = ?", nodeIDs, tagID).Error
+}
+
+// ==================== 任务操作 ====================
+
+// CreateTask 创建任务
+func (s *Store) CreateTask(task *models.Task) error {
+	return s.db.Create(task).Error
+}
+
+// GetTask 获取单个任务
+func (s *Store) GetTask(id string) (*models.Task, error) {
+	var task models.Task
+	err := s.db.First(&task, "id = ?", id).Error
+	if err != nil {
+		return nil, err
+	}
+	return &task, nil
+}
+
+// GetTasks 获取任务列表
+func (s *Store) GetTasks(limit, offset int, taskType, status string) ([]models.Task, error) {
+	var tasks []models.Task
+	query := s.db.Order("created_at DESC")
+	if taskType != "" {
+		query = query.Where("type = ?", taskType)
+	}
+	if status != "" {
+		query = query.Where("status = ?", status)
+	}
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+	if offset > 0 {
+		query = query.Offset(offset)
+	}
+	err := query.Find(&tasks).Error
+	return tasks, err
+}
+
+// UpdateTask 更新任务
+func (s *Store) UpdateTask(task *models.Task) error {
+	return s.db.Save(task).Error
+}
+
+// DeleteTask 删除任务
+func (s *Store) DeleteTask(id string) error {
+	return s.db.Delete(&models.Task{}, "id = ?", id).Error
+}
+
+// DeleteTasksBefore 删除指定时间之前的任务
+func (s *Store) DeleteTasksBefore(before time.Time) error {
+	return s.db.Where("created_at < ?", before).Delete(&models.Task{}).Error
+}
+
+// GetRunningTasks 获取运行中的任务
+func (s *Store) GetRunningTasks() ([]models.Task, error) {
+	var tasks []models.Task
+	err := s.db.Where("status IN ?", []string{models.TaskStatusPending, models.TaskStatusRunning}).
+		Order("created_at DESC").Find(&tasks).Error
+	return tasks, err
 }

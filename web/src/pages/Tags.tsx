@@ -84,17 +84,55 @@ const colorOptions = [
   { value: 'danger', label: '红色', bg: 'bg-red-500' },
 ];
 
-// 条件字段选项
+// 条件字段选项（参考 sublinkPro 扩展）
 const conditionFieldOptions = [
-  { value: 'delay', label: '延迟 (ms)' },
-  { value: 'speed', label: '速度 (MB/s)' },
-  { value: 'country', label: '国家代码' },
-  { value: 'type', label: '节点类型' },
-  { value: 'name', label: '节点名称' },
-  { value: 'source', label: '来源' },
-  { value: 'server', label: '服务器地址' },
-  { value: 'delay_status', label: '延迟状态' },
-  { value: 'speed_status', label: '速度状态' },
+  // 测速相关
+  { value: 'delay', label: '延迟 (ms)', type: 'number' },
+  { value: 'speed', label: '速度 (MB/s)', type: 'number' },
+  { value: 'delay_status', label: '延迟状态', type: 'status' },
+  { value: 'speed_status', label: '速度状态', type: 'status' },
+  // 地理信息
+  { value: 'country', label: '国家代码', type: 'string' },
+  { value: 'landing_ip', label: '落地 IP', type: 'string' },
+  // 节点属性
+  { value: 'name', label: '节点名称', type: 'string' },
+  { value: 'type', label: '协议类型', type: 'protocol' },
+  { value: 'server', label: '服务器地址', type: 'string' },
+  { value: 'server_port', label: '端口', type: 'number' },
+  { value: 'source', label: '来源', type: 'string' },
+  { value: 'source_name', label: '来源名称', type: 'string' },
+];
+
+// 状态选项
+const statusOptions = [
+  { value: 'untested', label: '未测试' },
+  { value: 'success', label: '成功' },
+  { value: 'timeout', label: '超时' },
+  { value: 'error', label: '失败' },
+];
+
+// 协议类型选项
+const protocolOptions = [
+  { value: 'ss', label: 'Shadowsocks' },
+  { value: 'vmess', label: 'VMess' },
+  { value: 'vless', label: 'VLESS' },
+  { value: 'trojan', label: 'Trojan' },
+  { value: 'hysteria2', label: 'Hysteria2' },
+  { value: 'tuic', label: 'TUIC' },
+];
+
+// 常用国家代码选项
+const countryOptions = [
+  { value: 'HK', label: '🇭🇰 香港' },
+  { value: 'TW', label: '🇹🇼 台湾' },
+  { value: 'JP', label: '🇯🇵 日本' },
+  { value: 'SG', label: '🇸🇬 新加坡' },
+  { value: 'US', label: '🇺🇸 美国' },
+  { value: 'KR', label: '🇰🇷 韩国' },
+  { value: 'DE', label: '🇩🇪 德国' },
+  { value: 'GB', label: '🇬🇧 英国' },
+  { value: 'FR', label: '🇫🇷 法国' },
+  { value: 'AU', label: '🇦🇺 澳大利亚' },
 ];
 
 // 操作符选项
@@ -718,53 +756,122 @@ export default function Tags() {
                   </Button>
                 </CardHeader>
                 <CardBody className="space-y-3">
-                  {ruleForm.conditions.conditions.map((cond, index) => (
-                    <div key={index} className="flex gap-2 items-end">
-                      <Select
-                        size="sm"
-                        label="字段"
-                        className="flex-1"
-                        selectedKeys={[cond.field]}
-                        onChange={(e) => updateCondition(index, 'field', e.target.value)}
-                      >
-                        {conditionFieldOptions.map((opt) => (
-                          <SelectItem key={opt.value} value={opt.value}>
-                            {opt.label}
-                          </SelectItem>
-                        ))}
-                      </Select>
-                      <Select
-                        size="sm"
-                        label="操作"
-                        className="flex-1"
-                        selectedKeys={[cond.operator]}
-                        onChange={(e) => updateCondition(index, 'operator', e.target.value)}
-                      >
-                        {operatorOptions.map((opt) => (
-                          <SelectItem key={opt.value} value={opt.value}>
-                            {opt.label}
-                          </SelectItem>
-                        ))}
-                      </Select>
-                      <Input
-                        size="sm"
-                        label="值"
-                        className="flex-1"
-                        value={String(cond.value)}
-                        onChange={(e) => updateCondition(index, 'value', e.target.value)}
-                      />
-                      <Button
-                        isIconOnly
-                        size="sm"
-                        color="danger"
-                        variant="light"
-                        onPress={() => removeCondition(index)}
-                        isDisabled={ruleForm.conditions.conditions.length <= 1}
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </Button>
-                    </div>
-                  ))}
+                  {ruleForm.conditions.conditions.map((cond, index) => {
+                    // 获取当前字段的类型
+                    const fieldConfig = conditionFieldOptions.find(f => f.value === cond.field);
+                    const fieldType = fieldConfig?.type || 'string';
+
+                    // 根据字段类型渲染不同的值输入组件
+                    const renderValueInput = () => {
+                      if (fieldType === 'status') {
+                        return (
+                          <Select
+                            size="sm"
+                            label="值"
+                            className="flex-1"
+                            selectedKeys={cond.value ? [String(cond.value)] : []}
+                            onChange={(e) => updateCondition(index, 'value', e.target.value)}
+                          >
+                            {statusOptions.map((opt) => (
+                              <SelectItem key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </SelectItem>
+                            ))}
+                          </Select>
+                        );
+                      }
+
+                      if (fieldType === 'protocol') {
+                        return (
+                          <Select
+                            size="sm"
+                            label="值"
+                            className="flex-1"
+                            selectedKeys={cond.value ? [String(cond.value)] : []}
+                            onChange={(e) => updateCondition(index, 'value', e.target.value)}
+                          >
+                            {protocolOptions.map((opt) => (
+                              <SelectItem key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </SelectItem>
+                            ))}
+                          </Select>
+                        );
+                      }
+
+                      if (cond.field === 'country') {
+                        return (
+                          <Select
+                            size="sm"
+                            label="值"
+                            className="flex-1"
+                            selectedKeys={cond.value ? [String(cond.value)] : []}
+                            onChange={(e) => updateCondition(index, 'value', e.target.value)}
+                          >
+                            {countryOptions.map((opt) => (
+                              <SelectItem key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </SelectItem>
+                            ))}
+                          </Select>
+                        );
+                      }
+
+                      return (
+                        <Input
+                          size="sm"
+                          label="值"
+                          className="flex-1"
+                          type={fieldType === 'number' ? 'number' : 'text'}
+                          value={String(cond.value)}
+                          onChange={(e) => updateCondition(index, 'value', fieldType === 'number' ? parseFloat(e.target.value) || 0 : e.target.value)}
+                          placeholder={fieldType === 'number' ? '输入数值' : '输入文本'}
+                        />
+                      );
+                    };
+
+                    return (
+                      <div key={index} className="flex gap-2 items-end">
+                        <Select
+                          size="sm"
+                          label="字段"
+                          className="flex-1"
+                          selectedKeys={[cond.field]}
+                          onChange={(e) => updateCondition(index, 'field', e.target.value)}
+                        >
+                          {conditionFieldOptions.map((opt) => (
+                            <SelectItem key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </SelectItem>
+                          ))}
+                        </Select>
+                        <Select
+                          size="sm"
+                          label="操作"
+                          className="flex-1"
+                          selectedKeys={[cond.operator]}
+                          onChange={(e) => updateCondition(index, 'operator', e.target.value)}
+                        >
+                          {operatorOptions.map((opt) => (
+                            <SelectItem key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </SelectItem>
+                          ))}
+                        </Select>
+                        {renderValueInput()}
+                        <Button
+                          isIconOnly
+                          size="sm"
+                          color="danger"
+                          variant="light"
+                          onPress={() => removeCondition(index)}
+                          isDisabled={ruleForm.conditions.conditions.length <= 1}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </div>
+                    );
+                  })}
                 </CardBody>
               </Card>
 

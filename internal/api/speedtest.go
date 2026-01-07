@@ -1,20 +1,23 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/xiaobei/singbox-manager/internal/database"
 	"github.com/xiaobei/singbox-manager/internal/database/models"
+	"github.com/xiaobei/singbox-manager/internal/service"
 	"github.com/xiaobei/singbox-manager/internal/speedtest"
 )
 
 // SpeedTestHandler 测速 API 处理器
 type SpeedTestHandler struct {
-	store     *database.Store
-	executor  *speedtest.Executor
-	scheduler *speedtest.Scheduler
+	store            *database.Store
+	executor         *speedtest.Executor
+	scheduler        *speedtest.Scheduler
+	unifiedScheduler *service.UnifiedScheduler
 }
 
 // NewSpeedTestHandler 创建测速处理器
@@ -23,6 +26,45 @@ func NewSpeedTestHandler(store *database.Store, executor *speedtest.Executor, sc
 		store:     store,
 		executor:  executor,
 		scheduler: scheduler,
+	}
+}
+
+// SetUnifiedScheduler 设置统一调度器
+func (h *SpeedTestHandler) SetUnifiedScheduler(us *service.UnifiedScheduler) {
+	h.unifiedScheduler = us
+}
+
+// updateUnifiedSchedule 同步更新统一调度器
+func (h *SpeedTestHandler) updateUnifiedSchedule(profile *models.SpeedTestProfile) {
+	if h.unifiedScheduler == nil {
+		return
+	}
+
+	profileID := profile.ID
+	key := fmt.Sprintf("%d", profileID)
+
+	// 先移除旧的调度
+	h.unifiedScheduler.RemoveSchedule(service.ScheduleTypeSpeedTest, key)
+
+	// 如果启用自动测速，添加新调度
+	if profile.AutoTest && profile.Enabled {
+		var cronExpr string
+		if profile.ScheduleType == "cron" && profile.ScheduleCron != "" {
+			cronExpr = profile.ScheduleCron
+		} else {
+			cronExpr = service.IntervalToCron(profile.ScheduleInterval)
+		}
+		h.unifiedScheduler.AddSchedule(
+			service.ScheduleTypeSpeedTest,
+			key,
+			"定时测速: "+profile.Name,
+			cronExpr,
+			func() {
+				if h.executor != nil {
+					h.executor.RunWithProfile(profileID, nil, speedtest.TriggerTypeScheduled)
+				}
+			},
+		)
 	}
 }
 
@@ -148,6 +190,8 @@ func (h *SpeedTestHandler) CreateProfile(c *gin.Context) {
 	if profile.AutoTest && profile.Enabled {
 		h.scheduler.UpdateSchedule(profile)
 	}
+	// 同步更新统一调度器
+	h.updateUnifiedSchedule(profile)
 
 	c.JSON(http.StatusCreated, profile)
 }
@@ -202,6 +246,8 @@ func (h *SpeedTestHandler) UpdateProfile(c *gin.Context) {
 
 	// 更新调度
 	h.scheduler.UpdateSchedule(profile)
+	// 同步更新统一调度器
+	h.updateUnifiedSchedule(profile)
 
 	c.JSON(http.StatusOK, profile)
 }
@@ -229,6 +275,10 @@ func (h *SpeedTestHandler) DeleteProfile(c *gin.Context) {
 
 	// 移除调度
 	h.scheduler.RemoveSchedule(uint(id))
+	// 同步移除统一调度器中的条目
+	if h.unifiedScheduler != nil {
+		h.unifiedScheduler.RemoveSchedule(service.ScheduleTypeSpeedTest, fmt.Sprintf("%d", id))
+	}
 
 	if err := h.store.DeleteSpeedTestProfile(uint(id)); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

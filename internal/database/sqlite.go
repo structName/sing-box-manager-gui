@@ -114,6 +114,9 @@ func autoMigrateDB(database *gorm.DB) error {
 		// 设置
 		&models.Setting{},
 		&models.Profile{},
+
+		// 任务管理
+		&models.Task{},
 	)
 }
 
@@ -166,6 +169,84 @@ func initDefaultDataDB(database *gorm.DB) error {
 		}
 	}
 
+	// 初始化默认标签
+	if err := initDefaultTags(database); err != nil {
+		logger.Warn("初始化默认标签失败: %v", err)
+	}
+
+	// 初始化默认标签规则
+	if err := initDefaultTagRules(database); err != nil {
+		logger.Warn("初始化默认标签规则失败: %v", err)
+	}
+
+	return nil
+}
+
+// initDefaultTags 初始化默认标签
+func initDefaultTags(database *gorm.DB) error {
+	created := 0
+	for _, tag := range models.DefaultTags {
+		var count int64
+		database.Model(&models.Tag{}).Where("name = ?", tag.Name).Count(&count)
+		if count == 0 {
+			newTag := models.Tag{
+				Name:        tag.Name,
+				Color:       tag.Color,
+				TagGroup:    tag.TagGroup,
+				Description: tag.Description,
+			}
+			if err := database.Create(&newTag).Error; err != nil {
+				continue
+			}
+			created++
+		}
+	}
+	if created > 0 {
+		logger.Info("初始化默认标签完成，共创建 %d 个", created)
+	}
+	return nil
+}
+
+// initDefaultTagRules 初始化默认标签规则
+func initDefaultTagRules(database *gorm.DB) error {
+	// 创建标签名称到 ID 的映射
+	var tags []models.Tag
+	if err := database.Find(&tags).Error; err != nil {
+		return err
+	}
+	tagNameToID := make(map[string]uint)
+	for _, t := range tags {
+		tagNameToID[t.Name] = t.ID
+	}
+
+	created := 0
+	for _, rule := range models.DefaultTagRules {
+		// 查找关联的标签 ID
+		tagID, ok := tagNameToID[rule.TagName]
+		if !ok {
+			continue
+		}
+
+		// 检查规则是否已存在
+		var count int64
+		database.Model(&models.TagRule{}).Where("name = ?", rule.Name).Count(&count)
+		if count == 0 {
+			newRule := models.TagRule{
+				Name:        rule.Name,
+				TagID:       tagID,
+				Enabled:     rule.Enabled,
+				TriggerType: rule.TriggerType,
+				Conditions:  rule.Conditions,
+			}
+			if err := database.Create(&newRule).Error; err != nil {
+				continue
+			}
+			created++
+		}
+	}
+	if created > 0 {
+		logger.Info("初始化默认规则完成，共创建 %d 条", created)
+	}
 	return nil
 }
 

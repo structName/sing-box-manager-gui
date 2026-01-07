@@ -102,11 +102,8 @@ func main() {
 		logger.Printf("Swagger OpenAPI 已生成: %s", swaggerOut)
 	}
 
-	// 启动定时任务调度器
-	server.StartScheduler()
-
-	// 启动测速定时调度器
-	server.StartSpeedTestScheduler()
+	// 启动统一调度器（包含订阅更新、测速、链路检测等）
+	server.StartUnifiedScheduler()
 
 	// 启动服务
 	addr := fmt.Sprintf(":%d", port)

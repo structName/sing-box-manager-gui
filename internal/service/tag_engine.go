@@ -129,26 +129,41 @@ func (e *TagEngine) matchConditions(node *models.Node, conditions models.TagCond
 func (e *TagEngine) matchCondition(node *models.Node, cond models.TagCondition) bool {
 	var value interface{}
 
-	// 获取字段值
+	// 获取字段值（参考 sublinkPro 扩展更多字段）
 	switch cond.Field {
+	// 测速相关
 	case "delay":
 		value = node.Delay
 	case "speed":
 		value = node.Speed
-	case "country":
-		value = node.Country
-	case "type":
-		value = node.Type
-	case "name", "tag":
-		value = node.Tag
-	case "source":
-		value = node.Source
-	case "server":
-		value = node.Server
 	case "delay_status":
 		value = node.DelayStatus
 	case "speed_status":
 		value = node.SpeedStatus
+	// 地理信息
+	case "country":
+		value = node.Country
+	case "country_emoji":
+		value = node.CountryEmoji
+	case "landing_ip":
+		value = node.LandingIP
+	// 节点属性
+	case "name", "tag":
+		value = node.Tag
+	case "type", "protocol":
+		value = node.Type
+	case "server", "server_address":
+		value = node.Server
+	case "server_port", "port":
+		value = node.ServerPort
+	case "source":
+		value = node.Source
+	case "source_name":
+		value = node.SourceName
+	case "enabled":
+		value = node.Enabled
+	case "link":
+		value = node.Link
 	default:
 		return false
 	}
