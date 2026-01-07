@@ -6,7 +6,6 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
-	"net/url"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -20,33 +19,45 @@ import (
 	"github.com/shirou/gopsutil/v3/process"
 	"github.com/xiaobei/singbox-manager/internal/builder"
 	"github.com/xiaobei/singbox-manager/internal/daemon"
+	"github.com/xiaobei/singbox-manager/internal/database"
+	"github.com/xiaobei/singbox-manager/internal/database/models"
 	"github.com/xiaobei/singbox-manager/internal/kernel"
 	"github.com/xiaobei/singbox-manager/internal/logger"
 	"github.com/xiaobei/singbox-manager/internal/parser"
 	"github.com/xiaobei/singbox-manager/internal/service"
+	"github.com/xiaobei/singbox-manager/internal/speedtest"
 	"github.com/xiaobei/singbox-manager/internal/storage"
 	"github.com/xiaobei/singbox-manager/web"
 )
 
 // Server API 服务器
 type Server struct {
-	store           *storage.JSONStore
-	subService      *service.SubscriptionService
-	processManager  *daemon.ProcessManager
-	launchdManager  *daemon.LaunchdManager
-	systemdManager  *daemon.SystemdManager
-	kernelManager   *kernel.Manager
-	scheduler       *service.Scheduler
-	chainSyncSvc    *service.ChainSyncService
-	healthCheckSvc  *service.HealthCheckService
-	router          *gin.Engine
-	sbmPath         string // sbm 可执行文件路径
-	port            int    // Web 服务端口
-	version         string // sbm 版本号
+	store          *storage.JSONStore
+	subService     *service.SubscriptionService
+	processManager *daemon.ProcessManager
+	launchdManager *daemon.LaunchdManager
+	systemdManager *daemon.SystemdManager
+	kernelManager  *kernel.Manager
+	scheduler      *service.Scheduler
+	chainSyncSvc   *service.ChainSyncService
+	healthCheckSvc *service.HealthCheckService
+	router         *gin.Engine
+	sbmPath        string // sbm 可执行文件路径
+	port           int    // Web 服务端口
+	version        string // sbm 版本号
+	swaggerEnabled bool   // 是否启用 Swagger
+	// SQLite 存储和测速模块
+	dbStore            *database.Store
+	speedTestExecutor  *speedtest.Executor
+	speedTestScheduler *speedtest.Scheduler
+	speedTestHandler   *SpeedTestHandler
+	// 标签模块
+	tagEngine  *service.TagEngine
+	tagHandler *TagHandler
 }
 
 // NewServer 创建 API 服务器
-func NewServer(store *storage.JSONStore, processManager *daemon.ProcessManager, launchdManager *daemon.LaunchdManager, systemdManager *daemon.SystemdManager, sbmPath string, port int, version string) *Server {
+func NewServer(store *storage.JSONStore, processManager *daemon.ProcessManager, launchdManager *daemon.LaunchdManager, systemdManager *daemon.SystemdManager, sbmPath string, port int, version string, swaggerEnabled bool) *Server {
 	gin.SetMode(gin.ReleaseMode)
 
 	// 创建链路同步服务
@@ -61,24 +72,61 @@ func NewServer(store *storage.JSONStore, processManager *daemon.ProcessManager, 
 	// 创建健康检测服务
 	healthCheckSvc := service.NewHealthCheckService(store)
 
+	// 初始化 SQLite 数据库和测速模块
+	var dbStore *database.Store
+	var speedTestExecutor *speedtest.Executor
+	var speedTestScheduler *speedtest.Scheduler
+	var speedTestHandler *SpeedTestHandler
+	var tagEngine *service.TagEngine
+	var tagHandler *TagHandler
+
+	db, err := database.InitDB(store.GetDataDir())
+	if err != nil {
+		logger.Error("初始化 SQLite 数据库失败: %v", err)
+	} else {
+		dbStore = database.NewStore(db)
+		speedTestExecutor = speedtest.NewExecutor(dbStore)
+		speedTestScheduler = speedtest.NewScheduler(dbStore, speedTestExecutor)
+		speedTestHandler = NewSpeedTestHandler(dbStore, speedTestExecutor, speedTestScheduler)
+		tagEngine = service.NewTagEngine(dbStore)
+		tagHandler = NewTagHandler(dbStore, tagEngine)
+		logger.Info("测速和标签模块初始化完成")
+	}
+
 	s := &Server{
-		store:           store,
-		subService:      subService,
-		processManager:  processManager,
-		launchdManager:  launchdManager,
-		systemdManager:  systemdManager,
-		kernelManager:   kernelManager,
-		scheduler:       service.NewScheduler(store, subService),
-		chainSyncSvc:    chainSyncSvc,
-		healthCheckSvc:  healthCheckSvc,
-		router:          gin.Default(),
-		sbmPath:         sbmPath,
-		port:            port,
-		version:         version,
+		store:              store,
+		subService:         subService,
+		processManager:     processManager,
+		launchdManager:     launchdManager,
+		systemdManager:     systemdManager,
+		kernelManager:      kernelManager,
+		scheduler:          service.NewScheduler(store, subService),
+		chainSyncSvc:       chainSyncSvc,
+		healthCheckSvc:     healthCheckSvc,
+		router:             gin.Default(),
+		sbmPath:            sbmPath,
+		port:               port,
+		version:            version,
+		swaggerEnabled:     swaggerEnabled,
+		dbStore:            dbStore,
+		speedTestExecutor:  speedTestExecutor,
+		speedTestScheduler: speedTestScheduler,
+		speedTestHandler:   speedTestHandler,
+		tagEngine:          tagEngine,
+		tagHandler:         tagHandler,
 	}
 
 	// 设置调度器的更新回调
 	s.scheduler.SetUpdateCallback(s.autoApplyConfig)
+
+	// 初始同步节点到 SQLite（用于测速模块）
+	if s.dbStore != nil {
+		if err := s.syncNodesToSQLite(); err != nil {
+			logger.Warn("启动时同步节点到 SQLite 失败: %v", err)
+		} else {
+			logger.Info("节点已同步到 SQLite 数据库")
+		}
+	}
 
 	s.setupRoutes()
 	return s
@@ -92,6 +140,22 @@ func (s *Server) StartScheduler() {
 // StopScheduler 停止定时任务调度器
 func (s *Server) StopScheduler() {
 	s.scheduler.Stop()
+}
+
+// StartSpeedTestScheduler 启动测速定时调度器
+func (s *Server) StartSpeedTestScheduler() {
+	if s.speedTestScheduler != nil {
+		if err := s.speedTestScheduler.Start(); err != nil {
+			logger.Error("启动测速调度器失败: %v", err)
+		}
+	}
+}
+
+// StopSpeedTestScheduler 停止测速定时调度器
+func (s *Server) StopSpeedTestScheduler() {
+	if s.speedTestScheduler != nil {
+		s.speedTestScheduler.Stop()
+	}
 }
 
 // setupRoutes 设置路由
@@ -202,7 +266,8 @@ func (s *Server) setupRoutes() {
 		api.GET("/nodes/country/:code", s.getNodesByCountry)
 		api.POST("/nodes/parse", s.parseNodeURL)
 		api.GET("/nodes/delays", s.getNodeDelays)
-		api.POST("/nodes/:tag/delay", s.testNodeDelay)
+		api.POST("/nodes/:nodeId/delay", s.testNodeDelay)
+		api.POST("/nodes/delays/refresh", s.refreshAllNodeDelays) // 批量刷新延迟
 
 		// 手动节点
 		api.GET("/manual-nodes", s.getManualNodes)
@@ -233,6 +298,57 @@ func (s *Server) setupRoutes() {
 		api.GET("/kernel/releases", s.getKernelReleases)
 		api.POST("/kernel/download", s.startKernelDownload)
 		api.GET("/kernel/progress", s.getKernelProgress)
+
+		// 测速管理（需要 speedTestHandler 已初始化）
+		if s.speedTestHandler != nil {
+			// 测速策略
+			api.GET("/speedtest/profiles", s.speedTestHandler.GetProfiles)
+			api.GET("/speedtest/profiles/:id", s.speedTestHandler.GetProfile)
+			api.POST("/speedtest/profiles", s.speedTestHandler.CreateProfile)
+			api.PUT("/speedtest/profiles/:id", s.speedTestHandler.UpdateProfile)
+			api.DELETE("/speedtest/profiles/:id", s.speedTestHandler.DeleteProfile)
+
+			// 测速执行
+			api.POST("/speedtest/run", s.speedTestHandler.RunTest)
+			api.GET("/speedtest/tasks", s.speedTestHandler.GetTasks)
+			api.GET("/speedtest/tasks/:id", s.speedTestHandler.GetTask)
+			api.POST("/speedtest/tasks/:id/cancel", s.speedTestHandler.CancelTask)
+
+			// 测速历史
+			api.GET("/speedtest/nodes/:nodeId/history", s.speedTestHandler.GetNodeHistory)
+		}
+
+		// 标签管理（需要 tagHandler 已初始化）
+		if s.tagHandler != nil {
+			// 标签 CRUD
+			api.GET("/tags", s.tagHandler.GetTags)
+			api.GET("/tags/:id", s.tagHandler.GetTag)
+			api.POST("/tags", s.tagHandler.CreateTag)
+			api.PUT("/tags/:id", s.tagHandler.UpdateTag)
+			api.DELETE("/tags/:id", s.tagHandler.DeleteTag)
+			api.GET("/tags/groups", s.tagHandler.GetTagGroups)
+
+			// 标签规则
+			api.GET("/tag-rules", s.tagHandler.GetTagRules)
+			api.GET("/tag-rules/:id", s.tagHandler.GetTagRule)
+			api.POST("/tag-rules", s.tagHandler.CreateTagRule)
+			api.PUT("/tag-rules/:id", s.tagHandler.UpdateTagRule)
+			api.DELETE("/tag-rules/:id", s.tagHandler.DeleteTagRule)
+
+			// 节点标签
+			api.GET("/nodes/:nodeId/tags", s.tagHandler.GetNodeTags)
+			api.PUT("/nodes/:nodeId/tags", s.tagHandler.SetNodeTags)
+			api.POST("/nodes/:nodeId/tags", s.tagHandler.AddNodeTag)
+			api.DELETE("/nodes/:nodeId/tags/:tagId", s.tagHandler.RemoveNodeTag)
+
+			// 规则执行
+			api.POST("/tags/apply-rules", s.tagHandler.ApplyTagRules)
+		}
+	}
+
+	// Swagger 文档（默认关闭）
+	if s.swaggerEnabled {
+		s.setupSwagger()
 	}
 
 	// 静态文件服务（前端，使用嵌入的文件系统）
@@ -284,6 +400,11 @@ func (s *Server) addSubscription(c *gin.Context) {
 		return
 	}
 
+	// 同步节点到 SQLite（用于测速模块）
+	if err := s.syncNodesToSQLite(); err != nil {
+		logger.Warn("同步节点到 SQLite 失败: %v", err)
+	}
+
 	// 自动应用配置
 	if err := s.autoApplyConfig(); err != nil {
 		c.JSON(http.StatusOK, gin.H{"data": sub, "warning": "添加成功，但自动应用配置失败: " + err.Error()})
@@ -325,6 +446,11 @@ func (s *Server) deleteSubscription(c *gin.Context) {
 		return
 	}
 
+	// 同步节点到 SQLite（用于测速模块）
+	if err := s.syncNodesToSQLite(); err != nil {
+		logger.Warn("同步节点到 SQLite 失败: %v", err)
+	}
+
 	// 自动应用配置
 	if err := s.autoApplyConfig(); err != nil {
 		c.JSON(http.StatusOK, gin.H{"message": "删除成功，但自动应用配置失败: " + err.Error()})
@@ -342,6 +468,11 @@ func (s *Server) refreshSubscription(c *gin.Context) {
 		return
 	}
 
+	// 同步节点到 SQLite（用于测速模块）
+	if err := s.syncNodesToSQLite(); err != nil {
+		logger.Warn("同步节点到 SQLite 失败: %v", err)
+	}
+
 	// 自动应用配置
 	if err := s.autoApplyConfig(); err != nil {
 		c.JSON(http.StatusOK, gin.H{"message": "刷新成功，但自动应用配置失败: " + err.Error()})
@@ -355,6 +486,11 @@ func (s *Server) refreshAllSubscriptions(c *gin.Context) {
 	if err := s.subService.RefreshAll(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+
+	// 同步节点到 SQLite（用于测速模块）
+	if err := s.syncNodesToSQLite(); err != nil {
+		logger.Warn("同步节点到 SQLite 失败: %v", err)
 	}
 
 	// 自动应用配置
@@ -1673,93 +1809,118 @@ func (s *Server) parseNodeURL(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": node})
 }
 
-// getNodeDelays 从 Clash API 获取所有节点的延迟
+// NodeSpeedInfo 节点测速信息
+type NodeSpeedInfo struct {
+	Delay int     `json:"delay"` // 延迟 (ms), -1 表示超时, 0 表示未测试
+	Speed float64 `json:"speed"` // 速度 (MB/s)
+}
+
+// getNodeDelays 获取所有节点的延迟和速度 (从 SQLite 数据库)
 func (s *Server) getNodeDelays(c *gin.Context) {
-	settings := s.store.GetSettings()
-	if settings.ClashAPIPort <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Clash API 未启用"})
+	// 从 SQLite 获取所有节点的延迟信息
+	if s.dbStore == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "数据库未初始化"})
 		return
 	}
 
-	// 调用 Clash API 获取所有代理信息
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/proxies", settings.ClashAPIPort))
+	nodes, err := s.dbStore.GetNodes()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "无法连接 Clash API: " + err.Error()})
-		return
-	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Proxies map[string]struct {
-			Name    string `json:"name"`
-			Type    string `json:"type"`
-			History []struct {
-				Delay int `json:"delay"`
-			} `json:"history"`
-		} `json:"proxies"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "解析响应失败: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取节点失败: " + err.Error()})
 		return
 	}
 
-	// 提取延迟信息
-	delays := make(map[string]int)
-	for name, proxy := range result.Proxies {
-		if len(proxy.History) > 0 {
-			delays[name] = proxy.History[len(proxy.History)-1].Delay
+	// 构建测速信息映射
+	speedInfos := make(map[string]NodeSpeedInfo)
+	for _, node := range nodes {
+		info := NodeSpeedInfo{}
+		// 设置延迟
+		if node.DelayStatus == "success" && node.Delay > 0 {
+			info.Delay = node.Delay
+		} else if node.DelayStatus == "timeout" || node.DelayStatus == "error" {
+			info.Delay = -1
+		}
+		// 设置速度
+		if node.SpeedStatus == "success" && node.Speed > 0 {
+			info.Speed = node.Speed
+		}
+		// 只返回有测试数据的节点
+		if info.Delay != 0 || info.Speed > 0 {
+			speedInfos[node.Tag] = info
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"data": delays})
+	c.JSON(http.StatusOK, gin.H{"data": speedInfos})
 }
 
-// testNodeDelay 测试单个节点的延迟
+// testNodeDelay 测试单个节点的延迟 (使用 mihomo)
 func (s *Server) testNodeDelay(c *gin.Context) {
-	tag := c.Param("tag")
-	settings := s.store.GetSettings()
-	if settings.ClashAPIPort <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Clash API 未启用"})
+	tag := c.Param("nodeId")
+
+	if s.dbStore == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "数据库未初始化"})
 		return
 	}
 
-	// 调用 Clash API 测试延迟
-	testURL := "https://www.gstatic.com/generate_204"
-	timeout := 5000 // ms
-
-	apiURL := fmt.Sprintf("http://127.0.0.1:%d/proxies/%s/delay?url=%s&timeout=%d",
-		settings.ClashAPIPort,
-		url.PathEscape(tag),
-		url.QueryEscape(testURL),
-		timeout,
-	)
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(apiURL)
+	// 从 SQLite 查找节点
+	node, err := s.dbStore.GetNodeByTag(tag)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "测试失败: " + err.Error()})
-		return
-	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Delay   int    `json:"delay"`
-		Message string `json:"message,omitempty"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "解析响应失败: " + err.Error()})
+		c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在: " + tag})
 		return
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		c.JSON(http.StatusOK, gin.H{"data": gin.H{"tag": tag, "delay": 0, "error": result.Message}})
+	// 使用 mihomo 测速
+	profile := &models.SpeedTestProfile{
+		LatencyURL:       "https://www.gstatic.com/generate_204",
+		Timeout:          7,
+		IncludeHandshake: true,
+	}
+	tester := speedtest.NewTester(profile)
+	result := tester.TestDelay(node)
+
+	// 更新节点延迟信息
+	now := time.Now()
+	node.Delay = result.Delay
+	node.DelayStatus = result.Status
+	node.TestedAt = &now
+	if err := s.dbStore.UpdateNode(node); err != nil {
+		logger.Warn("更新节点延迟失败: %v", err)
+	}
+
+	if result.Status == "success" {
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{"tag": tag, "delay": result.Delay}})
+	} else {
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{"tag": tag, "delay": -1, "error": result.Error}})
+	}
+}
+
+// refreshAllNodeDelays 批量刷新所有节点的延迟 (使用测速模块)
+func (s *Server) refreshAllNodeDelays(c *gin.Context) {
+	if s.speedTestExecutor == nil || s.dbStore == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "测速模块未初始化"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{"tag": tag, "delay": result.Delay}})
+	// 使用默认测速策略执行延迟测试
+	defaultProfile, err := s.dbStore.GetDefaultSpeedTestProfile()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取默认测速策略失败"})
+		return
+	}
+
+	// 临时覆盖为仅延迟模式（避免触发速度测试）
+	profileCopy := *defaultProfile
+	profileCopy.Mode = speedtest.TestModeDelay
+
+	task, err := s.speedTestExecutor.RunWithProfileConfig(&profileCopy, nil, speedtest.TriggerTypeManual)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "延迟测试任务已启动",
+		"task_id": task.ID,
+	})
 }
 
 // ==================== 手动节点 API ====================
@@ -2094,4 +2255,158 @@ func (s *Server) checkChainSpeed(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
+// ==================== 节点同步 ====================
+
+// syncNodesToSQLite 同步 JSONStore 节点到 SQLite 数据库 (用于测速模块)
+func (s *Server) syncNodesToSQLite() error {
+	if s.dbStore == nil {
+		return nil // SQLite 未初始化，跳过同步
+	}
+
+	logger.Debug("开始同步节点到 SQLite 数据库...")
+
+	// 获取 JSONStore 中的所有订阅和节点
+	subs := s.store.GetSubscriptions()
+	manualNodes := s.store.GetManualNodes()
+
+	// 构建 source -> 节点列表 的映射
+	sourceNodes := make(map[string][]storage.Node)
+
+	// 订阅节点
+	for _, sub := range subs {
+		if sub.Enabled {
+			sourceNodes[sub.ID] = sub.Nodes
+		}
+	}
+
+	// 手动节点
+	var enabledManualNodes []storage.Node
+	for _, mn := range manualNodes {
+		if mn.Enabled {
+			mn.Node.Source = "manual"
+			mn.Node.SourceName = "手动添加"
+			enabledManualNodes = append(enabledManualNodes, mn.Node)
+		}
+	}
+	if len(enabledManualNodes) > 0 {
+		sourceNodes["manual"] = enabledManualNodes
+	}
+
+	// 获取数据库中现有节点
+	existingNodes, err := s.dbStore.GetNodes()
+	if err != nil {
+		return fmt.Errorf("获取现有节点失败: %w", err)
+	}
+
+	// 构建现有节点的 tag -> node 映射
+	existingMap := make(map[string]*models.Node)
+	for i := range existingNodes {
+		existingMap[existingNodes[i].Tag] = &existingNodes[i]
+	}
+
+	// 构建需要的节点 tag 集合
+	neededTags := make(map[string]bool)
+	var nodesToCreate []models.Node
+	var nodesToUpdate []models.Node
+
+	for source, nodes := range sourceNodes {
+		// 获取订阅名称
+		sourceName := "手动添加"
+		if source != "manual" {
+			for _, sub := range subs {
+				if sub.ID == source {
+					sourceName = sub.Name
+					break
+				}
+			}
+		}
+
+		for _, node := range nodes {
+			neededTags[node.Tag] = true
+
+			if existing, ok := existingMap[node.Tag]; ok {
+				// 节点已存在，检查是否需要更新基本信息
+				needUpdate := false
+				if existing.Server != node.Server || existing.ServerPort != node.ServerPort ||
+					existing.Type != node.Type || existing.Source != source {
+					existing.Server = node.Server
+					existing.ServerPort = node.ServerPort
+					existing.Type = node.Type
+					existing.Source = source
+					existing.SourceName = sourceName
+					existing.Country = node.Country
+					existing.CountryEmoji = node.CountryEmoji
+					existing.Extra = models.JSONMap(node.Extra)
+					needUpdate = true
+				}
+				// 确保节点启用
+				if !existing.Enabled {
+					existing.Enabled = true
+					needUpdate = true
+				}
+				if needUpdate {
+					nodesToUpdate = append(nodesToUpdate, *existing)
+				}
+			} else {
+				// 新节点，需要创建
+				dbNode := models.Node{
+					Tag:          node.Tag,
+					Type:         node.Type,
+					Server:       node.Server,
+					ServerPort:   node.ServerPort,
+					Source:       source,
+					SourceName:   sourceName,
+					Country:      node.Country,
+					CountryEmoji: node.CountryEmoji,
+					Extra:        models.JSONMap(node.Extra),
+					Enabled:      true,
+					DelayStatus:  "untested",
+					SpeedStatus:  "untested",
+				}
+				nodesToCreate = append(nodesToCreate, dbNode)
+			}
+		}
+	}
+
+	// 标记不再需要的节点为禁用
+	var nodesToDisable []uint
+	for tag, existing := range existingMap {
+		if !neededTags[tag] && existing.Enabled {
+			nodesToDisable = append(nodesToDisable, existing.ID)
+		}
+	}
+
+	// 执行数据库操作
+	if len(nodesToCreate) > 0 {
+		if err := s.dbStore.BatchCreateNodes(nodesToCreate); err != nil {
+			return fmt.Errorf("批量创建节点失败: %w", err)
+		}
+		logger.Debug("创建了 %d 个新节点", len(nodesToCreate))
+	}
+
+	for _, node := range nodesToUpdate {
+		if err := s.dbStore.UpdateNode(&node); err != nil {
+			logger.Warn("更新节点 %s 失败: %v", node.Tag, err)
+		}
+	}
+	if len(nodesToUpdate) > 0 {
+		logger.Debug("更新了 %d 个节点", len(nodesToUpdate))
+	}
+
+	// 禁用不再需要的节点
+	if len(nodesToDisable) > 0 {
+		for _, id := range nodesToDisable {
+			node, err := s.dbStore.GetNode(id)
+			if err == nil && node != nil {
+				node.Enabled = false
+				s.dbStore.UpdateNode(node)
+			}
+		}
+		logger.Debug("禁用了 %d 个节点", len(nodesToDisable))
+	}
+
+	logger.Debug("节点同步完成")
+	return nil
 }

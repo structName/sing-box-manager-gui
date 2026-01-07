@@ -132,10 +132,12 @@ export const nodeApi = {
   getCountries: () => api.get('/nodes/countries'),
   getByCountry: (code: string) => api.get(`/nodes/country/${code}`),
   parse: (url: string) => api.post('/nodes/parse', { url }),
-  // 获取所有节点的延迟（从 Clash API 缓存）
+  // 获取所有节点的延迟（从数据库）
   getDelays: () => api.get('/nodes/delays'),
   // 测试单个节点的延迟
   testDelay: (tag: string) => api.post(`/nodes/${encodeURIComponent(tag)}/delay`),
+  // 批量刷新所有节点延迟
+  refreshAllDelays: () => api.post('/nodes/delays/refresh'),
 };
 
 // 手动节点 API
@@ -174,6 +176,49 @@ export const kernelApi = {
   getReleases: () => api.get('/kernel/releases'),
   download: (version: string) => api.post('/kernel/download', { version }),
   getProgress: () => api.get('/kernel/progress'),
+};
+
+// 标签 API
+export const tagApi = {
+  // 标签管理
+  getTags: () => api.get('/tags'),
+  getTag: (id: number) => api.get(`/tags/${id}`),
+  createTag: (data: any) => api.post('/tags', data),
+  updateTag: (id: number, data: any) => api.put(`/tags/${id}`, data),
+  deleteTag: (id: number) => api.delete(`/tags/${id}`),
+  getGroups: () => api.get('/tags/groups'),
+  // 标签规则
+  getRules: () => api.get('/tag-rules'),
+  getRule: (id: number) => api.get(`/tag-rules/${id}`),
+  createRule: (data: any) => api.post('/tag-rules', data),
+  updateRule: (id: number, data: any) => api.put(`/tag-rules/${id}`, data),
+  deleteRule: (id: number) => api.delete(`/tag-rules/${id}`),
+  // 节点标签
+  getNodeTags: (nodeId: number) => api.get(`/nodes/${nodeId}/tags`),
+  setNodeTags: (nodeId: number, tagIds: number[]) => api.put(`/nodes/${nodeId}/tags`, { tag_ids: tagIds }),
+  getNodesByTag: (tagId: number) => api.get(`/tags/${tagId}/nodes`),
+  // 应用规则
+  applyRules: (triggerType: string, nodeIds?: number[]) =>
+    api.post('/tags/apply-rules', { trigger_type: triggerType, node_ids: nodeIds }),
+};
+
+// 测速 API
+export const speedtestApi = {
+  // 策略管理
+  getProfiles: () => api.get('/speedtest/profiles'),
+  getProfile: (id: number) => api.get(`/speedtest/profiles/${id}`),
+  createProfile: (data: any) => api.post('/speedtest/profiles', data),
+  updateProfile: (id: number, data: any) => api.put(`/speedtest/profiles/${id}`, data),
+  deleteProfile: (id: number) => api.delete(`/speedtest/profiles/${id}`),
+  // 任务执行
+  runTest: (profileId?: number, nodeIds?: number[]) =>
+    api.post('/speedtest/run', { profile_id: profileId, node_ids: nodeIds }),
+  getTasks: (limit?: number) => api.get('/speedtest/tasks', { params: { limit } }),
+  getTask: (id: string) => api.get(`/speedtest/tasks/${id}`),
+  cancelTask: (id: string) => api.post(`/speedtest/tasks/${id}/cancel`),
+  // 历史记录
+  getNodeHistory: (nodeId: number, limit?: number) =>
+    api.get(`/speedtest/nodes/${nodeId}/history`, { params: { limit } }),
 };
 
 export default api;

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import {
   Card,
   CardBody,
@@ -20,11 +20,62 @@ import {
   Select,
   SelectItem,
   Switch,
+  Divider,
+  Dropdown,
+  DropdownTrigger,
+  DropdownMenu,
+  DropdownItem,
+  DropdownSection,
 } from '@nextui-org/react';
-import { Plus, RefreshCw, Trash2, Globe, Server, Pencil, Link, Filter as FilterIcon, ChevronDown, ChevronUp } from 'lucide-react';
+import { Plus, RefreshCw, Trash2, Globe, Server, Pencil, Link, Filter as FilterIcon, ChevronDown, ChevronUp, Zap, Settings, Timer } from 'lucide-react';
 import { useStore } from '../store';
-import { nodeApi } from '../api';
+import { nodeApi, speedtestApi } from '../api';
+import { toast } from '../components/Toast';
 import type { Subscription, ManualNode, Node, Filter } from '../store';
+
+// 测速设置类型
+interface SpeedTestProfile {
+  ID?: number;
+  id?: number;
+  name: string;
+  enabled: boolean;
+  is_default?: boolean;
+  cron_expression?: string;
+  schedule_cron?: string;
+  mode: string;  // 'delay' 仅延迟, 'speed' 延迟+速度
+  latency_url: string;
+  speed_url: string;
+  timeout: number;
+  latency_concurrency: number;
+  speed_concurrency: number;
+  include_handshake: boolean;
+  detect_country: boolean;
+}
+
+// 默认测速设置
+const defaultSpeedTestProfile: SpeedTestProfile = {
+  name: '默认策略',
+  enabled: false,
+  cron_expression: '0 */6 * * *', // 每6小时
+  mode: 'speed',  // 默认延迟+速度
+  latency_url: 'https://cp.cloudflare.com/generate_204',
+  speed_url: 'https://speed.cloudflare.com/__down?bytes=5000000',
+  timeout: 7,
+  latency_concurrency: 50,
+  speed_concurrency: 5,
+  include_handshake: false,
+  detect_country: false,
+};
+
+// Cron 预设选项
+const cronPresets = [
+  { label: '每30分钟', value: '*/30 * * * *' },
+  { label: '每1小时', value: '0 * * * *' },
+  { label: '每6小时', value: '0 */6 * * *' },
+  { label: '每12小时', value: '0 */12 * * *' },
+  { label: '每天0点', value: '0 0 * * *' },
+  { label: '每周一', value: '0 0 * * 1' },
+];
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
@@ -33,6 +84,18 @@ function formatBytes(bytes: number): string {
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
+
+const normalizeSpeedTestProfiles = (response: any): any[] => {
+  const data = response?.data;
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.data)) return data.data;
+  return [];
+};
+
+const getProfileId = (profile: any): number | undefined => profile?.ID ?? profile?.id;
+
+const pickDefaultProfile = (profiles: any[]) =>
+  profiles.find((profile) => profile?.is_default || profile?.isDefault) ?? profiles[0];
 
 const nodeTypeOptions = [
   { value: 'shadowsocks', label: 'Shadowsocks' },
@@ -98,10 +161,16 @@ export default function Subscriptions() {
   const { isOpen: isSubOpen, onOpen: onSubOpen, onClose: onSubClose } = useDisclosure();
   const { isOpen: isNodeOpen, onOpen: onNodeOpen, onClose: onNodeClose } = useDisclosure();
   const { isOpen: isFilterOpen, onOpen: onFilterOpen, onClose: onFilterClose } = useDisclosure();
+  const { isOpen: isSpeedTestOpen, onOpen: onSpeedTestOpen, onClose: onSpeedTestClose } = useDisclosure();
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [editingSubscription, setEditingSubscription] = useState<Subscription | null>(null);
+
+  // 测速设置表单
+  const [speedTestProfile, setSpeedTestProfile] = useState<SpeedTestProfile>(defaultSpeedTestProfile);
+  const [selectedCronPreset, setSelectedCronPreset] = useState<string>('0 */6 * * *');
+  const [isLoadingProfiles, setIsLoadingProfiles] = useState(false);
 
   // 手动节点表单
   const [editingNode, setEditingNode] = useState<ManualNode | null>(null);
@@ -130,6 +199,10 @@ export default function Subscriptions() {
     enabled: true,
   };
   const [filterForm, setFilterForm] = useState<Omit<Filter, 'id'>>(defaultFilterForm);
+
+  // 全局测速状态
+  const [isRunningFullTest, setIsRunningFullTest] = useState(false);
+  const [isRefreshingDelays, setIsRefreshingDelays] = useState(false);
 
   useEffect(() => {
     fetchSubscriptions();
@@ -315,11 +388,205 @@ export default function Subscriptions() {
     await toggleFilter(filter.id, !filter.enabled);
   };
 
+  // 测速设置相关函数
+  const resolveDefaultProfile = async () => {
+    const response = await speedtestApi.getProfiles();
+    const profileList = normalizeSpeedTestProfiles(response);
+    return pickDefaultProfile(profileList) || null;
+  };
+
+  const loadSpeedTestProfiles = useCallback(async () => {
+    setIsLoadingProfiles(true);
+    try {
+      const response = await speedtestApi.getProfiles();
+      const profileList = normalizeSpeedTestProfiles(response);
+      // 如果有策略，使用第一个策略填充表单
+      if (profileList.length > 0) {
+        const profile = pickDefaultProfile(profileList);
+        setSpeedTestProfile({
+          ID: getProfileId(profile),
+          name: profile.name || defaultSpeedTestProfile.name,
+          enabled: profile.enabled ?? defaultSpeedTestProfile.enabled,
+          cron_expression: profile.cron_expression || profile.schedule_cron || defaultSpeedTestProfile.cron_expression,
+          mode: profile.mode || defaultSpeedTestProfile.mode,
+          latency_url: profile.latency_url || defaultSpeedTestProfile.latency_url,
+          speed_url: profile.speed_url || defaultSpeedTestProfile.speed_url,
+          timeout: profile.timeout || defaultSpeedTestProfile.timeout,
+          latency_concurrency: profile.latency_concurrency || defaultSpeedTestProfile.latency_concurrency,
+          speed_concurrency: profile.speed_concurrency || defaultSpeedTestProfile.speed_concurrency,
+          include_handshake: typeof profile.include_handshake === 'boolean'
+            ? profile.include_handshake
+            : defaultSpeedTestProfile.include_handshake,
+          detect_country: typeof profile.detect_country === 'boolean'
+            ? profile.detect_country
+            : defaultSpeedTestProfile.detect_country,
+        });
+        if (profile.cron_expression || profile.schedule_cron) {
+          setSelectedCronPreset(profile.cron_expression || profile.schedule_cron);
+        }
+      }
+    } catch (error: any) {
+      console.error('加载测速策略失败:', error);
+    } finally {
+      setIsLoadingProfiles(false);
+    }
+  }, []);
+
+  const handleOpenSpeedTestSettings = () => {
+    loadSpeedTestProfiles();
+    onSpeedTestOpen();
+  };
+
+  const handleSaveSpeedTestProfile = async () => {
+    setIsSubmitting(true);
+    try {
+      const profileData = {
+        ...speedTestProfile,
+        cron_expression: selectedCronPreset,
+      };
+
+      if (speedTestProfile.ID) {
+        await speedtestApi.updateProfile(speedTestProfile.ID, profileData);
+        toast.success('测速设置已保存');
+      } else {
+        await speedtestApi.createProfile(profileData);
+        toast.success('测速设置已创建');
+      }
+      onSpeedTestClose();
+    } catch (error: any) {
+      toast.error(error.response?.data?.error || '保存测速设置失败');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleRunSpeedTest = async () => {
+    try {
+      let profileId = speedTestProfile.ID;
+      if (!profileId) {
+        const profile = await resolveDefaultProfile();
+        profileId = getProfileId(profile);
+      }
+      await speedtestApi.runTest(profileId);
+      toast.success('测速任务已启动，请到任务管理查看进度');
+      onSpeedTestClose();
+    } catch (error: any) {
+      toast.error(error.response?.data?.error || '启动测速失败');
+    }
+  };
+
+  // 全量测速（延迟+速度）
+  const handleGlobalFullTest = async () => {
+    setIsRunningFullTest(true);
+    try {
+      let profileId = speedTestProfile.ID;
+      let profileMode = speedTestProfile.mode;
+      if (!profileId) {
+        const profile = await resolveDefaultProfile();
+        profileId = getProfileId(profile);
+        if (profile) {
+          profileMode = profile.mode || profileMode;
+          setSpeedTestProfile((prev) => ({
+            ...prev,
+            ID: profileId,
+            name: profile.name || prev.name,
+            enabled: profile.enabled ?? prev.enabled,
+            cron_expression: profile.cron_expression || profile.schedule_cron || prev.cron_expression,
+            mode: profile.mode || prev.mode,
+            latency_url: profile.latency_url || prev.latency_url,
+            speed_url: profile.speed_url || prev.speed_url,
+            timeout: profile.timeout || prev.timeout,
+            latency_concurrency: profile.latency_concurrency || prev.latency_concurrency,
+            speed_concurrency: profile.speed_concurrency || prev.speed_concurrency,
+            include_handshake: typeof profile.include_handshake === 'boolean'
+              ? profile.include_handshake
+              : prev.include_handshake,
+            detect_country: typeof profile.detect_country === 'boolean'
+              ? profile.detect_country
+              : prev.detect_country,
+          }));
+          if (profile.cron_expression || profile.schedule_cron) {
+            setSelectedCronPreset(profile.cron_expression || profile.schedule_cron);
+          }
+        }
+      }
+      await speedtestApi.runTest(profileId);
+      toast.success('全量测速任务已启动，请到任务管理查看进度');
+      if (profileMode && profileMode !== 'speed') {
+        toast.info('当前策略为“仅延迟”，不会产生下载速度。请在测速设置中切换为“延迟+速度”。');
+      }
+    } catch (error: any) {
+      toast.error(error.response?.data?.error || '启动全量测速失败');
+    } finally {
+      setIsRunningFullTest(false);
+    }
+  };
+
+  // 刷新延迟（仅延迟）
+  const handleGlobalRefreshDelays = async () => {
+    setIsRefreshingDelays(true);
+    try {
+      const response = await nodeApi.refreshAllDelays();
+      toast.success(response.data.message || '延迟测试任务已启动');
+      // 30秒后自动停止loading状态
+      setTimeout(() => {
+        setIsRefreshingDelays(false);
+      }, 30000);
+    } catch (error: any) {
+      toast.error(error.response?.data?.error || '启动延迟测试失败');
+      setIsRefreshingDelays(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold text-gray-800 dark:text-white">节点管理</h1>
         <div className="flex gap-2">
+          <Dropdown>
+            <DropdownTrigger>
+              <Button
+                color="success"
+                variant="flat"
+                startContent={(isRunningFullTest || isRefreshingDelays) ? <Spinner size="sm" /> : <Settings className="w-4 h-4" />}
+                endContent={<ChevronDown className="w-4 h-4" />}
+              >
+                测速设置
+              </Button>
+            </DropdownTrigger>
+            <DropdownMenu aria-label="测速操作">
+              <DropdownSection title="快捷操作" showDivider>
+                <DropdownItem
+                  key="full-test"
+                  description="延迟 + 下载速度测试"
+                  startContent={<Zap className="w-4 h-4 text-success" />}
+                  onPress={handleGlobalFullTest}
+                  isDisabled={isRunningFullTest}
+                >
+                  全量测速
+                </DropdownItem>
+                <DropdownItem
+                  key="refresh-delay"
+                  description="仅测试延迟"
+                  startContent={<RefreshCw className="w-4 h-4 text-secondary" />}
+                  onPress={handleGlobalRefreshDelays}
+                  isDisabled={isRefreshingDelays}
+                >
+                  刷新延迟
+                </DropdownItem>
+              </DropdownSection>
+              <DropdownSection title="设置">
+                <DropdownItem
+                  key="settings"
+                  description="定时测速、测速模式等"
+                  startContent={<Settings className="w-4 h-4 text-primary" />}
+                  onPress={handleOpenSpeedTestSettings}
+                >
+                  测速配置
+                </DropdownItem>
+              </DropdownSection>
+            </DropdownMenu>
+          </Dropdown>
           <Button
             color="secondary"
             variant="flat"
@@ -509,19 +776,7 @@ export default function Subscriptions() {
               </CardBody>
             </Card>
           ) : (
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 mt-4">
-              {countryGroups.map((group) => (
-                <Card key={group.code} className="hover:shadow-md transition-shadow">
-                  <CardBody className="flex flex-row items-center gap-3">
-                    <span className="text-3xl">{group.emoji}</span>
-                    <div>
-                      <h3 className="font-semibold">{group.name}</h3>
-                      <p className="text-sm text-gray-500">{group.node_count} 个节点</p>
-                    </div>
-                  </CardBody>
-                </Card>
-              ))}
-            </div>
+            <CountryNodesList countryGroups={countryGroups} />
           )}
         </Tab>
       </Tabs>
@@ -873,6 +1128,218 @@ export default function Subscriptions() {
           </ModalFooter>
         </ModalContent>
       </Modal>
+
+      {/* 测速设置弹窗 */}
+      <Modal isOpen={isSpeedTestOpen} onClose={onSpeedTestClose} size="lg" scrollBehavior="inside">
+        <ModalContent>
+          <ModalHeader className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Zap className="w-5 h-5 text-success" />
+              <span>测速设置</span>
+            </div>
+            <Button
+              color="success"
+              size="sm"
+              startContent={<Zap className="w-4 h-4" />}
+              onPress={handleRunSpeedTest}
+            >
+              立即测速
+            </Button>
+          </ModalHeader>
+          <ModalBody>
+            {isLoadingProfiles ? (
+              <div className="flex justify-center py-8">
+                <Spinner size="lg" />
+              </div>
+            ) : (
+              <div className="space-y-6">
+                {/* 定时测速设置 */}
+                <Accordion variant="bordered" defaultExpandedKeys={['timing']}>
+                  <AccordionItem
+                    key="timing"
+                    aria-label="定时测速"
+                    title={
+                      <div className="flex items-center gap-2">
+                        <Timer className="w-4 h-4 text-primary" />
+                        <span>定时测速</span>
+                      </div>
+                    }
+                  >
+                    <div className="space-y-4 pb-2">
+                      <div className="flex items-center justify-between">
+                        <span>启用自动测速</span>
+                        <Switch
+                          isSelected={speedTestProfile.enabled}
+                          onValueChange={(checked) =>
+                            setSpeedTestProfile({ ...speedTestProfile, enabled: checked })
+                          }
+                        />
+                      </div>
+
+                      {speedTestProfile.enabled && (
+                        <>
+                          <div>
+                            <p className="text-sm text-gray-500 mb-2">定时测速设置</p>
+                            <div className="flex flex-wrap gap-2">
+                              {cronPresets.map((preset) => (
+                                <Chip
+                                  key={preset.value}
+                                  variant={selectedCronPreset === preset.value ? 'solid' : 'flat'}
+                                  color={selectedCronPreset === preset.value ? 'primary' : 'default'}
+                                  className="cursor-pointer"
+                                  onClick={() => setSelectedCronPreset(preset.value)}
+                                >
+                                  {preset.label}
+                                </Chip>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="p-3 bg-default-100 rounded-lg">
+                            <p className="text-xs text-gray-500">当前表达式</p>
+                            <p className="text-sm font-mono">{selectedCronPreset}</p>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </AccordionItem>
+                </Accordion>
+
+                {/* 测速模式设置 */}
+                <Accordion variant="bordered" defaultExpandedKeys={['mode']}>
+                  <AccordionItem
+                    key="mode"
+                    aria-label="测速模式"
+                    title={
+                      <div className="flex items-center gap-2">
+                        <Settings className="w-4 h-4 text-secondary" />
+                        <span>测速模式</span>
+                      </div>
+                    }
+                  >
+                    <div className="space-y-4 pb-2">
+                      <Select
+                        label="测速模式"
+                        selectedKeys={[speedTestProfile.mode]}
+                        onChange={(e) =>
+                          setSpeedTestProfile({ ...speedTestProfile, mode: e.target.value })
+                        }
+                      >
+                        <SelectItem key="speed" value="speed">
+                          延迟 + 下载速度测试
+                        </SelectItem>
+                        <SelectItem key="delay" value="delay">
+                          仅延迟测试
+                        </SelectItem>
+                      </Select>
+
+                      <Input
+                        label="延迟测试 URL"
+                        placeholder="https://cp.cloudflare.com/generate_204"
+                        value={speedTestProfile.latency_url}
+                        onChange={(e) =>
+                          setSpeedTestProfile({ ...speedTestProfile, latency_url: e.target.value })
+                        }
+                      />
+
+                      {speedTestProfile.mode === 'speed' && (
+                        <Input
+                          label="下载测速 URL"
+                          placeholder="https://speed.cloudflare.com/__down?bytes=5000000"
+                          value={speedTestProfile.speed_url}
+                          onChange={(e) =>
+                            setSpeedTestProfile({ ...speedTestProfile, speed_url: e.target.value })
+                          }
+                        />
+                      )}
+
+                      <Input
+                        type="number"
+                        label="超时时间 (秒)"
+                        value={String(speedTestProfile.timeout)}
+                        onChange={(e) =>
+                          setSpeedTestProfile({
+                            ...speedTestProfile,
+                            timeout: parseInt(e.target.value) || 7,
+                          })
+                        }
+                      />
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <Input
+                          type="number"
+                          label="延迟并发数"
+                          value={String(speedTestProfile.latency_concurrency)}
+                          onChange={(e) =>
+                            setSpeedTestProfile({
+                              ...speedTestProfile,
+                              latency_concurrency: parseInt(e.target.value) || 50,
+                            })
+                          }
+                        />
+                        {speedTestProfile.mode === 'speed' && (
+                          <Input
+                            type="number"
+                            label="速度并发数"
+                            value={String(speedTestProfile.speed_concurrency)}
+                            onChange={(e) =>
+                              setSpeedTestProfile({
+                                ...speedTestProfile,
+                                speed_concurrency: parseInt(e.target.value) || 5,
+                              })
+                            }
+                          />
+                        )}
+                      </div>
+
+                      <Divider />
+
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <span className="text-sm">包含握手时间</span>
+                            <p className="text-xs text-gray-400">延迟结果将包含 TLS 握手时间</p>
+                          </div>
+                          <Switch
+                            isSelected={speedTestProfile.include_handshake}
+                            onValueChange={(checked) =>
+                              setSpeedTestProfile({ ...speedTestProfile, include_handshake: checked })
+                            }
+                          />
+                        </div>
+
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <span className="text-sm">检测落地国家</span>
+                            <p className="text-xs text-gray-400">获取代理的实际出口 IP 归属地</p>
+                          </div>
+                          <Switch
+                            isSelected={speedTestProfile.detect_country}
+                            onValueChange={(checked) =>
+                              setSpeedTestProfile({ ...speedTestProfile, detect_country: checked })
+                            }
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </AccordionItem>
+                </Accordion>
+              </div>
+            )}
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="flat" onPress={onSpeedTestClose}>
+              取消
+            </Button>
+            <Button
+              color="primary"
+              onPress={handleSaveSpeedTestProfile}
+              isLoading={isSubmitting}
+            >
+              保存设置
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
     </div>
   );
 }
@@ -888,23 +1355,19 @@ interface SubscriptionCardProps {
 
 function SubscriptionCard({ subscription: sub, onRefresh, onEdit, onDelete, onToggle, loading }: SubscriptionCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
-  const [nodeDelays, setNodeDelays] = useState<Record<string, number>>({});
-  const [loadingDelays, setLoadingDelays] = useState(false);
+  const [nodeSpeedInfos, setNodeSpeedInfos] = useState<Record<string, { delay: number; speed: number }>>({});
   const [testingNode, setTestingNode] = useState<string | null>(null);
 
   // 确保 nodes 是数组，处理 null 或 undefined 情况
   const nodes = sub.nodes || [];
 
-  // 获取所有节点的延迟
+  // 获取所有节点的测速信息（延迟和速度）
   const fetchDelays = async () => {
-    setLoadingDelays(true);
     try {
       const response = await nodeApi.getDelays();
-      setNodeDelays(response.data.data || {});
+      setNodeSpeedInfos(response.data.data || {});
     } catch (error) {
-      console.error('获取延迟失败:', error);
-    } finally {
-      setLoadingDelays(false);
+      console.error('获取测速信息失败:', error);
     }
   };
 
@@ -914,7 +1377,10 @@ function SubscriptionCard({ subscription: sub, onRefresh, onEdit, onDelete, onTo
     try {
       const response = await nodeApi.testDelay(tag);
       const { delay } = response.data.data;
-      setNodeDelays(prev => ({ ...prev, [tag]: delay }));
+      setNodeSpeedInfos(prev => ({
+        ...prev,
+        [tag]: { ...prev[tag], delay }
+      }));
     } catch (error) {
       console.error('测速失败:', error);
     } finally {
@@ -922,9 +1388,9 @@ function SubscriptionCard({ subscription: sub, onRefresh, onEdit, onDelete, onTo
     }
   };
 
-  // 展开时获取延迟
+  // 展开时获取测速信息
   useEffect(() => {
-    if (isExpanded && Object.keys(nodeDelays).length === 0) {
+    if (isExpanded && Object.keys(nodeSpeedInfos).length === 0) {
       fetchDelays();
     }
   }, [isExpanded]);
@@ -943,18 +1409,26 @@ function SubscriptionCard({ subscription: sub, onRefresh, onEdit, onDelete, onTo
   }, {} as Record<string, { emoji: string; nodes: Node[] }>);
 
   // 格式化延迟显示
-  const formatDelay = (delay: number | undefined) => {
-    if (delay === undefined || delay === 0) return null;
-    if (delay < 0) return '超时';
-    return `${delay}ms`;
+  const formatDelay = (info: { delay: number; speed: number } | undefined) => {
+    if (!info || info.delay === 0) return null;
+    if (info.delay < 0) return '超时';
+    return `${info.delay}ms`;
+  };
+
+  // 格式化速度显示
+  const formatSpeed = (info: { delay: number; speed: number } | undefined) => {
+    if (!info || !info.speed || info.speed <= 0) return null;
+    // backend stores speed in MB/s
+    if (info.speed < 1) return `${(info.speed * 1024).toFixed(0)} KB/s`;
+    return `${info.speed.toFixed(2)} MB/s`;
   };
 
   // 延迟颜色
-  const getDelayColor = (delay: number | undefined): 'success' | 'warning' | 'danger' | 'default' => {
-    if (delay === undefined || delay === 0) return 'default';
-    if (delay < 0) return 'danger';
-    if (delay < 200) return 'success';
-    if (delay < 500) return 'warning';
+  const getDelayColor = (info: { delay: number; speed: number } | undefined): 'success' | 'warning' | 'danger' | 'default' => {
+    if (!info || info.delay === 0) return 'default';
+    if (info.delay < 0) return 'danger';
+    if (info.delay < 200) return 'success';
+    if (info.delay < 500) return 'warning';
     return 'danger';
   };
 
@@ -981,6 +1455,12 @@ function SubscriptionCard({ subscription: sub, onRefresh, onEdit, onDelete, onTo
             <p className="text-sm text-gray-500">
               {sub.node_count} 个节点 · 更新于 {new Date(sub.updated_at).toLocaleString()}
             </p>
+            {sub.traffic && (
+              <p className="text-sm text-gray-500">
+                已用: {formatBytes(sub.traffic.used)}　剩余: {formatBytes(sub.traffic.remaining)}　总计: {formatBytes(sub.traffic.total)}
+                {sub.expire_at && `　到期: ${new Date(sub.expire_at).toLocaleDateString()}`}
+              </p>
+            )}
           </div>
         </div>
         <div className="flex gap-2 items-center">
@@ -1027,32 +1507,6 @@ function SubscriptionCard({ subscription: sub, onRefresh, onEdit, onDelete, onTo
 
       {isExpanded && (
         <CardBody className="pt-0">
-          {/* 流量信息 */}
-          {sub.traffic && (
-            <div className="flex gap-4 text-sm mb-4">
-              <span>已用: {formatBytes(sub.traffic.used)}</span>
-              <span>剩余: {formatBytes(sub.traffic.remaining)}</span>
-              <span>总计: {formatBytes(sub.traffic.total)}</span>
-              {sub.expire_at && (
-                <span>到期: {new Date(sub.expire_at).toLocaleDateString()}</span>
-              )}
-            </div>
-          )}
-
-          {/* 测速按钮 */}
-          <div className="flex justify-end mb-2">
-            <Button
-              size="sm"
-              variant="flat"
-              color="secondary"
-              startContent={loadingDelays ? <Spinner size="sm" /> : <RefreshCw className="w-3 h-3" />}
-              onPress={fetchDelays}
-              isDisabled={loadingDelays}
-            >
-              刷新延迟
-            </Button>
-          </div>
-
           {/* 按国家分组的节点列表 */}
           <Accordion variant="bordered" selectionMode="multiple">
             {Object.entries(nodesByCountry).map(([country, data]) => (
@@ -1069,8 +1523,9 @@ function SubscriptionCard({ subscription: sub, onRefresh, onEdit, onDelete, onTo
               >
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
                   {data.nodes.map((node, idx) => {
-                    const delay = nodeDelays[node.tag];
-                    const delayText = formatDelay(delay);
+                    const speedInfo = nodeSpeedInfos[node.tag];
+                    const delayText = formatDelay(speedInfo);
+                    const speedText = formatSpeed(speedInfo);
                     return (
                       <div
                         key={idx}
@@ -1078,8 +1533,13 @@ function SubscriptionCard({ subscription: sub, onRefresh, onEdit, onDelete, onTo
                       >
                         <span className="truncate flex-1">{node.tag}</span>
                         {delayText && (
-                          <Chip size="sm" variant="flat" color={getDelayColor(delay)}>
+                          <Chip size="sm" variant="flat" color={getDelayColor(speedInfo)}>
                             {delayText}
+                          </Chip>
+                        )}
+                        {speedText && (
+                          <Chip size="sm" variant="flat" color="primary">
+                            {speedText}
                           </Chip>
                         )}
                         <Chip size="sm" variant="flat">
@@ -1105,5 +1565,189 @@ function SubscriptionCard({ subscription: sub, onRefresh, onEdit, onDelete, onTo
         </CardBody>
       )}
     </Card>
+  );
+}
+
+// 按国家/地区显示节点的组件
+interface CountryNodesListProps {
+  countryGroups: { code: string; name: string; emoji: string; node_count: number }[];
+}
+
+function CountryNodesList({ countryGroups }: CountryNodesListProps) {
+  const [expandedCountries, setExpandedCountries] = useState<Set<string>>(new Set());
+  const [countryNodes, setCountryNodes] = useState<Record<string, Node[]>>({});
+  const [loadingCountries, setLoadingCountries] = useState<Set<string>>(new Set());
+  const [nodeSpeedInfos, setNodeSpeedInfos] = useState<Record<string, { delay: number; speed: number }>>({});
+  const [testingNode, setTestingNode] = useState<string | null>(null);
+
+  // 获取所有节点的测速信息
+  const fetchSpeedInfos = useCallback(async () => {
+    try {
+      const response = await nodeApi.getDelays();
+      setNodeSpeedInfos(response.data.data || {});
+    } catch (error) {
+      console.error('获取测速信息失败:', error);
+    }
+  }, []);
+
+  // 初始化时加载测速信息
+  useEffect(() => {
+    fetchSpeedInfos();
+  }, [fetchSpeedInfos]);
+
+  // 加载指定国家的节点
+  const loadCountryNodes = async (code: string) => {
+    if (countryNodes[code]) return; // 已加载
+
+    setLoadingCountries(prev => new Set(prev).add(code));
+    try {
+      const response = await nodeApi.getByCountry(code);
+      setCountryNodes(prev => ({ ...prev, [code]: response.data.data || [] }));
+    } catch (error) {
+      console.error(`加载 ${code} 节点失败:`, error);
+    } finally {
+      setLoadingCountries(prev => {
+        const next = new Set(prev);
+        next.delete(code);
+        return next;
+      });
+    }
+  };
+
+  // 切换国家展开状态
+  const toggleCountry = (code: string) => {
+    const next = new Set(expandedCountries);
+    if (next.has(code)) {
+      next.delete(code);
+    } else {
+      next.add(code);
+      loadCountryNodes(code);
+    }
+    setExpandedCountries(next);
+  };
+
+  // 测试单个节点延迟
+  const testNodeDelay = async (tag: string) => {
+    setTestingNode(tag);
+    try {
+      const response = await nodeApi.testDelay(tag);
+      const { delay } = response.data.data;
+      setNodeSpeedInfos(prev => ({
+        ...prev,
+        [tag]: { ...prev[tag], delay }
+      }));
+    } catch (error) {
+      console.error('测速失败:', error);
+    } finally {
+      setTestingNode(null);
+    }
+  };
+
+  // 格式化延迟显示
+  const formatDelay = (info: { delay: number; speed: number } | undefined) => {
+    if (!info || info.delay === 0) return null;
+    if (info.delay < 0) return '超时';
+    return `${info.delay}ms`;
+  };
+
+  // 格式化速度显示
+  const formatSpeed = (info: { delay: number; speed: number } | undefined) => {
+    if (!info || !info.speed || info.speed <= 0) return null;
+    // backend stores speed in MB/s
+    if (info.speed < 1) return `${(info.speed * 1024).toFixed(0)} KB/s`;
+    return `${info.speed.toFixed(2)} MB/s`;
+  };
+
+  // 延迟颜色
+  const getDelayColor = (info: { delay: number; speed: number } | undefined): 'success' | 'warning' | 'danger' | 'default' => {
+    if (!info || info.delay === 0) return 'default';
+    if (info.delay < 0) return 'danger';
+    if (info.delay < 200) return 'success';
+    if (info.delay < 500) return 'warning';
+    return 'danger';
+  };
+
+  return (
+    <div className="space-y-2 mt-4">
+      {countryGroups.map((group) => {
+        const isExpanded = expandedCountries.has(group.code);
+        const isLoading = loadingCountries.has(group.code);
+        const nodes = countryNodes[group.code] || [];
+
+        return (
+          <Card key={group.code}>
+            <CardHeader
+              className="flex justify-between items-center cursor-pointer py-3"
+              onClick={() => toggleCountry(group.code)}
+            >
+              <div className="flex items-center gap-3">
+                <span className="text-2xl">{group.emoji}</span>
+                <div>
+                  <h3 className="font-semibold">{group.code}</h3>
+                  <p className="text-xs text-gray-500">{group.name}</p>
+                </div>
+                <Chip size="sm" variant="flat">{group.node_count}</Chip>
+              </div>
+              <Button
+                isIconOnly
+                size="sm"
+                variant="light"
+              >
+                {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+              </Button>
+            </CardHeader>
+
+            {isExpanded && (
+              <CardBody className="pt-0">
+                {isLoading ? (
+                  <div className="flex justify-center py-4">
+                    <Spinner size="sm" />
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+                    {nodes.map((node, idx) => {
+                      const speedInfo = nodeSpeedInfos[node.tag];
+                      const delayText = formatDelay(speedInfo);
+                      const speedText = formatSpeed(speedInfo);
+                      return (
+                        <div
+                          key={idx}
+                          className="flex items-center gap-2 p-2 bg-gray-50 dark:bg-gray-800 rounded text-sm group"
+                        >
+                          <span className="truncate flex-1">{node.tag}</span>
+                          {delayText && (
+                            <Chip size="sm" variant="flat" color={getDelayColor(speedInfo)}>
+                              {delayText}
+                            </Chip>
+                          )}
+                          {speedText && (
+                            <Chip size="sm" variant="flat" color="primary">
+                              {speedText}
+                            </Chip>
+                          )}
+                          <Chip size="sm" variant="flat">
+                            {node.type}
+                          </Chip>
+                          <Button
+                            isIconOnly
+                            size="sm"
+                            variant="light"
+                            className="opacity-0 group-hover:opacity-100 transition-opacity"
+                            onPress={() => testNodeDelay(node.tag)}
+                            isLoading={testingNode === node.tag}
+                          >
+                            <RefreshCw className="w-3 h-3" />
+                          </Button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </CardBody>
+            )}
+          </Card>
+        );
+      })}
+    </div>
   );
 }

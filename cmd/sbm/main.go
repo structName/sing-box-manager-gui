@@ -13,9 +13,11 @@ import (
 )
 
 var (
-	version = "0.2.9"
-	dataDir string
-	port    int
+	version        = "0.2.9"
+	dataDir        string
+	port           int
+	swaggerEnabled bool
+	swaggerOut     string
 )
 
 func init() {
@@ -25,6 +27,8 @@ func init() {
 
 	flag.StringVar(&dataDir, "data", defaultDataDir, "数据目录")
 	flag.IntVar(&port, "port", 9090, "Web 服务端口")
+	flag.BoolVar(&swaggerEnabled, "swagger", false, "启用 Swagger UI")
+	flag.StringVar(&swaggerOut, "swagger-out", "", "导出 OpenAPI JSON 文件")
 }
 
 func main() {
@@ -83,10 +87,21 @@ func main() {
 	}
 
 	// 创建 API 服务器
-	server := api.NewServer(store, processManager, launchdManager, systemdManager, execPath, port, version)
+	server := api.NewServer(store, processManager, launchdManager, systemdManager, execPath, port, version, swaggerEnabled)
+
+	if swaggerOut != "" {
+		if err := server.WriteOpenAPISpec(swaggerOut); err != nil {
+			logger.Printf("生成 Swagger OpenAPI 失败: %v", err)
+			os.Exit(1)
+		}
+		logger.Printf("Swagger OpenAPI 已生成: %s", swaggerOut)
+	}
 
 	// 启动定时任务调度器
 	server.StartScheduler()
+
+	// 启动测速定时调度器
+	server.StartSpeedTestScheduler()
 
 	// 启动服务
 	addr := fmt.Sprintf(":%d", port)

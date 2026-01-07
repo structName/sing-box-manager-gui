@@ -431,6 +431,26 @@ func Println(v ...interface{}) {
 	}
 }
 
+// Info 信息日志
+func Info(format string, v ...interface{}) {
+	Printf("[INFO] "+format, v...)
+}
+
+// Warn 警告日志
+func Warn(format string, v ...interface{}) {
+	Printf("[WARN] "+format, v...)
+}
+
+// Error 错误日志
+func Error(format string, v ...interface{}) {
+	Printf("[ERROR] "+format, v...)
+}
+
+// Debug 调试日志
+func Debug(format string, v ...interface{}) {
+	Printf("[DEBUG] "+format, v...)
+}
+
 // SingboxWriter 返回一个可以用于 sing-box 输出的 Writer
 type SingboxWriter struct {
 	logger   *Logger
