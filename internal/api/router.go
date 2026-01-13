@@ -40,7 +40,6 @@ type Server struct {
 	launchdManager *daemon.LaunchdManager
 	systemdManager *daemon.SystemdManager
 	kernelManager  *kernel.Manager
-	scheduler      *service.Scheduler
 	chainSyncSvc   *service.ChainSyncService
 	healthCheckSvc *service.HealthCheckService
 	router         *gin.Engine
@@ -50,10 +49,9 @@ type Server struct {
 	swaggerEnabled bool   // 是否启用 Swagger
 	baseDir        string // 基础数据目录
 	// SQLite 存储和测速模块
-	dbStore            *database.Store
-	speedTestExecutor  *speedtest.Executor
-	speedTestScheduler *speedtest.Scheduler
-	speedTestHandler   *SpeedTestHandler
+	dbStore           *database.Store
+	speedTestExecutor *speedtest.Executor
+	speedTestHandler  *SpeedTestHandler
 	// 标签模块
 	tagEngine  *service.TagEngine
 	tagHandler *TagHandler
@@ -64,6 +62,8 @@ type Server struct {
 	// 统一调度器
 	unifiedScheduler *service.UnifiedScheduler
 	schedulerHandler *SchedulerHandler
+	// SSE 事件
+	eventsHandler *EventsHandler
 }
 
 // NewServer 创建 API 服务器
@@ -96,7 +96,6 @@ func NewServer(profileMgr *profile.Manager, processManager *daemon.ProcessManage
 	// 从 Profile 管理器获取数据库连接
 	dbStore := profileMgr.GetStore()
 	var speedTestExecutor *speedtest.Executor
-	var speedTestScheduler *speedtest.Scheduler
 	var speedTestHandler *SpeedTestHandler
 	var tagEngine *service.TagEngine
 	var tagHandler *TagHandler
@@ -105,11 +104,11 @@ func NewServer(profileMgr *profile.Manager, processManager *daemon.ProcessManage
 	var eventTrigger *service.EventTrigger
 	var unifiedScheduler *service.UnifiedScheduler
 	var schedulerHandler *SchedulerHandler
+	var eventsHandler *EventsHandler
 
 	if dbStore != nil {
 		speedTestExecutor = speedtest.NewExecutor(dbStore)
-		speedTestScheduler = speedtest.NewScheduler(dbStore, speedTestExecutor)
-		speedTestHandler = NewSpeedTestHandler(dbStore, speedTestExecutor, speedTestScheduler)
+		speedTestHandler = NewSpeedTestHandler(dbStore, speedTestExecutor)
 		tagEngine = service.NewTagEngine(dbStore)
 		tagHandler = NewTagHandler(dbStore, tagEngine)
 		taskManager = service.NewTaskManager(dbStore)
@@ -120,41 +119,43 @@ func NewServer(profileMgr *profile.Manager, processManager *daemon.ProcessManage
 		schedulerHandler = NewSchedulerHandler(unifiedScheduler)
 		// 设置 SpeedTestHandler 的统一调度器引用
 		speedTestHandler.SetUnifiedScheduler(unifiedScheduler)
+		// 设置 Executor 的 TaskManager 引用
+		speedTestExecutor.SetTaskManager(taskManager)
+		// 设置 TagEngine 的 TaskManager 引用
+		tagEngine.SetTaskManager(taskManager)
+		// 创建 SSE 事件处理器
+		eventsHandler = NewEventsHandler(taskManager)
 		logger.Info("测速、标签、任务和调度模块初始化完成")
 	}
 
 	s := &Server{
-		profileMgr:         profileMgr,
-		store:              store,
-		subService:         subService,
-		processManager:     processManager,
-		launchdManager:     launchdManager,
-		systemdManager:     systemdManager,
-		kernelManager:      kernelManager,
-		scheduler:          service.NewScheduler(store, subService),
-		chainSyncSvc:       chainSyncSvc,
-		healthCheckSvc:     healthCheckSvc,
-		router:             gin.Default(),
-		sbmPath:            sbmPath,
-		port:               port,
-		version:            version,
-		swaggerEnabled:     swaggerEnabled,
-		baseDir:            baseDir,
-		dbStore:            dbStore,
-		speedTestExecutor:  speedTestExecutor,
-		speedTestScheduler: speedTestScheduler,
-		speedTestHandler:   speedTestHandler,
-		tagEngine:          tagEngine,
-		tagHandler:         tagHandler,
-		taskManager:        taskManager,
-		taskHandler:        taskHandler,
-		eventTrigger:       eventTrigger,
-		unifiedScheduler:   unifiedScheduler,
-		schedulerHandler:   schedulerHandler,
+		profileMgr:        profileMgr,
+		store:             store,
+		subService:        subService,
+		processManager:    processManager,
+		launchdManager:    launchdManager,
+		systemdManager:    systemdManager,
+		kernelManager:     kernelManager,
+		chainSyncSvc:      chainSyncSvc,
+		healthCheckSvc:    healthCheckSvc,
+		router:            gin.Default(),
+		sbmPath:           sbmPath,
+		port:              port,
+		version:           version,
+		swaggerEnabled:    swaggerEnabled,
+		baseDir:           baseDir,
+		dbStore:           dbStore,
+		speedTestExecutor: speedTestExecutor,
+		speedTestHandler:  speedTestHandler,
+		tagEngine:         tagEngine,
+		tagHandler:        tagHandler,
+		taskManager:       taskManager,
+		taskHandler:       taskHandler,
+		eventTrigger:      eventTrigger,
+		unifiedScheduler:  unifiedScheduler,
+		schedulerHandler:  schedulerHandler,
+		eventsHandler:     eventsHandler,
 	}
-
-	// 设置调度器的更新回调
-	s.scheduler.SetUpdateCallback(s.autoApplyConfig)
 
 	// 初始同步节点到 SQLite（仅在 SQLite 为空时）
 	if s.dbStore != nil {
@@ -169,32 +170,6 @@ func NewServer(profileMgr *profile.Manager, processManager *daemon.ProcessManage
 
 	s.setupRoutes()
 	return s
-}
-
-// StartScheduler 启动定时任务调度器
-func (s *Server) StartScheduler() {
-	s.scheduler.Start()
-}
-
-// StopScheduler 停止定时任务调度器
-func (s *Server) StopScheduler() {
-	s.scheduler.Stop()
-}
-
-// StartSpeedTestScheduler 启动测速定时调度器
-func (s *Server) StartSpeedTestScheduler() {
-	if s.speedTestScheduler != nil {
-		if err := s.speedTestScheduler.Start(); err != nil {
-			logger.Error("启动测速调度器失败: %v", err)
-		}
-	}
-}
-
-// StopSpeedTestScheduler 停止测速定时调度器
-func (s *Server) StopSpeedTestScheduler() {
-	if s.speedTestScheduler != nil {
-		s.speedTestScheduler.Stop()
-	}
 }
 
 // StartUnifiedScheduler 启动统一调度器
@@ -221,25 +196,10 @@ func (s *Server) initScheduleEntries() {
 	// 1. 订阅定时更新
 	subs := s.store.GetSubscriptions()
 	for _, sub := range subs {
-		if sub.Enabled && sub.AutoUpdate != nil && *sub.AutoUpdate && sub.UpdateInterval > 0 {
-			subID := sub.ID
-			subName := sub.Name
-			cronExpr := service.IntervalToCron(sub.UpdateInterval)
-			s.unifiedScheduler.AddSchedule(
-				service.ScheduleTypeSubUpdate,
-				subID,
-				"订阅更新: "+subName,
-				cronExpr,
-				func() {
-					s.subService.Refresh(subID)
-					s.syncNodesToSQLite()
-					s.autoApplyConfig()
-				},
-			)
-		}
+		s.updateSubscriptionSchedule(sub)
 	}
 
-	// 2. 测速策略定时执行
+	// 2. 测速策略定时执行（已通过 Executor 自动创建 Task）
 	if s.dbStore != nil {
 		profiles, _ := s.dbStore.GetSpeedTestProfiles()
 		for _, profile := range profiles {
@@ -282,16 +242,240 @@ func (s *Server) initScheduleEntries() {
 			cronExpr,
 			func() {
 				chains := s.store.GetProxyChains()
+				var enabledChains []string
 				for _, chain := range chains {
 					if chain.Enabled {
-						s.healthCheckSvc.CheckChain(chain.ID)
+						enabledChains = append(enabledChains, chain.ID)
 					}
+				}
+
+				if len(enabledChains) == 0 {
+					return
+				}
+
+				// 创建任务记录
+				var task *models.Task
+				if s.taskManager != nil {
+					task, _, _ = s.taskManager.CreateTask(
+						models.TaskTypeChainCheck,
+						"链路健康检测",
+						models.TaskTriggerScheduled,
+						len(enabledChains),
+					)
+					s.taskManager.StartTask(task.ID)
+				}
+
+				results := make(map[string]interface{})
+				for i, chainID := range enabledChains {
+					chain := s.store.GetProxyChain(chainID)
+					if chain != nil && task != nil {
+						s.taskManager.UpdateProgress(task.ID, i+1, chain.Name, "")
+					}
+					status, _ := s.healthCheckSvc.CheckChain(chainID)
+					results[chainID] = status
+				}
+
+				if task != nil {
+					s.taskManager.CompleteTask(task.ID, "检测完成", results)
 				}
 			},
 		)
 	}
 
 	logger.Info("调度条目初始化完成")
+}
+
+// updateSubscriptionSchedule 更新订阅调度
+func (s *Server) updateSubscriptionSchedule(sub storage.Subscription) {
+	if s.unifiedScheduler == nil {
+		return
+	}
+
+	subID := sub.ID
+
+	// 先移除旧的调度
+	s.unifiedScheduler.RemoveSchedule(service.ScheduleTypeSubUpdate, subID)
+
+	// 如果启用自动更新，添加新调度
+	if sub.Enabled && sub.AutoUpdate != nil && *sub.AutoUpdate && sub.UpdateInterval > 0 {
+		subName := sub.Name
+		cronExpr := service.IntervalToCron(sub.UpdateInterval)
+		s.unifiedScheduler.AddSchedule(
+			service.ScheduleTypeSubUpdate,
+			subID,
+			"订阅更新: "+subName,
+			cronExpr,
+			func() {
+				// 创建任务记录
+				var task *models.Task
+				if s.taskManager != nil {
+					task, _, _ = s.taskManager.CreateTask(
+						models.TaskTypeSubUpdate,
+						"定时更新: "+subName,
+						models.TaskTriggerScheduled,
+						0,
+					)
+					s.taskManager.StartTask(task.ID)
+				}
+
+				if err := s.subService.Refresh(subID); err != nil {
+					if task != nil {
+						s.taskManager.FailTask(task.ID, err.Error())
+					}
+					return
+				}
+				nodeIDs := s.syncNodesToSQLiteAndGetIDs()
+				if s.eventTrigger != nil {
+					s.eventTrigger.OnSubscriptionUpdate(subID, nodeIDs)
+				}
+				s.autoApplyConfig()
+
+				if task != nil {
+					s.taskManager.CompleteTask(task.ID, "订阅更新成功", map[string]interface{}{
+						"subscription_id": subID,
+						"node_count":      len(nodeIDs),
+					})
+				}
+			},
+		)
+	}
+}
+
+// ensureDefaultSpeedTestProfile 确保存在启用自动测速的策略
+// 当添加订阅时，检查是否有启用自动测速的策略，如果没有则创建两个默认策略
+func (s *Server) ensureDefaultSpeedTestProfile() {
+	if s.dbStore == nil || s.unifiedScheduler == nil {
+		return
+	}
+
+	// 检查是否已有启用自动测速的策略
+	profiles, err := s.dbStore.GetSpeedTestProfiles()
+	if err != nil {
+		return
+	}
+
+	// 检查是否有启用 AutoTest 的策略
+	hasAutoTest := false
+	hasDelayProfile := false
+	hasSpeedProfile := false
+	for _, p := range profiles {
+		if p.AutoTest && p.Enabled {
+			s.addSpeedTestSchedule(&p)
+			hasAutoTest = true
+		}
+		// Mode 为空或 "delay" 都视为延迟检测类型
+		if p.Mode == "delay" || p.Mode == "" {
+			hasDelayProfile = true
+		} else if p.Mode == "speed" {
+			hasSpeedProfile = true
+		}
+	}
+
+	// 如果已有策略但没启用自动测速，自动启用所有策略的自动测速
+	if len(profiles) > 0 && !hasAutoTest {
+		for i := range profiles {
+			profile := &profiles[i]
+			profile.AutoTest = true
+			profile.Enabled = true
+			if profile.ScheduleCron == "" {
+				profile.ScheduleType = "cron"
+				if profile.Mode == "delay" || profile.Mode == "" {
+					profile.ScheduleCron = "0 0 * * * *" // 延迟检测每小时
+					profile.Mode = "delay"
+					hasDelayProfile = true
+				} else {
+					profile.ScheduleCron = "0 30 */6 * * *" // 速度测试每6小时
+					hasSpeedProfile = true
+				}
+			}
+			if err := s.dbStore.UpdateSpeedTestProfile(profile); err != nil {
+				logger.Warn("更新测速策略失败: %v", err)
+				continue
+			}
+			s.addSpeedTestSchedule(profile)
+			logger.Info("已启用测速策略 [%s] 的自动测速", profile.Name)
+		}
+	}
+
+	// 补充缺失的策略类型（无论是否已有策略，都检查并补充）
+	if !hasDelayProfile {
+		delayProfile := &models.SpeedTestProfile{
+			Name:               "延迟检测",
+			Enabled:            true,
+			IsDefault:          len(profiles) == 0,
+			AutoTest:           true,
+			ScheduleType:       "cron",
+			ScheduleCron:       "0 0 * * * *",
+			Mode:               "delay",
+			LatencyURL:         "https://cp.cloudflare.com/generate_204",
+			SpeedURL:           "https://speed.cloudflare.com/__down?bytes=5000000",
+			Timeout:            5,
+			LatencyConcurrency: 100,
+			SpeedConcurrency:   5,
+			SpeedRecordMode:    "average",
+			PeakSampleInterval: 100,
+			LandingIPURL:       "https://api.ipify.org",
+		}
+		if err := s.dbStore.CreateSpeedTestProfile(delayProfile); err != nil {
+			logger.Warn("创建延迟检测策略失败: %v", err)
+		} else {
+			s.addSpeedTestSchedule(delayProfile)
+			logger.Info("已创建延迟检测策略")
+		}
+	}
+
+	if !hasSpeedProfile {
+		speedProfile := &models.SpeedTestProfile{
+			Name:               "速度测试",
+			Enabled:            true,
+			IsDefault:          false,
+			AutoTest:           true,
+			ScheduleType:       "cron",
+			ScheduleCron:       "0 30 */6 * * *",
+			Mode:               "speed",
+			LatencyURL:         "https://cp.cloudflare.com/generate_204",
+			SpeedURL:           "https://speed.cloudflare.com/__down?bytes=10000000",
+			Timeout:            10,
+			LatencyConcurrency: 50,
+			SpeedConcurrency:   3,
+			SpeedRecordMode:    "peak",
+			PeakSampleInterval: 50,
+			LandingIPURL:       "https://api.ipify.org",
+			DetectCountry:      true,
+		}
+		if err := s.dbStore.CreateSpeedTestProfile(speedProfile); err != nil {
+			logger.Warn("创建速度测试策略失败: %v", err)
+		} else {
+			s.addSpeedTestSchedule(speedProfile)
+			logger.Info("已创建速度测试策略")
+		}
+	}
+}
+
+// addSpeedTestSchedule 添加测速调度
+func (s *Server) addSpeedTestSchedule(profile *models.SpeedTestProfile) {
+	if s.unifiedScheduler == nil || profile == nil {
+		return
+	}
+
+	profileID := profile.ID
+	profileName := profile.Name
+	cronExpr := profile.ScheduleCron
+	if cronExpr == "" {
+		cronExpr = "0 0 */6 * * *"
+	}
+
+	s.unifiedScheduler.AddSchedule(
+		service.ScheduleTypeSpeedTest,
+		fmt.Sprintf("%d", profileID),
+		"定时测速: "+profileName,
+		cronExpr,
+		func() {
+			if s.speedTestExecutor != nil {
+				s.speedTestExecutor.RunWithProfile(profileID, nil, speedtest.TriggerTypeScheduled)
+			}
+		},
+	)
 }
 
 // setupRoutes 设置路由
@@ -501,6 +685,11 @@ func (s *Server) setupRoutes() {
 			api.POST("/scheduler/pause", s.schedulerHandler.PauseScheduler)
 			api.POST("/scheduler/resume", s.schedulerHandler.ResumeScheduler)
 		}
+
+		// SSE 事件流（需要 eventsHandler 已初始化）
+		if s.eventsHandler != nil {
+			api.GET("/events/stream", s.eventsHandler.StreamTasks)
+		}
 	}
 
 	// Swagger 文档（默认关闭）
@@ -569,6 +758,12 @@ func (s *Server) addSubscription(c *gin.Context) {
 		return
 	}
 
+	// 更新订阅调度
+	s.updateSubscriptionSchedule(*sub)
+
+	// 创建默认测速策略（如果是第一个订阅）
+	s.ensureDefaultSpeedTestProfile()
+
 	// 同步节点到 SQLite（用于测速模块）
 	nodeIDs := s.syncNodesToSQLiteAndGetIDs()
 
@@ -597,17 +792,50 @@ func (s *Server) addSubscription(c *gin.Context) {
 func (s *Server) updateSubscription(c *gin.Context) {
 	id := c.Param("id")
 
-	var sub storage.Subscription
-	if err := c.ShouldBindJSON(&sub); err != nil {
+	// 先获取原有订阅
+	existing := s.subService.Get(id)
+	if existing == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "订阅不存在"})
+		return
+	}
+
+	// 只绑定前端发送的字段
+	var req struct {
+		Name           string `json:"name"`
+		URL            string `json:"url"`
+		AutoUpdate     *bool  `json:"auto_update"`
+		UpdateInterval *int   `json:"update_interval"`
+		Enabled        *bool  `json:"enabled"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	sub.ID = id
-	if err := s.subService.Update(sub); err != nil {
+	// 更新指定字段
+	if req.Name != "" {
+		existing.Name = req.Name
+	}
+	if req.URL != "" {
+		existing.URL = req.URL
+	}
+	if req.AutoUpdate != nil {
+		existing.AutoUpdate = req.AutoUpdate
+	}
+	if req.UpdateInterval != nil {
+		existing.UpdateInterval = *req.UpdateInterval
+	}
+	if req.Enabled != nil {
+		existing.Enabled = *req.Enabled
+	}
+
+	if err := s.subService.Update(*existing); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	// 更新订阅调度
+	s.updateSubscriptionSchedule(*existing)
 
 	// 自动应用配置
 	if err := s.autoApplyConfig(); err != nil {
@@ -624,6 +852,11 @@ func (s *Server) deleteSubscription(c *gin.Context) {
 	if err := s.subService.Delete(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+
+	// 移除调度
+	if s.unifiedScheduler != nil {
+		s.unifiedScheduler.RemoveSchedule(service.ScheduleTypeSubUpdate, id)
 	}
 
 	// 同步节点到 SQLite（用于测速模块）
@@ -996,9 +1229,6 @@ func (s *Server) updateSettings(c *gin.Context) {
 	// 更新进程管理器的配置路径（sing-box 路径是固定的，无需更新）
 	s.processManager.SetConfigPath(s.resolvePath(settings.ConfigPath))
 
-	// 重启调度器（可能更新了定时间隔）
-	s.scheduler.Restart()
-
 	// 自动应用配置
 	if err := s.autoApplyConfig(); err != nil {
 		c.JSON(http.StatusOK, gin.H{"message": "更新成功，但自动应用配置失败: " + err.Error()})
@@ -1298,9 +1528,11 @@ func (s *Server) activateProfile(c *gin.Context) {
 	// 更新测速模块
 	if s.dbStore != nil {
 		s.speedTestExecutor = speedtest.NewExecutor(s.dbStore)
-		s.speedTestScheduler = speedtest.NewScheduler(s.dbStore, s.speedTestExecutor)
-		s.speedTestHandler = NewSpeedTestHandler(s.dbStore, s.speedTestExecutor, s.speedTestScheduler)
+		s.speedTestHandler = NewSpeedTestHandler(s.dbStore, s.speedTestExecutor)
+		s.speedTestHandler.SetUnifiedScheduler(s.unifiedScheduler)
+		s.speedTestExecutor.SetTaskManager(s.taskManager)
 		s.tagEngine = service.NewTagEngine(s.dbStore)
+		s.tagEngine.SetTaskManager(s.taskManager)
 		s.tagHandler = NewTagHandler(s.dbStore, s.tagEngine)
 	}
 
@@ -2038,13 +2270,17 @@ func (s *Server) testNodeDelay(c *gin.Context) {
 		return
 	}
 
-	// 使用 mihomo 测速
-	profile := &models.SpeedTestProfile{
-		LatencyURL:       "https://www.gstatic.com/generate_204",
-		Timeout:          7,
-		IncludeHandshake: true,
+	// 获取默认测速策略，保持与批量刷新一致
+	defaultProfile, err := s.dbStore.GetDefaultSpeedTestProfile()
+	if err != nil {
+		// 回退到硬编码配置
+		defaultProfile = &models.SpeedTestProfile{
+			LatencyURL:       "https://cp.cloudflare.com/generate_204",
+			Timeout:          7,
+			IncludeHandshake: false,
+		}
 	}
-	tester := speedtest.NewTester(profile)
+	tester := speedtest.NewTester(defaultProfile)
 	result := tester.TestDelay(node)
 
 	// 更新节点延迟信息

@@ -1,10 +1,19 @@
 import { useEffect, useState, useRef } from 'react';
 import { Card, CardBody, Button, Chip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Input, Textarea, useDisclosure } from '@nextui-org/react';
-import { Plus, Layers, Download, Upload, Trash2, Pencil, Check, RefreshCw } from 'lucide-react';
-import { profileApi } from '../api';
+import { Plus, Layers, Download, Upload, Trash2, Pencil, Check, Copy, FileJson } from 'lucide-react';
+import { profileApi, configApi } from '../api';
 import { toast } from '../components/Toast';
 
 // Profile 类型
+interface ProfileResponse {
+  id?: string;
+  name: string;
+  description?: string;
+  created_at: string;
+  updated_at: string;
+  is_active?: boolean;
+}
+
 interface Profile {
   id: string;
   name: string;
@@ -35,7 +44,20 @@ export default function Profiles() {
   const fetchProfiles = async () => {
     try {
       const res = await profileApi.getAll();
-      setProfiles(res.data.data || []);
+      const activeProfile = res.data?.active_profile;
+      const list: ProfileResponse[] = res.data?.data || [];
+      const normalized = list.map((profile) => {
+        const id = profile.id ?? profile.name;
+        return {
+          id,
+          name: profile.name,
+          description: profile.description || '',
+          created_at: profile.created_at,
+          updated_at: profile.updated_at,
+          is_active: profile.is_active ?? profile.name === activeProfile,
+        };
+      });
+      setProfiles(normalized);
     } catch (error: any) {
       toast.error('获取配置方案列表失败');
     } finally {
@@ -115,16 +137,6 @@ export default function Profiles() {
     }
   };
 
-  const handleSnapshot = async (profile: Profile) => {
-    try {
-      await profileApi.snapshot(profile.id);
-      toast.success('快照已更新');
-      fetchProfiles();
-    } catch (error: any) {
-      toast.error(error.response?.data?.error || '更新快照失败');
-    }
-  };
-
   const handleExport = (profile: Profile) => {
     window.open(profileApi.exportUrl(profile.id), '_blank');
     toast.success('正在下载方案...');
@@ -138,20 +150,44 @@ export default function Profiles() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (!file.name.endsWith('.json')) {
-      toast.error('请选择 JSON 格式的文件');
+    if (!file.name.endsWith('.zip')) {
+      toast.error('请选择 ZIP 格式的文件');
       e.target.value = '';
       return;
     }
 
+    // 从文件名提取 Profile 名称（去掉 profile- 前缀和日期后缀）
+    let profileName = file.name.replace(/\.zip$/, '');
+    const match = profileName.match(/^profile-(.+)-\d{8}$/);
+    if (match) {
+      profileName = match[1];
+    }
+
     try {
-      await profileApi.import(file);
+      await profileApi.import(file, profileName);
       toast.success('方案导入成功');
       fetchProfiles();
     } catch (error: any) {
       toast.error(error.response?.data?.error || '导入失败');
     } finally {
       e.target.value = '';
+    }
+  };
+
+  // 导出 sing-box 配置
+  const handleExportSingboxConfig = () => {
+    window.open(configApi.exportUrl(), '_blank');
+    toast.success('配置文件已开始下载');
+  };
+
+  // 复制 sing-box 配置到剪贴板
+  const handleCopySingboxConfig = async () => {
+    try {
+      const res = await configApi.preview();
+      await navigator.clipboard.writeText(res.data);
+      toast.success('配置已复制到剪贴板');
+    } catch (error: any) {
+      toast.error('复制失败: ' + (error.message || '未知错误'));
     }
   };
 
@@ -204,10 +240,41 @@ export default function Profiles() {
       <input
         ref={importInputRef}
         type="file"
-        accept=".json"
+        accept=".zip"
         className="hidden"
         onChange={handleImportFile}
       />
+
+      {/* sing-box 配置导出 */}
+      <Card>
+        <CardBody className="flex flex-row items-center justify-between p-4">
+          <div className="flex items-center gap-3">
+            <FileJson className="w-5 h-5 text-primary" />
+            <div>
+              <h3 className="font-medium">sing-box 配置</h3>
+              <p className="text-sm text-gray-500">导出可直接在 sing-box 使用的配置文件</p>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <Button
+              variant="flat"
+              size="sm"
+              startContent={<Copy className="w-4 h-4" />}
+              onPress={handleCopySingboxConfig}
+            >
+              复制
+            </Button>
+            <Button
+              color="primary"
+              size="sm"
+              startContent={<Download className="w-4 h-4" />}
+              onPress={handleExportSingboxConfig}
+            >
+              下载
+            </Button>
+          </div>
+        </CardBody>
+      </Card>
 
       {/* Profile 列表 */}
       {profiles.length === 0 ? (
@@ -264,15 +331,6 @@ export default function Profiles() {
                       切换
                     </Button>
                   )}
-                  <Button
-                    size="sm"
-                    variant="flat"
-                    startContent={<RefreshCw className="w-3 h-3" />}
-                    onPress={() => handleSnapshot(profile)}
-                    title="更新为当前配置"
-                  >
-                    更新快照
-                  </Button>
                   <Button
                     size="sm"
                     variant="flat"

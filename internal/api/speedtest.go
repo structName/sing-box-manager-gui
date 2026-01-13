@@ -12,20 +12,29 @@ import (
 	"github.com/xiaobei/singbox-manager/internal/speedtest"
 )
 
+// parseUintParam 解析 URL 参数中的 uint ID
+func parseUintParam(c *gin.Context, param string) (uint, bool) {
+	idStr := c.Param(param)
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的 ID"})
+		return 0, false
+	}
+	return uint(id), true
+}
+
 // SpeedTestHandler 测速 API 处理器
 type SpeedTestHandler struct {
 	store            *database.Store
 	executor         *speedtest.Executor
-	scheduler        *speedtest.Scheduler
 	unifiedScheduler *service.UnifiedScheduler
 }
 
 // NewSpeedTestHandler 创建测速处理器
-func NewSpeedTestHandler(store *database.Store, executor *speedtest.Executor, scheduler *speedtest.Scheduler) *SpeedTestHandler {
+func NewSpeedTestHandler(store *database.Store, executor *speedtest.Executor) *SpeedTestHandler {
 	return &SpeedTestHandler{
-		store:     store,
-		executor:  executor,
-		scheduler: scheduler,
+		store:    store,
+		executor: executor,
 	}
 }
 
@@ -82,14 +91,12 @@ func (h *SpeedTestHandler) GetProfiles(c *gin.Context) {
 
 // GetProfile 获取单个测速策略
 func (h *SpeedTestHandler) GetProfile(c *gin.Context) {
-	idStr := c.Param("id")
-	id, err := strconv.ParseUint(idStr, 10, 32)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的 ID"})
+	id, ok := parseUintParam(c, "id")
+	if !ok {
 		return
 	}
 
-	profile, err := h.store.GetSpeedTestProfile(uint(id))
+	profile, err := h.store.GetSpeedTestProfile(id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "策略不存在"})
 		return
@@ -186,10 +193,6 @@ func (h *SpeedTestHandler) CreateProfile(c *gin.Context) {
 		return
 	}
 
-	// 如果启用自动测速，添加调度
-	if profile.AutoTest && profile.Enabled {
-		h.scheduler.UpdateSchedule(profile)
-	}
 	// 同步更新统一调度器
 	h.updateUnifiedSchedule(profile)
 
@@ -198,14 +201,12 @@ func (h *SpeedTestHandler) CreateProfile(c *gin.Context) {
 
 // UpdateProfile 更新测速策略
 func (h *SpeedTestHandler) UpdateProfile(c *gin.Context) {
-	idStr := c.Param("id")
-	id, err := strconv.ParseUint(idStr, 10, 32)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的 ID"})
+	id, ok := parseUintParam(c, "id")
+	if !ok {
 		return
 	}
 
-	profile, err := h.store.GetSpeedTestProfile(uint(id))
+	profile, err := h.store.GetSpeedTestProfile(id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "策略不存在"})
 		return
@@ -244,8 +245,6 @@ func (h *SpeedTestHandler) UpdateProfile(c *gin.Context) {
 		return
 	}
 
-	// 更新调度
-	h.scheduler.UpdateSchedule(profile)
 	// 同步更新统一调度器
 	h.updateUnifiedSchedule(profile)
 
@@ -254,14 +253,12 @@ func (h *SpeedTestHandler) UpdateProfile(c *gin.Context) {
 
 // DeleteProfile 删除测速策略
 func (h *SpeedTestHandler) DeleteProfile(c *gin.Context) {
-	idStr := c.Param("id")
-	id, err := strconv.ParseUint(idStr, 10, 32)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的 ID"})
+	id, ok := parseUintParam(c, "id")
+	if !ok {
 		return
 	}
 
-	profile, err := h.store.GetSpeedTestProfile(uint(id))
+	profile, err := h.store.GetSpeedTestProfile(id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "策略不存在"})
 		return
@@ -273,14 +270,12 @@ func (h *SpeedTestHandler) DeleteProfile(c *gin.Context) {
 		return
 	}
 
-	// 移除调度
-	h.scheduler.RemoveSchedule(uint(id))
-	// 同步移除统一调度器中的条目
+	// 移除统一调度器中的条目
 	if h.unifiedScheduler != nil {
 		h.unifiedScheduler.RemoveSchedule(service.ScheduleTypeSpeedTest, fmt.Sprintf("%d", id))
 	}
 
-	if err := h.store.DeleteSpeedTestProfile(uint(id)); err != nil {
+	if err := h.store.DeleteSpeedTestProfile(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -384,17 +379,15 @@ func (h *SpeedTestHandler) CancelTask(c *gin.Context) {
 
 // GetNodeHistory 获取节点测速历史
 func (h *SpeedTestHandler) GetNodeHistory(c *gin.Context) {
-	nodeIDStr := c.Param("nodeId")
-	nodeID, err := strconv.ParseUint(nodeIDStr, 10, 32)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的节点 ID"})
+	nodeID, ok := parseUintParam(c, "nodeId")
+	if !ok {
 		return
 	}
 
 	limitStr := c.DefaultQuery("limit", "50")
 	limit, _ := strconv.Atoi(limitStr)
 
-	history, err := h.store.GetSpeedTestHistory(uint(nodeID), limit)
+	history, err := h.store.GetSpeedTestHistory(nodeID, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

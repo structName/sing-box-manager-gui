@@ -13,3 +13,4 @@ data/*
 # Build artifacts
 sbm
 sublinkPro/
+.ace-tool/

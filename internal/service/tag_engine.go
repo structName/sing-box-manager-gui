@@ -13,12 +13,18 @@ import (
 
 // TagEngine 标签规则引擎
 type TagEngine struct {
-	store *database.Store
+	store       *database.Store
+	taskManager *TaskManager
 }
 
 // NewTagEngine 创建标签引擎
 func NewTagEngine(store *database.Store) *TagEngine {
 	return &TagEngine{store: store}
+}
+
+// SetTaskManager 设置任务管理器
+func (e *TagEngine) SetTaskManager(tm *TaskManager) {
+	e.taskManager = tm
 }
 
 // ApplyRulesResult 应用规则结果
@@ -62,10 +68,37 @@ func (e *TagEngine) ApplyRules(triggerType string, nodeIDs []uint) (*ApplyRulesR
 	}
 
 	result.ProcessedNodes = len(nodes)
+
+	// 创建任务记录
+	var task *models.Task
+	if e.taskManager != nil && len(nodes) > 0 {
+		triggerName, taskTrigger := "手动", models.TaskTriggerManual
+		switch triggerType {
+		case "subscription_update":
+			triggerName, taskTrigger = "订阅更新", models.TaskTriggerEvent
+		case "speed_test":
+			triggerName, taskTrigger = "测速完成", models.TaskTriggerEvent
+		case "scheduled":
+			triggerName, taskTrigger = "定时", models.TaskTriggerScheduled
+		}
+		task, _, _ = e.taskManager.CreateTask(
+			models.TaskTypeTagRule,
+			fmt.Sprintf("应用标签规则 (%s)", triggerName),
+			taskTrigger,
+			len(nodes),
+		)
+		e.taskManager.StartTask(task.ID)
+	}
+
 	logger.Info("开始应用标签规则，处理 %d 个节点，%d 条规则", len(nodes), len(rules))
 
 	// 对每个节点应用规则
-	for _, node := range nodes {
+	for i, node := range nodes {
+		// 更新进度
+		if task != nil && i%10 == 0 {
+			e.taskManager.UpdateProgress(task.ID, i, node.Tag, "")
+		}
+
 		for _, rule := range rules {
 			if e.matchConditions(&node, rule.Conditions) {
 				// 获取标签信息
@@ -95,6 +128,18 @@ func (e *TagEngine) ApplyRules(triggerType string, nodeIDs []uint) (*ApplyRulesR
 				}
 			}
 		}
+	}
+
+	// 完成任务
+	if task != nil {
+		totalApplied := 0
+		for _, count := range result.AppliedTags {
+			totalApplied += count
+		}
+		e.taskManager.CompleteTask(task.ID, fmt.Sprintf("应用完成，共打标 %d 次", totalApplied), map[string]any{
+			"processed_nodes": result.ProcessedNodes,
+			"applied_tags":    result.AppliedTags,
+		})
 	}
 
 	logger.Info("标签规则应用完成，共打标 %d 次", len(result.AppliedTags))
@@ -127,7 +172,7 @@ func (e *TagEngine) matchConditions(node *models.Node, conditions models.TagCond
 
 // matchCondition 检查单个条件
 func (e *TagEngine) matchCondition(node *models.Node, cond models.TagCondition) bool {
-	var value interface{}
+	var value any
 
 	// 获取字段值（参考 sublinkPro 扩展更多字段）
 	switch cond.Field {
@@ -173,7 +218,7 @@ func (e *TagEngine) matchCondition(node *models.Node, cond models.TagCondition) 
 }
 
 // compareValues 比较值
-func (e *TagEngine) compareValues(actual interface{}, operator string, expected interface{}) bool {
+func (e *TagEngine) compareValues(actual any, operator string, expected any) bool {
 	switch operator {
 	case "eq", "==", "=":
 		return e.equals(actual, expected)
@@ -203,7 +248,7 @@ func (e *TagEngine) compareValues(actual interface{}, operator string, expected 
 }
 
 // equals 相等比较
-func (e *TagEngine) equals(a, b interface{}) bool {
+func (e *TagEngine) equals(a, b any) bool {
 	// 转换为字符串比较
 	aStr := e.toString(a)
 	bStr := e.toString(b)
@@ -211,7 +256,7 @@ func (e *TagEngine) equals(a, b interface{}) bool {
 }
 
 // compare 数值比较
-func (e *TagEngine) compare(a, b interface{}) int {
+func (e *TagEngine) compare(a, b any) int {
 	aNum := e.toFloat64(a)
 	bNum := e.toFloat64(b)
 	if aNum < bNum {
@@ -224,14 +269,14 @@ func (e *TagEngine) compare(a, b interface{}) int {
 }
 
 // contains 包含检查
-func (e *TagEngine) contains(a, b interface{}) bool {
+func (e *TagEngine) contains(a, b any) bool {
 	aStr := strings.ToLower(e.toString(a))
 	bStr := strings.ToLower(e.toString(b))
 	return strings.Contains(aStr, bStr)
 }
 
 // matchRegex 正则匹配
-func (e *TagEngine) matchRegex(a, pattern interface{}) bool {
+func (e *TagEngine) matchRegex(a, pattern any) bool {
 	aStr := e.toString(a)
 	patternStr := e.toString(pattern)
 	matched, err := regexp.MatchString(patternStr, aStr)
@@ -242,12 +287,12 @@ func (e *TagEngine) matchRegex(a, pattern interface{}) bool {
 }
 
 // inList 列表包含
-func (e *TagEngine) inList(a, list interface{}) bool {
+func (e *TagEngine) inList(a, list any) bool {
 	aStr := strings.ToLower(e.toString(a))
 
 	// 尝试解析列表
 	switch v := list.(type) {
-	case []interface{}:
+	case []any:
 		for _, item := range v {
 			if strings.EqualFold(e.toString(item), aStr) {
 				return true
@@ -272,7 +317,7 @@ func (e *TagEngine) inList(a, list interface{}) bool {
 }
 
 // toString 转换为字符串
-func (e *TagEngine) toString(v interface{}) string {
+func (e *TagEngine) toString(v any) string {
 	switch val := v.(type) {
 	case string:
 		return val
@@ -294,7 +339,7 @@ func (e *TagEngine) toString(v interface{}) string {
 }
 
 // toFloat64 转换为浮点数
-func (e *TagEngine) toFloat64(v interface{}) float64 {
+func (e *TagEngine) toFloat64(v any) float64 {
 	switch val := v.(type) {
 	case int:
 		return float64(val)

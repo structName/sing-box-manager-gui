@@ -3,10 +3,10 @@ package speedtest
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/xiaobei/singbox-manager/internal/database"
 	"github.com/xiaobei/singbox-manager/internal/database/models"
 	"github.com/xiaobei/singbox-manager/internal/logger"
@@ -33,45 +33,37 @@ const (
 	TestModeSpeed = "speed" // 延迟 + 速度
 )
 
+// TaskManagerInterface 任务管理器接口（避免循环依赖）
+type TaskManagerInterface interface {
+	CreateTask(taskType, name, trigger string, total int) (*models.Task, context.Context, error)
+	StartTask(taskID string) error
+	UpdateProgress(taskID string, progress int, currentItem string, message string) error
+	CompleteTask(taskID string, message string, result map[string]any) error
+	FailTask(taskID string, errMsg string) error
+	CancelTask(taskID string) error
+	GetTaskContext(taskID string) (context.Context, bool)
+}
+
 // Executor 测速任务执行器
 type Executor struct {
-	store *database.Store
-	mu    sync.RWMutex
-	// 运行中的任务
-	runningTasks map[string]*RunningTask
-	// 任务取消函数
-	cancelFuncs map[string]context.CancelFunc
-}
-
-// RunningTask 运行中的任务
-type RunningTask struct {
-	Task    *models.SpeedTestTask
-	Started time.Time
-}
-
-// TaskProgress 任务进度
-type TaskProgress struct {
-	TaskID      string `json:"task_id"`
-	Status      string `json:"status"`
-	Total       int    `json:"total"`
-	Completed   int    `json:"completed"`
-	Success     int    `json:"success"`
-	Failed      int    `json:"failed"`
-	CurrentNode string `json:"current_node,omitempty"`
-	Error       string `json:"error,omitempty"`
+	store       *database.Store
+	taskManager TaskManagerInterface
 }
 
 // NewExecutor 创建执行器
 func NewExecutor(store *database.Store) *Executor {
 	return &Executor{
-		store:        store,
-		runningTasks: make(map[string]*RunningTask),
-		cancelFuncs:  make(map[string]context.CancelFunc),
+		store: store,
 	}
 }
 
+// SetTaskManager 设置任务管理器
+func (e *Executor) SetTaskManager(tm TaskManagerInterface) {
+	e.taskManager = tm
+}
+
 // RunWithProfileConfig 使用指定策略配置执行测速
-func (e *Executor) RunWithProfileConfig(profile *models.SpeedTestProfile, nodeIDs []uint, triggerType string) (*models.SpeedTestTask, error) {
+func (e *Executor) RunWithProfileConfig(profile *models.SpeedTestProfile, nodeIDs []uint, triggerType string) (*models.Task, error) {
 	if profile == nil {
 		return nil, fmt.Errorf("策略不能为空")
 	}
@@ -79,7 +71,7 @@ func (e *Executor) RunWithProfileConfig(profile *models.SpeedTestProfile, nodeID
 }
 
 // RunWithProfile 使用策略执行测速
-func (e *Executor) RunWithProfile(profileID uint, nodeIDs []uint, triggerType string) (*models.SpeedTestTask, error) {
+func (e *Executor) RunWithProfile(profileID uint, nodeIDs []uint, triggerType string) (*models.Task, error) {
 	// 获取策略
 	profile, err := e.store.GetSpeedTestProfile(profileID)
 	if err != nil {
@@ -89,7 +81,11 @@ func (e *Executor) RunWithProfile(profileID uint, nodeIDs []uint, triggerType st
 	return e.runWithProfile(profile, nodeIDs, triggerType)
 }
 
-func (e *Executor) runWithProfile(profile *models.SpeedTestProfile, nodeIDs []uint, triggerType string) (*models.SpeedTestTask, error) {
+func (e *Executor) runWithProfile(profile *models.SpeedTestProfile, nodeIDs []uint, triggerType string) (*models.Task, error) {
+	if e.taskManager == nil {
+		return nil, fmt.Errorf("任务管理器未初始化")
+	}
+
 	// 获取节点列表
 	var nodes []models.Node
 	var err error
@@ -113,25 +109,22 @@ func (e *Executor) runWithProfile(profile *models.SpeedTestProfile, nodeIDs []ui
 		return nil, fmt.Errorf("没有符合条件的节点")
 	}
 
-	// 创建任务
-	task := &models.SpeedTestTask{
-		ID:          uuid.New().String(),
-		ProfileID:   &profile.ID,
-		ProfileName: profile.Name,
-		Status:      TaskStatusPending,
-		TriggerType: triggerType,
-		Total:       len(nodes),
-	}
-
-	now := time.Now()
-	task.StartedAt = &now
-
-	if err := e.store.CreateSpeedTestTask(task); err != nil {
+	// 使用 TaskManager 创建统一任务
+	task, ctx, err := e.taskManager.CreateTask(
+		models.TaskTypeSpeedTest,
+		"测速: "+profile.Name,
+		triggerType,
+		len(nodes),
+	)
+	if err != nil {
 		return nil, fmt.Errorf("创建任务失败: %w", err)
 	}
 
+	// 启动任务
+	e.taskManager.StartTask(task.ID)
+
 	// 异步执行测速
-	go e.executeTask(task, profile, nodes)
+	go e.executeTask(ctx, task, profile, nodes)
 
 	return task, nil
 }
@@ -143,107 +136,52 @@ func (e *Executor) getNodesByProfile(profile *models.SpeedTestProfile) ([]models
 		return nil, err
 	}
 
+	// 无筛选条件时直接返回
+	if len(profile.SourceFilter) == 0 && len(profile.CountryFilter) == 0 {
+		return nodes, nil
+	}
+
 	// 应用筛选条件
 	var filtered []models.Node
 	for _, node := range nodes {
-		// 来源筛选
-		if len(profile.SourceFilter) > 0 {
-			matched := false
-			for _, src := range profile.SourceFilter {
-				if node.Source == src {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				continue
-			}
+		if len(profile.SourceFilter) > 0 && !slices.Contains(profile.SourceFilter, node.Source) {
+			continue
 		}
-
-		// 国家筛选
-		if len(profile.CountryFilter) > 0 {
-			matched := false
-			for _, country := range profile.CountryFilter {
-				if node.Country == country {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				continue
-			}
+		if len(profile.CountryFilter) > 0 && !slices.Contains(profile.CountryFilter, node.Country) {
+			continue
 		}
-
 		// TODO: 标签筛选
-
 		filtered = append(filtered, node)
 	}
 
 	return filtered, nil
 }
 
+// clamp 将值限制在指定范围内
+func clamp(val, min, max int) int {
+	if val <= 0 || val < min {
+		return min
+	}
+	if val > max {
+		return max
+	}
+	return val
+}
+
 // executeTask 执行测速任务
-func (e *Executor) executeTask(task *models.SpeedTestTask, profile *models.SpeedTestProfile, nodes []models.Node) {
+func (e *Executor) executeTask(ctx context.Context, task *models.Task, profile *models.SpeedTestProfile, nodes []models.Node) {
 	logger.Info("开始执行测速任务 [%s], 节点数: %d, 策略: %s, 模式: %s",
 		task.ID, len(nodes), profile.Name, profile.Mode)
-
-	// 创建取消上下文
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// 注册任务
-	e.mu.Lock()
-	e.runningTasks[task.ID] = &RunningTask{
-		Task:    task,
-		Started: time.Now(),
-	}
-	e.cancelFuncs[task.ID] = cancel
-	e.mu.Unlock()
-
-	defer func() {
-		e.mu.Lock()
-		delete(e.runningTasks, task.ID)
-		delete(e.cancelFuncs, task.ID)
-		e.mu.Unlock()
-	}()
-
-	// 更新任务状态为运行中
-	task.Status = TaskStatusRunning
-	e.store.UpdateSpeedTestTask(task)
 
 	// 创建测速器
 	tester := NewTester(profile)
 
 	// 并发控制
-	var latencyConcurrency, speedConcurrency int
+	latencyConcurrency := clamp(profile.LatencyConcurrency, 50, 200)
+	speedConcurrency := clamp(profile.SpeedConcurrency, 5, 32)
 
-	if profile.LatencyConcurrency > 0 {
-		latencyConcurrency = profile.LatencyConcurrency
-	} else {
-		latencyConcurrency = 50 // 默认延迟并发
-	}
-	if latencyConcurrency < 1 {
-		latencyConcurrency = 1
-	}
-	if latencyConcurrency > 200 {
-		latencyConcurrency = 200
-	}
-
-	if profile.SpeedConcurrency > 0 {
-		speedConcurrency = profile.SpeedConcurrency
-	} else {
-		speedConcurrency = 5 // 默认速度并发
-	}
-	if speedConcurrency < 1 {
-		speedConcurrency = 1
-	}
-	if speedConcurrency > 32 {
-		speedConcurrency = 32
-	}
-
-	// 统计 (使用 mutex 保护，不需要 atomic)
-	var successCount, failCount int
-	var completedCount int
+	// 统计
+	var successCount, failCount, completedCount int
 	var cancelled bool
 	var mu sync.Mutex
 
@@ -262,7 +200,6 @@ func (e *Executor) executeTask(task *models.SpeedTestTask, profile *models.Speed
 			mu.Lock()
 			cancelled = true
 			mu.Unlock()
-			break
 		default:
 		}
 
@@ -289,21 +226,17 @@ func (e *Executor) executeTask(task *models.SpeedTestTask, profile *models.Speed
 
 			mu.Lock()
 			completedCount++
-
 			if result.Status == "success" {
 				successCount++
 			} else {
 				failCount++
 			}
-
-			// 更新任务进度
-			task.Completed = completedCount
-			task.Success = successCount
-			task.Failed = failCount
-			task.CurrentNode = n.Tag
+			progress := completedCount
+			currentNode := n.Tag
 			mu.Unlock()
 
-			e.store.UpdateSpeedTestTask(task)
+			// 通过 TaskManager 更新进度
+			e.taskManager.UpdateProgress(task.ID, progress, currentNode, "")
 		}(i, node)
 	}
 	wg.Wait()
@@ -312,10 +245,7 @@ func (e *Executor) executeTask(task *models.SpeedTestTask, profile *models.Speed
 
 	// 检查是否被取消
 	if cancelled || ctx.Err() != nil {
-		task.Status = TaskStatusCancelled
-		now := time.Now()
-		task.FinishedAt = &now
-		e.store.UpdateSpeedTestTask(task)
+		e.taskManager.FailTask(task.ID, "任务已取消")
 		logger.Info("任务已取消")
 		goto SaveResults
 	}
@@ -324,7 +254,6 @@ func (e *Executor) executeTask(task *models.SpeedTestTask, profile *models.Speed
 	if profile.Mode == TestModeSpeed {
 		logger.Info("阶段二: 开始速度测试, 并发数: %d", speedConcurrency)
 
-		// 重置阶段二计数（用于进度展示，保留阶段一统计）
 		speedCompletedCount := 0
 		speedSem := make(chan struct{}, speedConcurrency)
 		var speedWg sync.WaitGroup
@@ -335,7 +264,6 @@ func (e *Executor) executeTask(task *models.SpeedTestTask, profile *models.Speed
 				mu.Lock()
 				cancelled = true
 				mu.Unlock()
-				break
 			default:
 			}
 
@@ -370,13 +298,11 @@ func (e *Executor) executeTask(task *models.SpeedTestTask, profile *models.Speed
 				mu.Lock()
 				results[idx] = result
 				speedCompletedCount++
-
-				// 阶段二进度：显示为 len(nodes) + speedCompletedCount，但不超过 2*len(nodes)
-				task.Completed = len(nodes) + speedCompletedCount
-				task.CurrentNode = node.Tag
+				progress := len(nodes) + speedCompletedCount
+				currentNode := node.Tag
 				mu.Unlock()
 
-				e.store.UpdateSpeedTestTask(task)
+				e.taskManager.UpdateProgress(task.ID, progress, currentNode, "")
 			}(i)
 		}
 		speedWg.Wait()
@@ -428,51 +354,42 @@ SaveResults:
 		e.store.CreateSpeedTestHistory(history)
 	}
 
-	// 更新任务完成状态
-	if !cancelled && ctx.Err() == nil {
-		task.Status = TaskStatusCompleted
-	}
-	now := time.Now()
-	task.FinishedAt = &now
-	e.store.UpdateSpeedTestTask(task)
-
 	// 更新策略的上次执行时间
+	now := time.Now()
 	profile.LastRunAt = &now
 	e.store.UpdateSpeedTestProfile(profile)
+
+	// 完成任务
+	if !cancelled && ctx.Err() == nil {
+		e.taskManager.CompleteTask(task.ID, "测速完成", map[string]any{
+			"profile_id": profile.ID,
+			"total":      len(nodes),
+			"success":    successCount,
+			"failed":     failCount,
+		})
+	}
 
 	logger.Info("测速任务完成 - 总计: %d, 成功: %d, 失败: %d", len(nodes), successCount, failCount)
 }
 
-// CancelTask 取消任务
+// CancelTask 取消任务（委托给 TaskManager）
 func (e *Executor) CancelTask(taskID string) error {
-	e.mu.RLock()
-	cancel, ok := e.cancelFuncs[taskID]
-	e.mu.RUnlock()
-
-	if !ok {
-		return fmt.Errorf("任务不存在或已完成")
+	if e.taskManager == nil {
+		return fmt.Errorf("任务管理器未初始化")
 	}
+	return e.taskManager.CancelTask(taskID)
+}
 
-	cancel()
+// GetRunningTasks 获取运行中的任务（返回空，由 TaskManager 管理）
+func (e *Executor) GetRunningTasks() []*models.Task {
 	return nil
 }
 
-// GetRunningTasks 获取运行中的任务
-func (e *Executor) GetRunningTasks() []*models.SpeedTestTask {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-
-	tasks := make([]*models.SpeedTestTask, 0, len(e.runningTasks))
-	for _, rt := range e.runningTasks {
-		tasks = append(tasks, rt.Task)
-	}
-	return tasks
-}
-
-// IsTaskRunning 检查任务是否在运行
+// IsTaskRunning 检查任务是否在运行（委托给 TaskManager）
 func (e *Executor) IsTaskRunning(taskID string) bool {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	_, ok := e.runningTasks[taskID]
+	if e.taskManager == nil {
+		return false
+	}
+	_, ok := e.taskManager.GetTaskContext(taskID)
 	return ok
 }

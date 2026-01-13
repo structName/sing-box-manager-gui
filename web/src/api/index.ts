@@ -82,11 +82,11 @@ export const profileApi = {
   update: (id: string, data: { name: string; description: string }) => api.put(`/profiles/${id}`, data),
   delete: (id: string) => api.delete(`/profiles/${id}`),
   activate: (id: string) => api.post(`/profiles/${id}/activate`),
-  snapshot: (id: string) => api.post(`/profiles/${id}/snapshot`),
   exportUrl: (id: string) => `/api/profiles/${id}/export`,
-  import: (file: File) => {
+  import: (file: File, name: string) => {
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('name', name);
     return api.post('/profiles/import', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });

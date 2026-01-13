@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"sync"
 	"time"
 
@@ -377,7 +378,7 @@ func (h *HealthCheckService) checkChainSimple(chain *storage.ProxyChain, config 
 func (h *HealthCheckService) testNodeTCP(node storage.Node, timeout time.Duration) storage.NodeHealthStatus {
 	start := time.Now()
 
-	address := fmt.Sprintf("%s:%d", node.Server, node.ServerPort)
+	address := net.JoinHostPort(node.Server, strconv.Itoa(node.ServerPort))
 
 	// 尝试建立 TCP 连接
 	conn, err := net.DialTimeout("tcp", address, timeout)

@@ -6,12 +6,12 @@ import { useStore } from '../store';
 const menuItems = [
   { path: '/', icon: LayoutDashboard, label: '仪表盘' },
   { path: '/subscriptions', icon: Globe, label: '节点' },
+  { path: '/proxy-chains', icon: Link2, label: '链路' },
   { path: '/inbound-ports', icon: Network, label: '入站' },
   { path: '/rules', icon: FileText, label: '规则' },
-  { path: '/proxy-chains', icon: Link2, label: '链路' },
-  { path: '/tasks', icon: ListTodo, label: '任务管理' },
-  { path: '/tags', icon: Tag, label: '标签' },
   { path: '/profiles', icon: Layers, label: '配置方案' },
+  { path: '/tags', icon: Tag, label: '标签' },
+  { path: '/tasks', icon: ListTodo, label: '任务管理' },
   { path: '/logs', icon: ScrollText, label: '日志' },
   { path: '/settings', icon: Settings, label: '设置' },
 ];

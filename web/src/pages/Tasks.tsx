@@ -68,7 +68,7 @@ const typeConfig: Record<string, { label: string; icon: React.ReactNode; color: 
 };
 
 export default function Tasks() {
-  const { tasks, stats, loading, fetchTasks, fetchStats, cancelTask: cancelTaskAction, cleanupTasks } = useTaskStore();
+  const { tasks, stats, loading, fetchTasks, fetchStats, cancelTask: cancelTaskAction, cleanupTasks, subscribeSSE, unsubscribeSSE } = useTaskStore();
   const { status: schedulerStatus, entries, loading: schedulerLoading, fetchStatus, fetchEntries, enableEntry, disableEntry, triggerEntry, pause, resume } = useSchedulerStore();
   const [mainTab, setMainTab] = useState('tasks');
   const [activeTab, setActiveTab] = useState('all');
@@ -88,18 +88,9 @@ export default function Tasks() {
   useEffect(() => {
     loadTasks();
     loadScheduler();
-  }, [loadTasks, loadScheduler]);
-
-  // 自动刷新运行中任务
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const hasRunning = tasks.some(t => t.status === 'running' || t.status === 'pending');
-      if (hasRunning) {
-        loadTasks();
-      }
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [tasks, loadTasks]);
+    subscribeSSE();
+    return () => unsubscribeSSE();
+  }, [loadTasks, loadScheduler, subscribeSSE, unsubscribeSSE]);
 
   // 取消任务
   const handleCancel = async (taskId: string) => {
@@ -164,19 +155,16 @@ export default function Tasks() {
 
   // 过滤任务
   const filteredTasks = tasks.filter((task) => {
-    if (activeTab === 'running' && task.status !== 'running' && task.status !== 'pending') {
-      return false;
-    }
-    if (activeTab === 'completed' && task.status !== 'completed') {
-      return false;
-    }
-    if (activeTab === 'failed' && task.status !== 'error' && task.status !== 'cancelled') {
-      return false;
-    }
-    if (statusFilter !== 'all' && task.status !== statusFilter) {
-      return false;
-    }
-    return true;
+    // Tab 过滤
+    const tabMatch = activeTab === 'all' ||
+      (activeTab === 'running' && (task.status === 'running' || task.status === 'pending')) ||
+      (activeTab === 'completed' && task.status === 'completed') ||
+      (activeTab === 'failed' && (task.status === 'error' || task.status === 'cancelled'));
+
+    // 状态过滤
+    const statusMatch = statusFilter === 'all' || task.status === statusFilter;
+
+    return tabMatch && statusMatch;
   });
 
   // 格式化时间
@@ -388,7 +376,7 @@ export default function Tasks() {
                   </p>
                 </div>
               ) : (
-                <Table aria-label="任务列表" removeWrapper>
+                <Table aria-label="任务列表" removeWrapper selectionMode="none">
                   <TableHeader>
                     <TableColumn>任务名称</TableColumn>
                     <TableColumn>类型</TableColumn>
@@ -562,7 +550,7 @@ export default function Tasks() {
                   </p>
                 </div>
               ) : (
-                <Table aria-label="调度条目列表" removeWrapper>
+                <Table aria-label="调度条目列表" removeWrapper selectionMode="none">
                   <TableHeader>
                     <TableColumn>名称</TableColumn>
                     <TableColumn>类型</TableColumn>
@@ -610,25 +598,29 @@ export default function Tasks() {
                             </span>
                           </TableCell>
                           <TableCell>
-                            <Switch
-                              size="sm"
-                              isSelected={entry.enabled}
-                              onValueChange={() => handleToggleEntry(entry.key, entry.enabled)}
-                            />
+                            <div onClick={(e) => e.stopPropagation()}>
+                              <Switch
+                                size="sm"
+                                isSelected={entry.enabled}
+                                onValueChange={() => handleToggleEntry(entry.key, entry.enabled)}
+                              />
+                            </div>
                           </TableCell>
                           <TableCell>
-                            <Tooltip content="立即执行">
-                              <Button
-                                isIconOnly
-                                size="sm"
-                                variant="flat"
-                                color="primary"
-                                onPress={() => handleTrigger(entry.key)}
-                                isDisabled={!entry.enabled}
-                              >
-                                <Play className="w-4 h-4" />
-                              </Button>
-                            </Tooltip>
+                            <div onClick={(e) => e.stopPropagation()}>
+                              <Tooltip content="立即执行">
+                                <Button
+                                  isIconOnly
+                                  size="sm"
+                                  variant="flat"
+                                  color="primary"
+                                  onPress={() => handleTrigger(entry.key)}
+                                  isDisabled={!entry.enabled}
+                                >
+                                  <Play className="w-4 h-4" />
+                                </Button>
+                              </Tooltip>
+                            </div>
                           </TableCell>
                         </TableRow>
                       );

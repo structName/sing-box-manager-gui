@@ -31,8 +31,9 @@ type ClashProxy struct {
 	SNI            string                 `yaml:"sni,omitempty"`
 	Servername     string                 `yaml:"servername,omitempty"` // Clash 格式的 SNI 字段
 	ALPN           []string               `yaml:"alpn,omitempty"`
-	Fingerprint    string                 `yaml:"fingerprint,omitempty"`
-	Flow           string                 `yaml:"flow,omitempty"`
+	Fingerprint       string                 `yaml:"fingerprint,omitempty"`
+	ClientFingerprint string                 `yaml:"client-fingerprint,omitempty"`
+	Flow              string                 `yaml:"flow,omitempty"`
 	UDP            bool                   `yaml:"udp,omitempty"`
 	Plugin         string                 `yaml:"plugin,omitempty"`
 	PluginOpts     map[string]interface{} `yaml:"plugin-opts,omitempty"`
@@ -253,8 +254,8 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 		extra["transport"] = transport
 	}
 
-	// TLS 配置
-	if proxy.TLS {
+	// TLS 配置（REALITY 节点即使没有显式设置 tls: true 也需要处理）
+	if proxy.TLS || proxy.RealityOpts != nil {
 		tls := map[string]interface{}{
 			"enabled": true,
 		}
@@ -277,13 +278,6 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 			tls["alpn"] = proxy.ALPN
 		}
 
-		if proxy.Fingerprint != "" {
-			tls["utls"] = map[string]interface{}{
-				"enabled":     true,
-				"fingerprint": proxy.Fingerprint,
-			}
-		}
-
 		// Reality 配置
 		if proxy.RealityOpts != nil {
 			reality := map[string]interface{}{
@@ -296,6 +290,30 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 				reality["short_id"] = proxy.RealityOpts.ShortID
 			}
 			tls["reality"] = reality
+
+			// REALITY 必须使用 uTLS，设置 fingerprint
+			fp := proxy.ClientFingerprint
+			if fp == "" {
+				fp = proxy.Fingerprint
+			}
+			if fp == "" {
+				fp = "chrome" // 默认值
+			}
+			tls["utls"] = map[string]interface{}{
+				"enabled":     true,
+				"fingerprint": fp,
+			}
+		} else if fp := proxy.ClientFingerprint; fp != "" {
+			// 普通 TLS 的 uTLS（优先使用 client-fingerprint）
+			tls["utls"] = map[string]interface{}{
+				"enabled":     true,
+				"fingerprint": fp,
+			}
+		} else if proxy.Fingerprint != "" {
+			tls["utls"] = map[string]interface{}{
+				"enabled":     true,
+				"fingerprint": proxy.Fingerprint,
+			}
 		}
 
 		extra["tls"] = tls

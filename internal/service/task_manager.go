@@ -24,6 +24,10 @@ type TaskManager struct {
 	store        *database.Store
 	runningTasks map[string]*RunningTask
 	mu           sync.RWMutex
+
+	// SSE 订阅者
+	subscribers map[string]chan *models.Task
+	subMu       sync.RWMutex
 }
 
 // NewTaskManager 创建任务管理器
@@ -31,6 +35,44 @@ func NewTaskManager(store *database.Store) *TaskManager {
 	return &TaskManager{
 		store:        store,
 		runningTasks: make(map[string]*RunningTask),
+		subscribers:  make(map[string]chan *models.Task),
+	}
+}
+
+// Subscribe 订阅任务更新
+func (tm *TaskManager) Subscribe(clientID string) <-chan *models.Task {
+	tm.subMu.Lock()
+	defer tm.subMu.Unlock()
+
+	ch := make(chan *models.Task, 10)
+	tm.subscribers[clientID] = ch
+	logger.Info("SSE 客户端已订阅: %s", clientID)
+	return ch
+}
+
+// Unsubscribe 取消订阅
+func (tm *TaskManager) Unsubscribe(clientID string) {
+	tm.subMu.Lock()
+	defer tm.subMu.Unlock()
+
+	if ch, ok := tm.subscribers[clientID]; ok {
+		close(ch)
+		delete(tm.subscribers, clientID)
+		logger.Info("SSE 客户端已取消订阅: %s", clientID)
+	}
+}
+
+// broadcast 广播任务更新
+func (tm *TaskManager) broadcast(task *models.Task) {
+	tm.subMu.RLock()
+	defer tm.subMu.RUnlock()
+
+	for _, ch := range tm.subscribers {
+		select {
+		case ch <- task:
+		default:
+			// 通道满了，跳过
+		}
 	}
 }
 
@@ -62,6 +104,7 @@ func (tm *TaskManager) CreateTask(taskType, name, trigger string, total int) (*m
 	}
 
 	logger.Info("任务已创建: [%s] %s (%s)", task.Type, task.Name, task.ID)
+	tm.broadcast(task)
 	return task, ctx, nil
 }
 
@@ -79,7 +122,11 @@ func (tm *TaskManager) StartTask(taskID string) error {
 	running.Task.Status = models.TaskStatusRunning
 	running.Task.StartedAt = &now
 
-	return tm.store.UpdateTask(running.Task)
+	if err := tm.store.UpdateTask(running.Task); err != nil {
+		return err
+	}
+	tm.broadcast(running.Task)
+	return nil
 }
 
 // UpdateProgress 更新任务进度
@@ -97,14 +144,22 @@ func (tm *TaskManager) UpdateProgress(taskID string, progress int, currentItem s
 		task.Progress = progress
 		task.CurrentItem = currentItem
 		task.Message = message
-		return tm.store.UpdateTask(task)
+		if err := tm.store.UpdateTask(task); err != nil {
+			return err
+		}
+		tm.broadcast(task)
+		return nil
 	}
 
 	running.Task.Progress = progress
 	running.Task.CurrentItem = currentItem
 	running.Task.Message = message
 
-	return tm.store.UpdateTask(running.Task)
+	if err := tm.store.UpdateTask(running.Task); err != nil {
+		return err
+	}
+	tm.broadcast(running.Task)
+	return nil
 }
 
 // CompleteTask 完成任务
@@ -124,7 +179,11 @@ func (tm *TaskManager) CompleteTask(taskID string, message string, result map[st
 		task.Message = message
 		task.Result = models.JSONMap(result)
 		task.Progress = task.Total
-		return tm.store.UpdateTask(task)
+		if err := tm.store.UpdateTask(task); err != nil {
+			return err
+		}
+		tm.broadcast(task)
+		return nil
 	}
 
 	now := time.Now()
@@ -138,6 +197,7 @@ func (tm *TaskManager) CompleteTask(taskID string, message string, result map[st
 		return err
 	}
 
+	tm.broadcast(running.Task)
 	delete(tm.runningTasks, taskID)
 	logger.Info("任务已完成: [%s] %s", running.Task.Type, running.Task.Name)
 	return nil
@@ -158,7 +218,11 @@ func (tm *TaskManager) FailTask(taskID string, errMsg string) error {
 		task.Status = models.TaskStatusError
 		task.CompletedAt = &now
 		task.Message = errMsg
-		return tm.store.UpdateTask(task)
+		if err := tm.store.UpdateTask(task); err != nil {
+			return err
+		}
+		tm.broadcast(task)
+		return nil
 	}
 
 	now := time.Now()
@@ -197,6 +261,7 @@ func (tm *TaskManager) CancelTask(taskID string) error {
 		return err
 	}
 
+	tm.broadcast(running.Task)
 	delete(tm.runningTasks, taskID)
 	logger.Info("任务已取消: [%s] %s", running.Task.Type, running.Task.Name)
 	return nil

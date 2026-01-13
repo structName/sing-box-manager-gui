@@ -91,6 +91,20 @@ func (s *JSONStore) load() error {
 		s.data.Settings.ConfigPath = "generated/config.json"
 		needSave = true
 	}
+
+	// 迁移订阅字段：为旧数据补齐 auto_update 和 update_interval 默认值
+	for i := range s.data.Subscriptions {
+		if s.data.Subscriptions[i].AutoUpdate == nil {
+			defaultAutoUpdate := false // 默认不开启自动更新，避免意外行为
+			s.data.Subscriptions[i].AutoUpdate = &defaultAutoUpdate
+			needSave = true
+		}
+		if s.data.Subscriptions[i].UpdateInterval <= 0 {
+			s.data.Subscriptions[i].UpdateInterval = 60 // 默认 60 分钟
+			needSave = true
+		}
+	}
+
 	if needSave {
 		return s.saveInternal()
 	}

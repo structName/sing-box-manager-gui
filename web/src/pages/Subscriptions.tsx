@@ -39,6 +39,7 @@ interface SpeedTestProfile {
   id?: number;
   name: string;
   enabled: boolean;
+  auto_test: boolean;  // 启用自动测速
   is_default?: boolean;
   cron_expression?: string;
   schedule_cron?: string;
@@ -55,7 +56,8 @@ interface SpeedTestProfile {
 // 默认测速设置
 const defaultSpeedTestProfile: SpeedTestProfile = {
   name: '默认策略',
-  enabled: false,
+  enabled: true,
+  auto_test: false,  // 默认不启用自动测速
   cron_expression: '0 */6 * * *', // 每6小时
   mode: 'speed',  // 默认延迟+速度
   latency_url: 'https://cp.cloudflare.com/generate_204',
@@ -413,6 +415,7 @@ export default function Subscriptions() {
           ID: getProfileId(profile),
           name: profile.name || defaultSpeedTestProfile.name,
           enabled: profile.enabled ?? defaultSpeedTestProfile.enabled,
+          auto_test: profile.auto_test ?? defaultSpeedTestProfile.auto_test,
           cron_expression: profile.cron_expression || profile.schedule_cron || defaultSpeedTestProfile.cron_expression,
           mode: profile.mode || defaultSpeedTestProfile.mode,
           latency_url: profile.latency_url || defaultSpeedTestProfile.latency_url,
@@ -448,7 +451,8 @@ export default function Subscriptions() {
     try {
       const profileData = {
         ...speedTestProfile,
-        cron_expression: selectedCronPreset,
+        schedule_cron: selectedCronPreset,
+        schedule_type: 'cron',  // 使用 cron 表达式类型
       };
 
       if (speedTestProfile.ID) {
@@ -497,6 +501,7 @@ export default function Subscriptions() {
             ID: profileId,
             name: profile.name || prev.name,
             enabled: profile.enabled ?? prev.enabled,
+            auto_test: profile.auto_test ?? prev.auto_test,
             cron_expression: profile.cron_expression || profile.schedule_cron || prev.cron_expression,
             mode: profile.mode || prev.mode,
             latency_url: profile.latency_url || prev.latency_url,
@@ -1202,14 +1207,14 @@ export default function Subscriptions() {
                       <div className="flex items-center justify-between">
                         <span>启用自动测速</span>
                         <Switch
-                          isSelected={speedTestProfile.enabled}
+                          isSelected={speedTestProfile.auto_test}
                           onValueChange={(checked) =>
-                            setSpeedTestProfile({ ...speedTestProfile, enabled: checked })
+                            setSpeedTestProfile({ ...speedTestProfile, auto_test: checked })
                           }
                         />
                       </div>
 
-                      {speedTestProfile.enabled && (
+                      {speedTestProfile.auto_test && (
                         <>
                           <div>
                             <p className="text-sm text-gray-500 mb-2">定时测速设置</p>

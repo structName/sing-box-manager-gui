@@ -1,9 +1,9 @@
 import { useEffect, useState, useRef } from 'react';
 import { Card, CardBody, CardHeader, Input, Button, Switch, Chip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Select, SelectItem, Progress, Textarea, useDisclosure } from '@nextui-org/react';
-import { Save, Download, Upload, Terminal, CheckCircle, AlertCircle, Plus, Pencil, Trash2, Server, FileDown, FileUp, Copy } from 'lucide-react';
+import { Save, Download, Upload, Terminal, CheckCircle, AlertCircle, Plus, Pencil, Trash2, Server, FileDown, FileUp } from 'lucide-react';
 import { useStore } from '../store';
 import type { Settings as SettingsType, HostEntry } from '../store';
-import { daemonApi, kernelApi, settingsApi, configApi, backupApi } from '../api';
+import { daemonApi, kernelApi, settingsApi, backupApi } from '../api';
 import { toast } from '../components/Toast';
 
 // 内核信息类型
@@ -249,23 +249,6 @@ export default function Settings() {
     } catch (error: any) {
       console.error('重启守护进程服务失败:', error);
       toast.error(error.response?.data?.error || '重启服务失败');
-    }
-  };
-
-  // 导出 sing-box 配置
-  const handleExportConfig = () => {
-    window.open(configApi.exportUrl(), '_blank');
-    toast.success('配置文件已开始下载');
-  };
-
-  // 复制 sing-box 配置到剪贴板
-  const handleCopyConfig = async () => {
-    try {
-      const res = await configApi.preview();
-      await navigator.clipboard.writeText(res.data);
-      toast.success('配置已复制到剪贴板');
-    } catch (error: any) {
-      toast.error('复制失败: ' + (error.message || '未知错误'));
     }
   };
 
@@ -600,14 +583,6 @@ export default function Settings() {
               onValueChange={(enabled) => setFormData({ ...formData, auto_apply: enabled })}
             />
           </div>
-          <Input
-            type="number"
-            label="订阅自动更新间隔 (分钟)"
-            placeholder="60"
-            description="设置为 0 表示禁用自动更新"
-            value={String(formData.subscription_interval)}
-            onChange={(e) => setFormData({ ...formData, subscription_interval: parseInt(e.target.value) || 0 })}
-          />
         </CardBody>
       </Card>
 
@@ -618,30 +593,6 @@ export default function Settings() {
           <h2 className="text-lg font-semibold">导入导出</h2>
         </CardHeader>
         <CardBody className="space-y-4">
-          {/* sing-box 配置导出 */}
-          <div className="flex items-center justify-between p-4 bg-default-100 rounded-lg">
-            <div>
-              <h3 className="font-medium">sing-box 配置</h3>
-              <p className="text-sm text-gray-500">导出可直接在 sing-box 使用的配置文件</p>
-            </div>
-            <div className="flex gap-2">
-              <Button
-                variant="flat"
-                startContent={<Copy className="w-4 h-4" />}
-                onPress={handleCopyConfig}
-              >
-                复制
-              </Button>
-              <Button
-                color="primary"
-                startContent={<FileDown className="w-4 h-4" />}
-                onPress={handleExportConfig}
-              >
-                下载
-              </Button>
-            </div>
-          </div>
-
           {/* 应用数据备份 */}
           <div className="flex items-center justify-between p-4 bg-default-100 rounded-lg">
             <div>

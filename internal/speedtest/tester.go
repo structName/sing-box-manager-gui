@@ -267,9 +267,15 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 							realityOpts["short-id"] = shortID
 						}
 						proxy["reality-opts"] = realityOpts
+						// REALITY 必须设置 client-fingerprint，先设默认值
+						proxy["client-fingerprint"] = "chrome"
+						// REALITY 必须有 servername，如果 TLS 没设置则使用服务器地址
+						if _, hasSNI := proxy["servername"]; !hasSNI {
+							proxy["servername"] = node.Server
+						}
 					}
 				}
-				// uTLS fingerprint
+				// uTLS fingerprint（覆盖默认值）
 				if utls, ok := tls["utls"].(map[string]interface{}); ok {
 					if fp, ok := utls["fingerprint"].(string); ok {
 						proxy["client-fingerprint"] = fp
