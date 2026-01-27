@@ -149,10 +149,16 @@ build_all() {
     # Linux
     build_target linux amd64
     build_target linux arm64
+    build_target linux 386
 
     # macOS
     build_target darwin amd64
     build_target darwin arm64
+
+    # Windows
+    build_target windows amd64
+    build_target windows arm64
+    build_target windows 386
 
     info "所有构建完成!"
     echo ""
