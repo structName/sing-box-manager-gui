@@ -155,10 +155,8 @@ build_all() {
     build_target darwin amd64
     build_target darwin arm64
 
-    # Windows
+    # Windows (仅 amd64，modernc.org/sqlite 不支持 windows/386 和 windows/arm64)
     build_target windows amd64
-    build_target windows arm64
-    build_target windows 386
 
     info "所有构建完成!"
     echo ""
