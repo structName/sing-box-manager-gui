@@ -60,6 +60,13 @@ jobs:
               if [ "$os" = "darwin" ] && [ "$arch" = "386" ]; then
                 continue
               fi
+              # modernc.org/sqlite 不支持 windows/386 和 windows/arm64
+              if [ "$os" = "windows" ] && [ "$arch" = "386" ]; then
+                continue
+              fi
+              if [ "$os" = "windows" ] && [ "$arch" = "arm64" ]; then
+                continue
+              fi
               output="dist/sbm-${os}-${arch}"
               if [ "$os" = "windows" ]; then
                 output="${output}.exe"
