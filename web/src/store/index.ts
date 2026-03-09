@@ -411,6 +411,7 @@ export const useStore = create<AppState>((set, get) => ({
       set({ settings });
     } catch (error) {
       console.error('更新设置失败:', error);
+      throw error;
     }
   },
 

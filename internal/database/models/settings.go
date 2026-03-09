@@ -37,6 +37,8 @@ var DefaultSettings = map[string]string{
 	"config_path":           "generated/config.json",
 	"mixed_port":            "2080",
 	"tun_enabled":           "true",
+	"lan_proxy_enabled":     "false",
+	"lan_listen_ip":         "0.0.0.0",
 	"proxy_dns":             "https://1.1.1.1/dns-query",
 	"direct_dns":            "https://dns.alidns.com/dns-query",
 	"fakeip_enabled":        "false",
