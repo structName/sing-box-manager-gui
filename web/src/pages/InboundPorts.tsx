@@ -394,6 +394,23 @@ export default function InboundPorts() {
           />
           <div className="flex items-center justify-between p-3 bg-default-100 rounded-lg">
             <div>
+              <p className="font-medium">局域网代理</p>
+              <p className="text-sm text-gray-500">开启后 Mixed 端口监听局域网</p>
+            </div>
+            <Switch
+              isSelected={formData.lan_proxy_enabled || false}
+              onValueChange={(enabled) => setFormData({ ...formData, lan_proxy_enabled: enabled })}
+            />
+          </div>
+          <Input
+            label="局域网监听地址"
+            placeholder="0.0.0.0"
+            description="留空默认 0.0.0.0，仅在开启局域网代理时生效"
+            value={formData.lan_listen_ip || ''}
+            onChange={(e) => setFormData({ ...formData, lan_listen_ip: e.target.value })}
+          />
+          <div className="flex items-center justify-between p-3 bg-default-100 rounded-lg">
+            <div>
               <p className="font-medium">TUN 模式</p>
               <p className="text-sm text-gray-500">启用 TUN 模式进行透明代理</p>
             </div>

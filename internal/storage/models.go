@@ -204,8 +204,10 @@ type Settings struct {
 	ConfigPath  string `json:"config_path"`
 
 	// 入站配置
-	MixedPort  int  `json:"mixed_port"`  // HTTP/SOCKS5 混合端口
-	TunEnabled bool `json:"tun_enabled"` // TUN 模式
+	MixedPort       int    `json:"mixed_port"`        // HTTP/SOCKS5 混合端口
+	TunEnabled      bool   `json:"tun_enabled"`       // TUN 模式
+	LanProxyEnabled bool   `json:"lan_proxy_enabled"` // 是否开启局域网代理（Mixed 端口）
+	LanListenIP     string `json:"lan_listen_ip"`     // 局域网监听地址（默认 0.0.0.0）
 
 	// DNS 配置
 	ProxyDNS      string      `json:"proxy_dns"`               // 代理 DNS
@@ -242,6 +244,8 @@ func DefaultSettings() *Settings {
 		ConfigPath:           "generated/config.json",
 		MixedPort:            2080,
 		TunEnabled:           true,
+		LanProxyEnabled:      false,
+		LanListenIP:          "0.0.0.0",
 		ProxyDNS:             "https://1.1.1.1/dns-query",
 		DirectDNS:            "https://dns.alidns.com/dns-query",
 		WebPort:              9090,
