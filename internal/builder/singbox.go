@@ -370,11 +370,20 @@ func (b *ConfigBuilder) buildNTP() *NTPConfig {
 
 // buildInbounds 构建入站配置
 func (b *ConfigBuilder) buildInbounds() []Inbound {
+	listen := "127.0.0.1"
+	if b.settings.LanProxyEnabled {
+		if b.settings.LanListenIP != "" {
+			listen = b.settings.LanListenIP
+		} else {
+			listen = "0.0.0.0"
+		}
+	}
+
 	inbounds := []Inbound{
 		{
 			Type:       "mixed",
 			Tag:        "mixed-in",
-			Listen:     "127.0.0.1",
+			Listen:     listen,
 			ListenPort: b.settings.MixedPort,
 			Sniff:      true,
 			SniffOverrideDestination: true,

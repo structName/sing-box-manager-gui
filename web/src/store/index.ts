@@ -95,6 +95,8 @@ export interface Settings {
   config_path: string;
   mixed_port: number;
   tun_enabled: boolean;
+  lan_proxy_enabled?: boolean;
+  lan_listen_ip?: string;
   proxy_dns: string;
   direct_dns: string;
   hosts?: HostEntry[];           // DNS hosts 映射
@@ -409,6 +411,7 @@ export const useStore = create<AppState>((set, get) => ({
       set({ settings });
     } catch (error) {
       console.error('更新设置失败:', error);
+      throw error;
     }
   },
 

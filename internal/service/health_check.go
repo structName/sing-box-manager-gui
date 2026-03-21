@@ -41,6 +41,15 @@ func getRandomSpeedTestURL() string {
 	return speedTestURLs[rand.Intn(len(speedTestURLs))]
 }
 
+func getMixedProxyAddress(settings *storage.Settings) string {
+	host := "127.0.0.1"
+	if settings.LanProxyEnabled && settings.LanListenIP != "" && settings.LanListenIP != "0.0.0.0" {
+		host = settings.LanListenIP
+	}
+
+	return net.JoinHostPort(host, strconv.Itoa(settings.MixedPort))
+}
+
 // HealthCheckService 健康检测服务
 type HealthCheckService struct {
 	store *storage.JSONStore
@@ -215,7 +224,7 @@ func (h *HealthCheckService) CheckChainSpeed(chainID string) (*storage.ChainSpee
 	timeout := 30 * time.Second
 
 	// 创建通过代理的 HTTP 客户端
-	proxyDialer, err := proxy.SOCKS5("tcp", fmt.Sprintf("127.0.0.1:%d", mixedPort), nil, proxy.Direct)
+	proxyDialer, err := proxy.SOCKS5("tcp", getMixedProxyAddress(settings), nil, proxy.Direct)
 	if err != nil {
 		return nil, fmt.Errorf("创建代理失败: %w", err)
 	}

@@ -27,15 +27,15 @@ type LegacyAppData struct {
 }
 
 type LegacySubscription struct {
-	ID        string          `json:"id"`
-	Name      string          `json:"name"`
-	URL       string          `json:"url"`
-	NodeCount int             `json:"node_count"`
-	UpdatedAt string          `json:"updated_at"`
-	ExpireAt  *string         `json:"expire_at,omitempty"`
-	Traffic   *LegacyTraffic  `json:"traffic,omitempty"`
-	Nodes     []LegacyNode    `json:"nodes"`
-	Enabled   bool            `json:"enabled"`
+	ID        string         `json:"id"`
+	Name      string         `json:"name"`
+	URL       string         `json:"url"`
+	NodeCount int            `json:"node_count"`
+	UpdatedAt string         `json:"updated_at"`
+	ExpireAt  *string        `json:"expire_at,omitempty"`
+	Traffic   *LegacyTraffic `json:"traffic,omitempty"`
+	Nodes     []LegacyNode   `json:"nodes"`
+	Enabled   bool           `json:"enabled"`
 }
 
 type LegacyTraffic struct {
@@ -63,17 +63,17 @@ type LegacyManualNode struct {
 }
 
 type LegacyFilter struct {
-	ID               string              `json:"id"`
-	Name             string              `json:"name"`
-	Include          []string            `json:"include"`
-	Exclude          []string            `json:"exclude"`
-	IncludeCountries []string            `json:"include_countries"`
-	ExcludeCountries []string            `json:"exclude_countries"`
-	Mode             string              `json:"mode"`
+	ID               string               `json:"id"`
+	Name             string               `json:"name"`
+	Include          []string             `json:"include"`
+	Exclude          []string             `json:"exclude"`
+	IncludeCountries []string             `json:"include_countries"`
+	ExcludeCountries []string             `json:"exclude_countries"`
+	Mode             string               `json:"mode"`
 	URLTestConfig    *LegacyURLTestConfig `json:"urltest_config,omitempty"`
-	Subscriptions    []string            `json:"subscriptions"`
-	AllNodes         bool                `json:"all_nodes"`
-	Enabled          bool                `json:"enabled"`
+	Subscriptions    []string             `json:"subscriptions"`
+	AllNodes         bool                 `json:"all_nodes"`
+	Enabled          bool                 `json:"enabled"`
 }
 
 type LegacyURLTestConfig struct {
@@ -102,23 +102,25 @@ type LegacyRuleGroup struct {
 }
 
 type LegacySettings struct {
-	SingBoxPath          string                    `json:"singbox_path"`
-	ConfigPath           string                    `json:"config_path"`
-	MixedPort            int                       `json:"mixed_port"`
-	TunEnabled           bool                      `json:"tun_enabled"`
-	ProxyDNS             string                    `json:"proxy_dns"`
-	DirectDNS            string                    `json:"direct_dns"`
-	Hosts                []LegacyHostEntry         `json:"hosts,omitempty"`
-	FakeIPEnabled        bool                      `json:"fakeip_enabled,omitempty"`
-	WebPort              int                       `json:"web_port"`
-	ClashAPIPort         int                       `json:"clash_api_port"`
-	ClashUIPath          string                    `json:"clash_ui_path"`
-	FinalOutbound        string                    `json:"final_outbound"`
-	RuleSetBaseURL       string                    `json:"ruleset_base_url"`
-	AutoApply            bool                      `json:"auto_apply"`
-	SubscriptionInterval int                       `json:"subscription_interval"`
-	GithubProxy          string                    `json:"github_proxy"`
-	ChainHealthConfig    *LegacyChainHealthConfig  `json:"chain_health_config,omitempty"`
+	SingBoxPath          string                   `json:"singbox_path"`
+	ConfigPath           string                   `json:"config_path"`
+	MixedPort            int                      `json:"mixed_port"`
+	TunEnabled           bool                     `json:"tun_enabled"`
+	LanProxyEnabled      bool                     `json:"lan_proxy_enabled"`
+	LanListenIP          string                   `json:"lan_listen_ip"`
+	ProxyDNS             string                   `json:"proxy_dns"`
+	DirectDNS            string                   `json:"direct_dns"`
+	Hosts                []LegacyHostEntry        `json:"hosts,omitempty"`
+	FakeIPEnabled        bool                     `json:"fakeip_enabled,omitempty"`
+	WebPort              int                      `json:"web_port"`
+	ClashAPIPort         int                      `json:"clash_api_port"`
+	ClashUIPath          string                   `json:"clash_ui_path"`
+	FinalOutbound        string                   `json:"final_outbound"`
+	RuleSetBaseURL       string                   `json:"ruleset_base_url"`
+	AutoApply            bool                     `json:"auto_apply"`
+	SubscriptionInterval int                      `json:"subscription_interval"`
+	GithubProxy          string                   `json:"github_proxy"`
+	ChainHealthConfig    *LegacyChainHealthConfig `json:"chain_health_config,omitempty"`
 }
 
 type LegacyHostEntry struct {
@@ -145,14 +147,14 @@ type LegacyProfile struct {
 }
 
 type LegacyInboundPort struct {
-	ID       string              `json:"id"`
-	Name     string              `json:"name"`
-	Type     string              `json:"type"`
-	Listen   string              `json:"listen"`
-	Port     int                 `json:"port"`
-	Auth     *LegacyInboundAuth  `json:"auth,omitempty"`
-	Outbound string              `json:"outbound"`
-	Enabled  bool                `json:"enabled"`
+	ID       string             `json:"id"`
+	Name     string             `json:"name"`
+	Type     string             `json:"type"`
+	Listen   string             `json:"listen"`
+	Port     int                `json:"port"`
+	Auth     *LegacyInboundAuth `json:"auth,omitempty"`
+	Outbound string             `json:"outbound"`
+	Enabled  bool               `json:"enabled"`
 }
 
 type LegacyInboundAuth struct {
@@ -161,12 +163,12 @@ type LegacyInboundAuth struct {
 }
 
 type LegacyProxyChain struct {
-	ID           string                  `json:"id"`
-	Name         string                  `json:"name"`
-	Description  string                  `json:"description"`
-	Nodes        []string                `json:"nodes"`
-	ChainNodes   []LegacyChainNode       `json:"chain_nodes,omitempty"`
-	Enabled      bool                    `json:"enabled"`
+	ID           string                   `json:"id"`
+	Name         string                   `json:"name"`
+	Description  string                   `json:"description"`
+	Nodes        []string                 `json:"nodes"`
+	ChainNodes   []LegacyChainNode        `json:"chain_nodes,omitempty"`
+	Enabled      bool                     `json:"enabled"`
 	HealthConfig *LegacyChainHealthConfig `json:"health_config,omitempty"`
 }
 
@@ -402,6 +404,8 @@ func MigrateFromJSON(dataDir string, db *gorm.DB) error {
 				"config_path":           appData.Settings.ConfigPath,
 				"mixed_port":            strconv.Itoa(appData.Settings.MixedPort),
 				"tun_enabled":           strconv.FormatBool(appData.Settings.TunEnabled),
+				"lan_proxy_enabled":     strconv.FormatBool(appData.Settings.LanProxyEnabled),
+				"lan_listen_ip":         appData.Settings.LanListenIP,
 				"proxy_dns":             appData.Settings.ProxyDNS,
 				"direct_dns":            appData.Settings.DirectDNS,
 				"fakeip_enabled":        strconv.FormatBool(appData.Settings.FakeIPEnabled),
