@@ -23,6 +23,7 @@ type ProcessManager struct {
 	dataDir     string // 数据目录，用于设置 sing-box 的工作目录
 	pidFile     string // PID 文件路径，用于持久化进程状态
 	cmd         *exec.Cmd
+	exitCh      chan struct{}
 	mu          sync.RWMutex
 	running     bool
 	pid         int // 保存 PID（支持恢复的进程，即使 cmd 为空）
@@ -254,6 +255,10 @@ func (pm *ProcessManager) Start() error {
 		return fmt.Errorf("配置文件不存在: %s", pm.configPath)
 	}
 
+	if err := pm.ensureInboundPortsAvailable(); err != nil {
+		return err
+	}
+
 	// 清空 sing-box 日志文件，以便只显示本次运行的日志
 	if err := logger.ClearSingboxLogs(); err != nil {
 		logger.Printf("清空 sing-box 日志失败: %v", err)
@@ -282,6 +287,9 @@ func (pm *ProcessManager) Start() error {
 
 	pm.running = true
 	pm.pid = pm.cmd.Process.Pid
+	pm.exitCh = make(chan struct{})
+	processCmd := pm.cmd
+	exitCh := pm.exitCh
 
 	// 写入 PID 文件
 	if err := os.WriteFile(pm.pidFile, []byte(strconv.Itoa(pm.pid)), 0644); err != nil {
@@ -323,12 +331,19 @@ func (pm *ProcessManager) Start() error {
 
 	// 监控进程退出
 	go func() {
-		pm.cmd.Wait()
+		waitErr := processCmd.Wait()
+		close(exitCh)
 		pm.mu.Lock()
 		pm.running = false
 		pm.pid = 0
+		pm.cmd = nil
+		pm.exitCh = nil
 		pm.mu.Unlock()
 		os.Remove(pm.pidFile)
+		if waitErr != nil {
+			logger.Printf("sing-box 进程已退出: %v", waitErr)
+			return
+		}
 		logger.Printf("sing-box 进程已退出")
 	}()
 
@@ -337,28 +352,28 @@ func (pm *ProcessManager) Start() error {
 
 // Stop 停止 sing-box
 func (pm *ProcessManager) Stop() error {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
+	pm.mu.RLock()
 	if !pm.running {
+		pm.mu.RUnlock()
 		return nil
 	}
 
-	var pid int
+	cmd := pm.cmd
+	pid := pm.pid
+	exitCh := pm.exitCh
+	pm.mu.RUnlock()
 
 	// 情况1：有 cmd 对象（正常启动的进程）
-	if pm.cmd != nil && pm.cmd.Process != nil {
-		pid = pm.cmd.Process.Pid
+	if cmd != nil && cmd.Process != nil {
 		// 发送 SIGTERM 信号
-		if err := pm.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 			// 如果 SIGTERM 失败，尝试 SIGKILL
-			if err := pm.cmd.Process.Kill(); err != nil {
+			if err := cmd.Process.Kill(); err != nil {
 				return fmt.Errorf("停止 sing-box 失败: %w", err)
 			}
 		}
-	} else if pm.pid > 0 {
+	} else if pid > 0 {
 		// 情况2：没有 cmd 对象（恢复的进程），通过 PID 发送信号
-		pid = pm.pid
 		proc, err := os.FindProcess(pid)
 		if err == nil {
 			if err := proc.Signal(syscall.SIGTERM); err != nil {
@@ -367,8 +382,16 @@ func (pm *ProcessManager) Stop() error {
 		}
 	}
 
+	if err := pm.waitForProcessExit(pid, exitCh); err != nil {
+		return err
+	}
+
+	pm.mu.Lock()
 	pm.running = false
 	pm.pid = 0
+	pm.cmd = nil
+	pm.exitCh = nil
+	pm.mu.Unlock()
 	os.Remove(pm.pidFile)
 	logger.Printf("sing-box 已停止, PID: %d", pid)
 	return nil

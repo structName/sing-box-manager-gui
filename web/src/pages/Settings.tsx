@@ -382,7 +382,7 @@ export default function Settings() {
                   <div>
                     <p className="font-medium text-warning">sing-box 未安装</p>
                     <p className="text-sm text-gray-500">
-                      需要下载 sing-box 内核才能使用代理功能
+                      当前构建已内置稳定版 sing-box，首次启动会自动安装
                     </p>
                   </div>
                 </>
@@ -394,7 +394,7 @@ export default function Settings() {
               startContent={<Download className="w-4 h-4" />}
               onPress={openDownloadModal}
             >
-              {kernelInfo?.installed ? '更新内核' : '下载内核'}
+              {kernelInfo?.installed ? '在线更新' : '安装内核'}
             </Button>
           </div>
 
@@ -407,7 +407,7 @@ export default function Settings() {
           <Input
             label="GitHub 代理地址"
             placeholder="如 https://ghproxy.com/"
-            description="用于加速 GitHub 下载，留空则直连"
+            description="仅用于在线更新 sing-box，留空则直连 GitHub"
             value={formData.github_proxy || ''}
             onChange={(e) => setFormData({ ...formData, github_proxy: e.target.value })}
           />

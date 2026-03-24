@@ -177,6 +177,9 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 		if password, ok := extra["password"].(string); ok {
 			proxy["password"] = password
 		}
+		if err := applyShadowsocksPluginToMihomo(proxy, extra); err != nil {
+			return nil, err
+		}
 
 	case "vmess":
 		proxy["type"] = "vmess"
@@ -395,6 +398,92 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 	}
 
 	return proxy, nil
+}
+
+func applyShadowsocksPluginToMihomo(proxy map[string]interface{}, extra map[string]interface{}) error {
+	plugin, _ := extra["plugin"].(string)
+	if plugin == "" {
+		return nil
+	}
+
+	proxy["plugin"] = normalizeMihomoShadowsocksPluginName(plugin)
+
+	opts, err := normalizeMihomoShadowsocksPluginOpts(plugin, extra["plugin_opts"])
+	if err != nil {
+		return fmt.Errorf("解析 shadowsocks plugin_opts 失败: %w", err)
+	}
+	if len(opts) > 0 {
+		proxy["plugin-opts"] = opts
+	}
+
+	return nil
+}
+
+func normalizeMihomoShadowsocksPluginName(plugin string) string {
+	switch strings.ToLower(plugin) {
+	case "obfs-local":
+		return "obfs"
+	default:
+		return plugin
+	}
+}
+
+func normalizeMihomoShadowsocksPluginOpts(plugin string, raw interface{}) (map[string]interface{}, error) {
+	switch opts := raw.(type) {
+	case nil:
+		return nil, nil
+	case map[string]interface{}:
+		return opts, nil
+	case string:
+		return parseShadowsocksPluginOptsString(plugin, opts), nil
+	default:
+		return nil, fmt.Errorf("不支持的 plugin_opts 类型: %T", raw)
+	}
+}
+
+func parseShadowsocksPluginOptsString(plugin, raw string) map[string]interface{} {
+	if raw == "" {
+		return nil
+	}
+
+	pluginName := strings.ToLower(plugin)
+	parsed := make(map[string]interface{})
+	for _, segment := range strings.Split(raw, ";") {
+		part := strings.TrimSpace(segment)
+		if part == "" {
+			continue
+		}
+
+		key, value, hasValue := strings.Cut(part, "=")
+		key = strings.TrimSpace(key)
+		if !hasValue {
+			parsed[key] = true
+			continue
+		}
+		value = strings.TrimSpace(value)
+
+		switch pluginName {
+		case "obfs", "obfs-local":
+			switch key {
+			case "obfs":
+				parsed["mode"] = value
+			case "obfs-host":
+				parsed["host"] = value
+			case "obfs-uri":
+				parsed["path"] = value
+			default:
+				parsed[key] = value
+			}
+		default:
+			parsed[key] = value
+		}
+	}
+
+	if len(parsed) == 0 {
+		return nil
+	}
+
+	return parsed
 }
 
 // GetMihomoAdapter 从节点创建 mihomo adapter

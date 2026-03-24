@@ -25,6 +25,7 @@ import (
 	"github.com/xiaobei/singbox-manager/internal/logger"
 	"github.com/xiaobei/singbox-manager/internal/parser"
 	"github.com/xiaobei/singbox-manager/internal/profile"
+	"github.com/xiaobei/singbox-manager/internal/rulesets"
 	"github.com/xiaobei/singbox-manager/internal/service"
 	"github.com/xiaobei/singbox-manager/internal/speedtest"
 	"github.com/xiaobei/singbox-manager/internal/storage"
@@ -1158,14 +1159,18 @@ func (s *Server) validateRuleSet(c *gin.Context) {
 	var url string
 	var tag string
 
-	if ruleType == "geosite" {
-		tag = "geosite-" + name
-		url = settings.RuleSetBaseURL + "/geosite-" + name + ".srs"
-	} else {
-		tag = "geoip-" + name
-		// geoip 使用相对路径
-		url = settings.RuleSetBaseURL + "/../rule-set-geoip/geoip-" + name + ".srs"
+	tag = ruleType + "-" + name
+
+	if rulesets.Has(ruleType, name) {
+		c.JSON(http.StatusOK, gin.H{
+			"valid":   true,
+			"tag":     tag,
+			"message": "规则集已内置，将直接写入本地配置目录",
+		})
+		return
 	}
+
+	url = rulesets.RemoteURL(settings.RuleSetBaseURL, ruleType, name)
 
 	// 如果配置了 GitHub 代理，添加代理前缀
 	if settings.GithubProxy != "" {
@@ -1309,6 +1314,17 @@ func (s *Server) applyConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "配置已应用"})
 }
 
+func (s *Server) buildAndSaveCurrentConfig() error {
+	settings := s.store.GetSettings()
+
+	configJSON, err := s.buildConfig()
+	if err != nil {
+		return err
+	}
+
+	return s.saveConfigFile(s.resolvePath(settings.ConfigPath), configJSON)
+}
+
 func (s *Server) buildConfig() (string, error) {
 	settings := s.store.GetSettings()
 	nodes := s.store.GetAllNodes()
@@ -1324,6 +1340,9 @@ func (s *Server) buildConfig() (string, error) {
 }
 
 func (s *Server) saveConfigFile(path, content string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
 	return os.WriteFile(path, []byte(content), 0644)
 }
 
@@ -1635,14 +1654,7 @@ func (s *Server) autoApplyConfig() error {
 		return nil
 	}
 
-	// 生成配置
-	configJSON, err := s.buildConfig()
-	if err != nil {
-		return err
-	}
-
-	// 保存配置文件
-	if err := s.saveConfigFile(s.resolvePath(settings.ConfigPath), configJSON); err != nil {
+	if err := s.buildAndSaveCurrentConfig(); err != nil {
 		return err
 	}
 
@@ -1676,6 +1688,17 @@ func (s *Server) getServiceStatus(c *gin.Context) {
 }
 
 func (s *Server) startService(c *gin.Context) {
+	configPath := s.resolvePath(s.store.GetSettings().ConfigPath)
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		if err := s.buildAndSaveCurrentConfig(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
 	if err := s.processManager.Start(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -2591,6 +2614,17 @@ func (s *Server) updateProxyChain(c *gin.Context) {
 
 func (s *Server) deleteProxyChain(c *gin.Context) {
 	id := c.Param("id")
+	chain := s.store.GetProxyChain(id)
+	if chain == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "代理链路不存在"})
+		return
+	}
+
+	disabledPorts, err := s.disableInboundPortsForOutbound(chain.Name)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
 	if err := s.store.DeleteProxyChain(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -2603,7 +2637,31 @@ func (s *Server) deleteProxyChain(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "删除成功"})
+	message := "删除成功"
+	if len(disabledPorts) > 0 {
+		message = fmt.Sprintf("删除成功，已停用 %d 个关联入站", len(disabledPorts))
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": message})
+}
+
+func (s *Server) disableInboundPortsForOutbound(outbound string) ([]storage.InboundPort, error) {
+	ports := s.store.GetInboundPorts()
+	disabled := make([]storage.InboundPort, 0)
+
+	for _, port := range ports {
+		if !port.Enabled || port.Outbound != outbound {
+			continue
+		}
+
+		port.Enabled = false
+		if err := s.store.UpdateInboundPort(port); err != nil {
+			return nil, fmt.Errorf("停用入站端口 %s 失败: %w", port.Name, err)
+		}
+		disabled = append(disabled, port)
+	}
+
+	return disabled, nil
 }
 
 // generateChainNodes 根据节点 Tag 列表生成 ChainNode 列表

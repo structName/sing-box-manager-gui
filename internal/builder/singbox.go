@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/xiaobei/singbox-manager/internal/rulesets"
 	"github.com/xiaobei/singbox-manager/internal/storage"
 )
 
@@ -42,22 +43,22 @@ type DNSConfig struct {
 // DNSServer DNS 服务器 (新格式，支持 FakeIP 和 hosts)
 type DNSServer struct {
 	Tag        string         `json:"tag"`
-	Type       string         `json:"type"`                   // udp, tcp, https, tls, quic, h3, fakeip, rcode, hosts
-	Server     string         `json:"server,omitempty"`       // 服务器地址
-	Detour     string         `json:"detour,omitempty"`       // 出站代理
-	Inet4Range string         `json:"inet4_range,omitempty"`  // FakeIP IPv4 地址池
-	Inet6Range string         `json:"inet6_range,omitempty"`  // FakeIP IPv6 地址池
-	Predefined map[string]any `json:"predefined,omitempty"`   // hosts 类型专用：预定义域名映射
+	Type       string         `json:"type"`                  // udp, tcp, https, tls, quic, h3, fakeip, rcode, hosts
+	Server     string         `json:"server,omitempty"`      // 服务器地址
+	Detour     string         `json:"detour,omitempty"`      // 出站代理
+	Inet4Range string         `json:"inet4_range,omitempty"` // FakeIP IPv4 地址池
+	Inet6Range string         `json:"inet6_range,omitempty"` // FakeIP IPv6 地址池
+	Predefined map[string]any `json:"predefined,omitempty"`  // hosts 类型专用：预定义域名映射
 }
 
 // DNSRule DNS 规则
 type DNSRule struct {
-	Outbound  string   `json:"outbound,omitempty"`   // 匹配出站的 DNS 查询，如 "any" 表示代理服务器地址解析
+	Outbound  string   `json:"outbound,omitempty"` // 匹配出站的 DNS 查询，如 "any" 表示代理服务器地址解析
 	RuleSet   []string `json:"rule_set,omitempty"`
 	QueryType []string `json:"query_type,omitempty"`
-	Domain    []string `json:"domain,omitempty"`     // 完整域名匹配
+	Domain    []string `json:"domain,omitempty"` // 完整域名匹配
 	Server    string   `json:"server,omitempty"`
-	Action    string   `json:"action,omitempty"`     // route, reject 等
+	Action    string   `json:"action,omitempty"` // route, reject 等
 }
 
 // NTPConfig NTP 配置
@@ -68,17 +69,17 @@ type NTPConfig struct {
 
 // Inbound 入站配置
 type Inbound struct {
-	Type           string        `json:"type"`
-	Tag            string        `json:"tag"`
-	Listen         string        `json:"listen,omitempty"`
-	ListenPort     int           `json:"listen_port,omitempty"`
-	Address        []string      `json:"address,omitempty"`
-	AutoRoute      bool          `json:"auto_route,omitempty"`
-	StrictRoute    bool          `json:"strict_route,omitempty"`
-	Stack          string        `json:"stack,omitempty"`
-	Sniff          bool          `json:"sniff,omitempty"`
-	SniffOverrideDestination bool `json:"sniff_override_destination,omitempty"`
-	Users          []InboundUser `json:"users,omitempty"` // 用户认证
+	Type                     string        `json:"type"`
+	Tag                      string        `json:"tag"`
+	Listen                   string        `json:"listen,omitempty"`
+	ListenPort               int           `json:"listen_port,omitempty"`
+	Address                  []string      `json:"address,omitempty"`
+	AutoRoute                bool          `json:"auto_route,omitempty"`
+	StrictRoute              bool          `json:"strict_route,omitempty"`
+	Stack                    string        `json:"stack,omitempty"`
+	Sniff                    bool          `json:"sniff,omitempty"`
+	SniffOverrideDestination bool          `json:"sniff_override_destination,omitempty"`
+	Users                    []InboundUser `json:"users,omitempty"` // 用户认证
 }
 
 // InboundUser 入站用户认证
@@ -113,23 +114,24 @@ type RuleSet struct {
 	Tag            string `json:"tag"`
 	Type           string `json:"type"`
 	Format         string `json:"format"`
+	Path           string `json:"path,omitempty"`
 	URL            string `json:"url,omitempty"`
 	DownloadDetour string `json:"download_detour,omitempty"`
 }
 
 // ExperimentalConfig 实验性配置
 type ExperimentalConfig struct {
-	ClashAPI *ClashAPIConfig `json:"clash_api,omitempty"`
+	ClashAPI  *ClashAPIConfig  `json:"clash_api,omitempty"`
 	CacheFile *CacheFileConfig `json:"cache_file,omitempty"`
 }
 
 // ClashAPIConfig Clash API 配置
 type ClashAPIConfig struct {
-	ExternalController string `json:"external_controller,omitempty"`
-	ExternalUI         string `json:"external_ui,omitempty"`
+	ExternalController    string `json:"external_controller,omitempty"`
+	ExternalUI            string `json:"external_ui,omitempty"`
 	ExternalUIDownloadURL string `json:"external_ui_download_url,omitempty"`
-	Secret             string `json:"secret,omitempty"`
-	DefaultMode        string `json:"default_mode,omitempty"`
+	Secret                string `json:"secret,omitempty"`
+	DefaultMode           string `json:"default_mode,omitempty"`
 }
 
 // CacheFileConfig 缓存文件配置
@@ -177,15 +179,50 @@ func (b *ConfigBuilder) buildRuleSetURL(originalURL string) string {
 	return originalURL
 }
 
+func (b *ConfigBuilder) buildRuleSet(ruleType, name string) (RuleSet, error) {
+	tag := fmt.Sprintf("%s-%s", ruleType, name)
+	if rulesets.Has(ruleType, name) {
+		path, err := rulesets.Materialize(b.dataDir, ruleType, name)
+		if err != nil {
+			return RuleSet{}, err
+		}
+
+		return RuleSet{
+			Tag:    tag,
+			Type:   "local",
+			Format: "binary",
+			Path:   path,
+		}, nil
+	}
+
+	return RuleSet{
+		Tag:            tag,
+		Type:           "remote",
+		Format:         "binary",
+		URL:            b.buildRuleSetURL(rulesets.RemoteURL(b.settings.RuleSetBaseURL, ruleType, name)),
+		DownloadDetour: "DIRECT",
+	}, nil
+}
+
 // Build 构建 sing-box 配置
 func (b *ConfigBuilder) Build() (*SingBoxConfig, error) {
+	outbounds, err := b.buildOutbounds()
+	if err != nil {
+		return nil, err
+	}
+
+	route, err := b.buildRoute()
+	if err != nil {
+		return nil, err
+	}
+
 	config := &SingBoxConfig{
 		Log:          b.buildLog(),
 		DNS:          b.buildDNS(),
 		NTP:          b.buildNTP(),
 		Inbounds:     b.buildInbounds(),
-		Outbounds:    b.buildOutbounds(),
-		Route:        b.buildRoute(),
+		Outbounds:    outbounds,
+		Route:        route,
 		Experimental: b.buildExperimental(), // 始终启用，FakeIP 需要 cache_file
 	}
 
@@ -381,24 +418,24 @@ func (b *ConfigBuilder) buildInbounds() []Inbound {
 
 	inbounds := []Inbound{
 		{
-			Type:       "mixed",
-			Tag:        "mixed-in",
-			Listen:     listen,
-			ListenPort: b.settings.MixedPort,
-			Sniff:      true,
+			Type:                     "mixed",
+			Tag:                      "mixed-in",
+			Listen:                   listen,
+			ListenPort:               b.settings.MixedPort,
+			Sniff:                    true,
 			SniffOverrideDestination: true,
 		},
 	}
 
 	if b.settings.TunEnabled {
 		inbounds = append(inbounds, Inbound{
-			Type:        "tun",
-			Tag:         "tun-in",
-			Address:     []string{"172.19.0.1/30", "fdfe:dcba:9876::1/126"},
-			AutoRoute:   true,
-			StrictRoute: true,
-			Stack:       "system",
-			Sniff:       true,
+			Type:                     "tun",
+			Tag:                      "tun-in",
+			Address:                  []string{"172.19.0.1/30", "fdfe:dcba:9876::1/126"},
+			AutoRoute:                true,
+			StrictRoute:              true,
+			Stack:                    "system",
+			Sniff:                    true,
 			SniffOverrideDestination: true,
 		})
 	}
@@ -410,11 +447,11 @@ func (b *ConfigBuilder) buildInbounds() []Inbound {
 		}
 
 		inbound := Inbound{
-			Type:       port.Type,
-			Tag:        fmt.Sprintf("custom-%s", port.ID),
-			Listen:     port.Listen,
-			ListenPort: port.Port,
-			Sniff:      true,
+			Type:                     port.Type,
+			Tag:                      fmt.Sprintf("custom-%s", port.ID),
+			Listen:                   port.Listen,
+			ListenPort:               port.Port,
+			Sniff:                    true,
 			SniffOverrideDestination: true,
 		}
 
@@ -435,7 +472,7 @@ func (b *ConfigBuilder) buildInbounds() []Inbound {
 }
 
 // buildOutbounds 构建出站配置
-func (b *ConfigBuilder) buildOutbounds() []Outbound {
+func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 	outbounds := []Outbound{
 		{"type": "direct", "tag": "DIRECT"},
 		{"type": "block", "tag": "REJECT"},
@@ -488,7 +525,10 @@ func (b *ConfigBuilder) buildOutbounds() []Outbound {
 
 			// 获取原节点并创建副本
 			originalNode := nodeMap[nodeTag]
-			copyOutbound := b.nodeToOutbound(originalNode)
+			copyOutbound, err := b.nodeToOutbound(originalNode)
+			if err != nil {
+				return nil, err
+			}
 			copyOutbound["tag"] = copyTag
 
 			// 设置 detour: 当前节点通过前一个节点出站
@@ -505,7 +545,10 @@ func (b *ConfigBuilder) buildOutbounds() []Outbound {
 
 	// 添加所有原始节点（不设置 detour，保持独立）
 	for _, node := range b.nodes {
-		outbound := b.nodeToOutbound(node)
+		outbound, err := b.nodeToOutbound(node)
+		if err != nil {
+			return nil, err
+		}
 
 		nodeOutboundIndex[node.Tag] = len(outbounds)
 		outbounds = append(outbounds, outbound)
@@ -615,7 +658,7 @@ func (b *ConfigBuilder) buildOutbounds() []Outbound {
 		})
 	}
 
-	// 为代理链路创建选择器（指向副本入口节点）
+	// 为代理链路创建选择器（指向副本出口节点）
 	var chainGroupTags []string
 	for _, chain := range b.proxyChains {
 		if !chain.Enabled || len(chain.Nodes) == 0 {
@@ -712,11 +755,11 @@ func (b *ConfigBuilder) buildOutbounds() []Outbound {
 		"default":   b.settings.FinalOutbound,
 	})
 
-	return outbounds
+	return outbounds, nil
 }
 
 // nodeToOutbound 将节点转换为出站配置
-func (b *ConfigBuilder) nodeToOutbound(node storage.Node) Outbound {
+func (b *ConfigBuilder) nodeToOutbound(node storage.Node) (Outbound, error) {
 	outbound := Outbound{
 		"tag":         node.Tag,
 		"type":        node.Type,
@@ -729,7 +772,154 @@ func (b *ConfigBuilder) nodeToOutbound(node storage.Node) Outbound {
 		outbound[k] = v
 	}
 
-	return outbound
+	if err := normalizeOutbound(outbound); err != nil {
+		return nil, fmt.Errorf("节点 %q 配置无效: %w", node.Tag, err)
+	}
+
+	return outbound, nil
+}
+
+func normalizeOutbound(outbound Outbound) error {
+	outboundType, _ := outbound["type"].(string)
+	if outboundType != "shadowsocks" {
+		return nil
+	}
+
+	plugin, _ := outbound["plugin"].(string)
+	if plugin == "" {
+		return nil
+	}
+
+	normalizedPlugin, normalizedOpts, err := normalizeShadowsocksPlugin(plugin, outbound["plugin_opts"])
+	if err != nil {
+		return err
+	}
+	outbound["plugin"] = normalizedPlugin
+	if normalizedOpts == "" {
+		delete(outbound, "plugin_opts")
+	} else {
+		outbound["plugin_opts"] = normalizedOpts
+	}
+
+	return nil
+}
+
+func normalizeShadowsocksPlugin(plugin string, rawOpts interface{}) (string, string, error) {
+	switch strings.ToLower(plugin) {
+	case "obfs", "obfs-local":
+		opts, err := serializeSimpleObfsPluginOpts(rawOpts)
+		if err != nil {
+			return "", "", err
+		}
+		return "obfs-local", opts, nil
+	case "v2ray-plugin":
+		opts, err := serializeSIP003PluginOpts(rawOpts)
+		if err != nil {
+			return "", "", err
+		}
+		return "v2ray-plugin", opts, nil
+	default:
+		return "", "", fmt.Errorf("shadowsocks plugin %q 不受 sing-box 支持", plugin)
+	}
+}
+
+func serializeSimpleObfsPluginOpts(rawOpts interface{}) (string, error) {
+	if text, ok := rawOpts.(string); ok {
+		return text, nil
+	}
+
+	opts, err := mapPluginOpts(rawOpts)
+	if err != nil || opts == nil {
+		return "", err
+	}
+
+	var parts []string
+	if mode := stringifyPluginOpt(opts["mode"]); mode != "" {
+		parts = append(parts, "obfs="+mode)
+	}
+	if host := stringifyPluginOpt(opts["host"]); host != "" {
+		parts = append(parts, "obfs-host="+host)
+	}
+	uri := stringifyPluginOpt(opts["uri"])
+	if uri == "" {
+		uri = stringifyPluginOpt(opts["path"])
+	}
+	if uri != "" {
+		parts = append(parts, "obfs-uri="+uri)
+	}
+
+	return strings.Join(parts, ";"), nil
+}
+
+func serializeSIP003PluginOpts(rawOpts interface{}) (string, error) {
+	opts, err := mapPluginOpts(rawOpts)
+	if err != nil || opts == nil {
+		return "", err
+	}
+
+	keys := make([]string, 0, len(opts))
+	for key := range opts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		part, ok, err := serializeSIP003PluginOpt(key, opts[key])
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			parts = append(parts, part)
+		}
+	}
+
+	return strings.Join(parts, ";"), nil
+}
+
+func mapPluginOpts(rawOpts interface{}) (map[string]interface{}, error) {
+	switch opts := rawOpts.(type) {
+	case nil:
+		return nil, nil
+	case string:
+		return map[string]interface{}{"": opts}, nil
+	case map[string]interface{}:
+		return opts, nil
+	default:
+		return nil, fmt.Errorf("plugin_opts 类型无效: %T", rawOpts)
+	}
+}
+
+func serializeSIP003PluginOpt(key string, value interface{}) (string, bool, error) {
+	if key == "" {
+		text, ok := value.(string)
+		if !ok {
+			return "", false, fmt.Errorf("plugin_opts 字符串值类型无效: %T", value)
+		}
+		return text, true, nil
+	}
+
+	switch typed := value.(type) {
+	case string:
+		if typed == "" {
+			return "", false, nil
+		}
+		return key + "=" + typed, true, nil
+	case bool:
+		if typed {
+			return key, true, nil
+		}
+		return "", false, nil
+	case int, int8, int16, int32, int64, float32, float64:
+		return fmt.Sprintf("%s=%v", key, typed), true, nil
+	default:
+		return "", false, fmt.Errorf("plugin_opts.%s 类型无效: %T", key, value)
+	}
+}
+
+func stringifyPluginOpt(value interface{}) string {
+	text, _ := value.(string)
+	return text
 }
 
 // matchFilter 检查节点是否匹配过滤器
@@ -782,7 +972,7 @@ func (b *ConfigBuilder) matchFilter(node storage.Node, filter storage.Filter) bo
 }
 
 // buildRoute 构建路由配置
-func (b *ConfigBuilder) buildRoute() *RouteConfig {
+func (b *ConfigBuilder) buildRoute() (*RouteConfig, error) {
 	route := &RouteConfig{
 		AutoDetectInterface: true,
 		Final:               "Final",
@@ -805,27 +995,23 @@ func (b *ConfigBuilder) buildRoute() *RouteConfig {
 		for _, sr := range rg.SiteRules {
 			tag := fmt.Sprintf("geosite-%s", sr)
 			if !ruleSetMap[tag] {
+				ruleSet, err := b.buildRuleSet("geosite", sr)
+				if err != nil {
+					return nil, err
+				}
 				ruleSetMap[tag] = true
-				ruleSets = append(ruleSets, RuleSet{
-					Tag:            tag,
-					Type:           "remote",
-					Format:         "binary",
-					URL:            b.buildRuleSetURL(fmt.Sprintf("%s/geosite-%s.srs", b.settings.RuleSetBaseURL, sr)),
-					DownloadDetour: "DIRECT",
-				})
+				ruleSets = append(ruleSets, ruleSet)
 			}
 		}
 		for _, ir := range rg.IPRules {
 			tag := fmt.Sprintf("geoip-%s", ir)
 			if !ruleSetMap[tag] {
+				ruleSet, err := b.buildRuleSet("geoip", ir)
+				if err != nil {
+					return nil, err
+				}
 				ruleSetMap[tag] = true
-				ruleSets = append(ruleSets, RuleSet{
-					Tag:            tag,
-					Type:           "remote",
-					Format:         "binary",
-					URL:            b.buildRuleSetURL(fmt.Sprintf("%s/../rule-set-geoip/geoip-%s.srs", b.settings.RuleSetBaseURL, ir)),
-					DownloadDetour: "DIRECT",
-				})
+				ruleSets = append(ruleSets, ruleSet)
 			}
 		}
 	}
@@ -839,28 +1025,24 @@ func (b *ConfigBuilder) buildRoute() *RouteConfig {
 			for _, v := range rule.Values {
 				tag := fmt.Sprintf("geosite-%s", v)
 				if !ruleSetMap[tag] {
+					ruleSet, err := b.buildRuleSet("geosite", v)
+					if err != nil {
+						return nil, err
+					}
 					ruleSetMap[tag] = true
-					ruleSets = append(ruleSets, RuleSet{
-						Tag:            tag,
-						Type:           "remote",
-						Format:         "binary",
-						URL:            b.buildRuleSetURL(fmt.Sprintf("%s/geosite-%s.srs", b.settings.RuleSetBaseURL, v)),
-						DownloadDetour: "DIRECT",
-					})
+					ruleSets = append(ruleSets, ruleSet)
 				}
 			}
 		} else if rule.RuleType == "geoip" {
 			for _, v := range rule.Values {
 				tag := fmt.Sprintf("geoip-%s", v)
 				if !ruleSetMap[tag] {
+					ruleSet, err := b.buildRuleSet("geoip", v)
+					if err != nil {
+						return nil, err
+					}
 					ruleSetMap[tag] = true
-					ruleSets = append(ruleSets, RuleSet{
-						Tag:            tag,
-						Type:           "remote",
-						Format:         "binary",
-						URL:            b.buildRuleSetURL(fmt.Sprintf("%s/../rule-set-geoip/geoip-%s.srs", b.settings.RuleSetBaseURL, v)),
-						DownloadDetour: "DIRECT",
-					})
+					ruleSets = append(ruleSets, ruleSet)
 				}
 			}
 		}
@@ -905,6 +1087,19 @@ func (b *ConfigBuilder) buildRoute() *RouteConfig {
 				"override_address": host.IPs[0],
 			})
 		}
+	}
+
+	// 自定义入站端口绑定的出站应优先于普通分流规则，
+	// 否则会被域名/IP 规则提前命中，导致指定链路或节点失效。
+	for _, port := range b.inboundPorts {
+		if !port.Enabled || port.Outbound == "" {
+			continue
+		}
+
+		rules = append(rules, RouteRule{
+			"inbound":  []string{fmt.Sprintf("custom-%s", port.ID)},
+			"outbound": port.Outbound,
+		})
 	}
 
 	// 按优先级排序自定义规则
@@ -994,22 +1189,9 @@ func (b *ConfigBuilder) buildRoute() *RouteConfig {
 		}
 	}
 
-	// 添加自定义入站端口的路由规则
-	// 这些规则优先级较低，放在规则组之后
-	for _, port := range b.inboundPorts {
-		if !port.Enabled || port.Outbound == "" {
-			continue
-		}
-
-		rules = append(rules, RouteRule{
-			"inbound":  []string{fmt.Sprintf("custom-%s", port.ID)},
-			"outbound": port.Outbound,
-		})
-	}
-
 	route.Rules = rules
 
-	return route
+	return route, nil
 }
 
 // buildExperimental 构建实验性配置

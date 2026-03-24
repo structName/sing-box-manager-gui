@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -51,7 +50,7 @@ type GithubAsset struct {
 // Manager 内核管理器
 type Manager struct {
 	dataDir     string
-	binPath     string                       // sing-box 二进制文件的绝对路径
+	binPath     string // sing-box 二进制文件的绝对路径
 	getSettings func() *storage.Settings
 	mu          sync.RWMutex
 	progress    *DownloadProgress
@@ -61,8 +60,8 @@ type Manager struct {
 // NewManager 创建内核管理器
 func NewManager(dataDir string, getSettings func() *storage.Settings) *Manager {
 	// 计算 sing-box 二进制文件的绝对路径
-	// dataDir 通常是 ~/.singbox-manager，我们把 sing-box 放在 dataDir/bin/sing-box
-	binPath := filepath.Join(dataDir, "bin", "sing-box")
+	// dataDir 通常是 ~/.singbox-manager，我们把 sing-box 放在 dataDir/bin 下
+	binPath := DefaultBinPath(dataDir)
 
 	return &Manager{
 		dataDir:     dataDir,
