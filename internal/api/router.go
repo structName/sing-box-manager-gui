@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"os/user"
@@ -25,7 +26,6 @@ import (
 	"github.com/xiaobei/singbox-manager/internal/logger"
 	"github.com/xiaobei/singbox-manager/internal/parser"
 	"github.com/xiaobei/singbox-manager/internal/profile"
-	"github.com/xiaobei/singbox-manager/internal/rulesets"
 	"github.com/xiaobei/singbox-manager/internal/service"
 	"github.com/xiaobei/singbox-manager/internal/speedtest"
 	"github.com/xiaobei/singbox-manager/internal/storage"
@@ -43,6 +43,7 @@ type Server struct {
 	kernelManager  *kernel.Manager
 	chainSyncSvc   *service.ChainSyncService
 	healthCheckSvc *service.HealthCheckService
+	authManager    *auth.Manager
 	router         *gin.Engine
 	sbmPath        string // sbm 可执行文件路径
 	port           int    // Web 服务端口
@@ -68,14 +69,14 @@ type Server struct {
 }
 
 // NewServer 创建 API 服务器
-func NewServer(profileMgr *profile.Manager, processManager *daemon.ProcessManager, launchdManager *daemon.LaunchdManager, systemdManager *daemon.SystemdManager, sbmPath string, port int, version string, swaggerEnabled bool) *Server {
+func NewServer(profileMgr *profile.Manager, processManager *daemon.ProcessManager, launchdManager *daemon.LaunchdManager, systemdManager *daemon.SystemdManager, sbmPath string, port int, version string, swaggerEnabled bool) (*Server, error) {
 	gin.SetMode(gin.ReleaseMode)
 
 	// 获取当前 Profile 目录，创建 JSONStore（用于兼容旧代码）
 	profileDir := profileMgr.GetProfileDir()
 	store, err := storage.NewJSONStore(profileDir)
 	if err != nil {
-		logger.Error("初始化 JSONStore 失败: %v", err)
+		return nil, fmt.Errorf("初始化 JSONStore 失败: %w", err)
 	}
 
 	// 创建链路同步服务
@@ -90,6 +91,10 @@ func NewServer(profileMgr *profile.Manager, processManager *daemon.ProcessManage
 		baseDir = filepath.Dir(baseDir)
 	}
 	kernelManager := kernel.NewManager(baseDir, store.GetSettings)
+	authManager, err := auth.NewManager(baseDir)
+	if err != nil {
+		return nil, fmt.Errorf("初始化认证管理器失败: %w", err)
+	}
 
 	// 创建健康检测服务
 	healthCheckSvc := service.NewHealthCheckService(store)
@@ -139,6 +144,7 @@ func NewServer(profileMgr *profile.Manager, processManager *daemon.ProcessManage
 		kernelManager:     kernelManager,
 		chainSyncSvc:      chainSyncSvc,
 		healthCheckSvc:    healthCheckSvc,
+		authManager:       authManager,
 		router:            gin.Default(),
 		sbmPath:           sbmPath,
 		port:              port,
@@ -170,7 +176,7 @@ func NewServer(profileMgr *profile.Manager, processManager *daemon.ProcessManage
 	}
 
 	s.setupRoutes()
-	return s
+	return s, nil
 }
 
 // StartUnifiedScheduler 启动统一调度器
@@ -491,8 +497,13 @@ func (s *Server) setupRoutes() {
 		MaxAge:           12 * time.Hour,
 	}))
 
+	// 公共认证路由
+	publicAPI := s.router.Group("/api")
+	s.registerPublicAuthRoutes(publicAPI)
+
 	// API 路由组
 	api := s.router.Group("/api")
+	api.Use(s.requireAuthentication())
 	{
 		// 订阅管理
 		api.GET("/subscriptions", s.getSubscriptions)
@@ -507,19 +518,6 @@ func (s *Server) setupRoutes() {
 		api.POST("/filters", s.addFilter)
 		api.PUT("/filters/:id", s.updateFilter)
 		api.DELETE("/filters/:id", s.deleteFilter)
-
-		// 规则管理
-		api.GET("/rules", s.getRules)
-		api.POST("/rules", s.addRule)
-		api.PUT("/rules/:id", s.updateRule)
-		api.DELETE("/rules/:id", s.deleteRule)
-
-		// 规则组管理
-		api.GET("/rule-groups", s.getRuleGroups)
-		api.PUT("/rule-groups/:id", s.updateRuleGroup)
-
-		// 规则集验证
-		api.GET("/ruleset/validate", s.validateRuleSet)
 
 		// 设置
 		api.GET("/settings", s.getSettings)
@@ -586,6 +584,7 @@ func (s *Server) setupRoutes() {
 		api.GET("/nodes/countries", s.getCountryGroups)
 		api.GET("/nodes/country/:code", s.getNodesByCountry)
 		api.POST("/nodes/parse", s.parseNodeURL)
+		api.POST("/nodes/test-unsaved", s.testUnsavedNodeDelay)
 		api.GET("/nodes/delays", s.getNodeDelays)
 		api.POST("/nodes/:nodeId/delay", s.testNodeDelay)
 		api.POST("/nodes/delays/refresh", s.refreshAllNodeDelays) // 批量刷新延迟
@@ -1036,186 +1035,12 @@ func (s *Server) deleteFilter(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "删除成功"})
 }
 
-// ==================== 规则 API ====================
-
-func (s *Server) getRules(c *gin.Context) {
-	rules := s.store.GetRules()
-	c.JSON(http.StatusOK, gin.H{"data": rules})
-}
-
-func (s *Server) addRule(c *gin.Context) {
-	var rule storage.Rule
-	if err := c.ShouldBindJSON(&rule); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	// 生成 ID
-	rule.ID = uuid.New().String()
-
-	if err := s.store.AddRule(rule); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	// 自动应用配置
-	if err := s.autoApplyConfig(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"data": rule, "warning": "添加成功，但自动应用配置失败: " + err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"data": rule})
-}
-
-func (s *Server) updateRule(c *gin.Context) {
-	id := c.Param("id")
-
-	var rule storage.Rule
-	if err := c.ShouldBindJSON(&rule); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	rule.ID = id
-	if err := s.store.UpdateRule(rule); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	// 自动应用配置
-	if err := s.autoApplyConfig(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"message": "更新成功，但自动应用配置失败: " + err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "更新成功"})
-}
-
-func (s *Server) deleteRule(c *gin.Context) {
-	id := c.Param("id")
-
-	if err := s.store.DeleteRule(id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	// 自动应用配置
-	if err := s.autoApplyConfig(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"message": "删除成功，但自动应用配置失败: " + err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "删除成功"})
-}
-
-// ==================== 规则组 API ====================
-
-func (s *Server) getRuleGroups(c *gin.Context) {
-	ruleGroups := s.store.GetRuleGroups()
-	c.JSON(http.StatusOK, gin.H{"data": ruleGroups})
-}
-
-func (s *Server) updateRuleGroup(c *gin.Context) {
-	id := c.Param("id")
-
-	var ruleGroup storage.RuleGroup
-	if err := c.ShouldBindJSON(&ruleGroup); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	ruleGroup.ID = id
-	if err := s.store.UpdateRuleGroup(ruleGroup); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	// 自动应用配置
-	if err := s.autoApplyConfig(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"message": "更新成功，但自动应用配置失败: " + err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "更新成功"})
-}
-
-// ==================== 规则集验证 API ====================
-
-func (s *Server) validateRuleSet(c *gin.Context) {
-	ruleType := c.Query("type") // geosite 或 geoip
-	name := c.Query("name")     // 规则集名称
-
-	if ruleType == "" || name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "参数 type 和 name 是必需的"})
-		return
-	}
-
-	if ruleType != "geosite" && ruleType != "geoip" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "type 必须是 geosite 或 geoip"})
-		return
-	}
-
-	settings := s.store.GetSettings()
-	var url string
-	var tag string
-
-	tag = ruleType + "-" + name
-
-	if rulesets.Has(ruleType, name) {
-		c.JSON(http.StatusOK, gin.H{
-			"valid":   true,
-			"tag":     tag,
-			"message": "规则集已内置，将直接写入本地配置目录",
-		})
-		return
-	}
-
-	url = rulesets.RemoteURL(settings.RuleSetBaseURL, ruleType, name)
-
-	// 如果配置了 GitHub 代理，添加代理前缀
-	if settings.GithubProxy != "" {
-		url = settings.GithubProxy + url
-	}
-
-	// 发送 HEAD 请求检查文件是否存在
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-	}
-
-	resp, err := client.Head(url)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"valid":   false,
-			"url":     url,
-			"tag":     tag,
-			"message": "无法访问规则集: " + err.Error(),
-		})
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusOK {
-		c.JSON(http.StatusOK, gin.H{
-			"valid":   true,
-			"url":     url,
-			"tag":     tag,
-			"message": "规则集存在",
-		})
-	} else {
-		c.JSON(http.StatusOK, gin.H{
-			"valid":   false,
-			"url":     url,
-			"tag":     tag,
-			"message": "规则集不存在 (HTTP " + strconv.Itoa(resp.StatusCode) + ")",
-		})
-	}
-}
-
 // ==================== 设置 API ====================
 
 func (s *Server) getSettings(c *gin.Context) {
-	settings := s.store.GetSettings()
+	settings := s.cloneSettings()
 	settings.WebPort = s.port
+	settings.AdminPasswordHash = ""
 	c.JSON(http.StatusOK, gin.H{"data": settings})
 }
 
@@ -1224,6 +1049,15 @@ func (s *Server) updateSettings(c *gin.Context) {
 	if err := c.ShouldBindJSON(&settings); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	currentSettings := s.store.GetSettings()
+	if currentSettings != nil {
+		settings.AdminPasswordHash = currentSettings.AdminPasswordHash
+		settings.AuthBootstrappedAt = currentSettings.AuthBootstrappedAt
+		if settings.SessionTTLMinutes <= 0 {
+			settings.SessionTTLMinutes = currentSettings.SessionTTLMinutes
+		}
 	}
 
 	if err := s.store.UpdateSettings(&settings); err != nil {
@@ -1329,12 +1163,10 @@ func (s *Server) buildConfig() (string, error) {
 	settings := s.store.GetSettings()
 	nodes := s.store.GetAllNodes()
 	filters := s.store.GetFilters()
-	rules := s.store.GetRules()
-	ruleGroups := s.store.GetRuleGroups()
 	inboundPorts := s.store.GetInboundPorts()
 	proxyChains := s.store.GetProxyChains()
 
-	b := builder.NewConfigBuilder(settings, nodes, filters, rules, ruleGroups, inboundPorts, proxyChains)
+	b := builder.NewConfigBuilder(settings, nodes, filters, inboundPorts, proxyChains)
 	b.SetDataDir(s.store.GetDataDir()) // 设置数据目录用于生成绝对路径
 	return b.BuildJSON()
 }
@@ -2211,8 +2043,10 @@ func (s *Server) getCountryGroups(c *gin.Context) {
 
 func (s *Server) getNodesByCountry(c *gin.Context) {
 	code := c.Param("code")
-	nodes := s.store.GetNodesByCountry(code)
-	c.JSON(http.StatusOK, gin.H{"data": nodes})
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "0"))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	nodes, total := s.store.GetNodesByCountry(code, limit, offset)
+	c.JSON(http.StatusOK, gin.H{"data": nodes, "total": total})
 }
 
 func (s *Server) parseNodeURL(c *gin.Context) {
@@ -2275,6 +2109,44 @@ func (s *Server) getNodeDelays(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"data": speedInfos})
+}
+
+// testUnsavedNodeDelay 测试未保存节点的延迟 (使用 mihomo URL 测试)
+func (s *Server) testUnsavedNodeDelay(c *gin.Context) {
+	var node models.Node
+	if err := c.ShouldBindJSON(&node); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误: " + err.Error()})
+		return
+	}
+
+	if node.Server == "" || node.ServerPort == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "server 和 server_port 为必填"})
+		return
+	}
+
+	if node.Tag == "" {
+		node.Tag = "test-unsaved"
+	}
+
+	defaultProfile := &models.SpeedTestProfile{
+		LatencyURL:       "https://cp.cloudflare.com/generate_204",
+		Timeout:          7,
+		IncludeHandshake: false,
+	}
+	if s.dbStore != nil {
+		if p, err := s.dbStore.GetDefaultSpeedTestProfile(); err == nil {
+			defaultProfile = p
+		}
+	}
+
+	tester := speedtest.NewTester(defaultProfile)
+	result := tester.TestDelay(&node)
+
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"delay":  result.Delay,
+		"status": result.Status,
+		"error":  result.Error,
+	}})
 }
 
 // testNodeDelay 测试单个节点的延迟 (使用 mihomo)
@@ -2495,6 +2367,20 @@ func (s *Server) addInboundPort(c *gin.Context) {
 	// 生成 ID
 	port.ID = uuid.New().String()
 
+	// 检测端口冲突
+	for _, existing := range s.store.GetInboundPorts() {
+		if existing.Listen == port.Listen && existing.Port == port.Port {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("端口 %s:%d 已被「%s」占用", port.Listen, port.Port, existing.Name)})
+			return
+		}
+	}
+
+	// 检测系统端口是否可用
+	if err := checkPortAvailable(port.Listen, port.Port); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	if err := s.store.AddInboundPort(port); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -2519,6 +2405,25 @@ func (s *Server) updateInboundPort(c *gin.Context) {
 	}
 
 	port.ID = id
+
+	// 检测端口冲突（排除自身）
+	oldPort := s.store.GetInboundPort(id)
+	for _, existing := range s.store.GetInboundPorts() {
+		if existing.ID != id && existing.Listen == port.Listen && existing.Port == port.Port {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("端口 %s:%d 已被「%s」占用", port.Listen, port.Port, existing.Name)})
+			return
+		}
+	}
+
+	// 端口变更时检测系统端口是否可用
+	portChanged := oldPort == nil || oldPort.Listen != port.Listen || oldPort.Port != port.Port
+	if portChanged {
+		if err := checkPortAvailable(port.Listen, port.Port); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
 	if err := s.store.UpdateInboundPort(port); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -2899,4 +2804,17 @@ func (s *Server) syncNodesToSQLiteAndGetIDs() []uint {
 		}
 	}
 	return ids
+}
+
+func checkPortAvailable(listen string, port int) error {
+	addr := ":" + strconv.Itoa(port)
+	if listen != "" && listen != "0.0.0.0" && listen != "::" {
+		addr = net.JoinHostPort(listen, strconv.Itoa(port))
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("端口 %s:%d 已被系统其他进程占用", listen, port)
+	}
+	_ = ln.Close()
+	return nil
 }
