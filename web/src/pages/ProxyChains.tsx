@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Card, CardBody, CardHeader, Button, Chip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Input, Textarea, useDisclosure, Switch, Select, SelectItem, Accordion, AccordionItem } from '@nextui-org/react';
-import { Plus, Link2, Trash2, Pencil, ArrowRight, ChevronUp, ChevronDown, Activity, RefreshCw, Download } from 'lucide-react';
+import { Plus, Link2, Trash2, Pencil, ArrowRight, ChevronUp, ChevronDown, Activity, RefreshCw, Download, Zap } from 'lucide-react';
 import { proxyChainApi, nodeApi } from '../api';
 import { toast } from '../components/Toast';
 
@@ -106,6 +106,11 @@ export default function ProxyChains() {
   const [searchText, setSearchText] = useState('');
   const [selectedCountry, setSelectedCountry] = useState('');
   const [selectedSource, setSelectedSource] = useState('');
+  const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>({});
+  const [testingNodeTag, setTestingNodeTag] = useState<string | null>(null);
+  const [nodeTestResults, setNodeTestResults] = useState<Record<string, { delay: number; status: string; error?: string }>>({});
+
+  const NODES_PER_PAGE = 30;
 
   useEffect(() => {
     fetchChains();
@@ -181,6 +186,25 @@ export default function ProxyChains() {
       toast.error('测速失败: ' + (error.response?.data?.error || error.message));
     } finally {
       setSpeedTestingChain(null);
+    }
+  };
+
+  const testNodeConnectivity = async (tag: string) => {
+    setTestingNodeTag(tag);
+    try {
+      const response = await nodeApi.testDelay(tag);
+      const data = response.data.data;
+      setNodeTestResults(prev => ({
+        ...prev,
+        [tag]: { delay: data.delay, status: data.delay >= 0 ? 'success' : 'timeout', error: data.error },
+      }));
+    } catch (error: any) {
+      setNodeTestResults(prev => ({
+        ...prev,
+        [tag]: { delay: -1, status: 'error', error: error.response?.data?.error || '测试失败' },
+      }));
+    } finally {
+      setTestingNodeTag(null);
     }
   };
 
@@ -680,23 +704,61 @@ export default function ProxyChains() {
                             }}
                           >
                             <div className="space-y-1">
-                              {group.nodes.slice(0, 30).map((node) => (
-                                <div
-                                  key={node.tag}
-                                  className="flex items-center justify-between p-2 hover:bg-default-100 rounded-lg cursor-pointer"
-                                  onClick={() => addNodeToChain(node.tag)}
-                                >
-                                  <div className="flex items-center gap-2 flex-1 min-w-0">
-                                    {node.country_emoji && <span>{node.country_emoji}</span>}
-                                    <span className="text-sm truncate">{node.tag}</span>
+                              {group.nodes.slice(0, visibleCounts[group.source] || NODES_PER_PAGE).map((node) => {
+                                const testResult = nodeTestResults[node.tag];
+                                return (
+                                  <div
+                                    key={node.tag}
+                                    className="flex items-center justify-between p-2 hover:bg-default-100 rounded-lg cursor-pointer group"
+                                    onClick={() => addNodeToChain(node.tag)}
+                                  >
+                                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                                      {node.country_emoji && <span>{node.country_emoji}</span>}
+                                      <span className="text-sm truncate">{node.tag}</span>
+                                    </div>
+                                    <div className="flex items-center gap-1">
+                                      {testResult && (
+                                        <Chip
+                                          size="sm"
+                                          variant="flat"
+                                          color={testResult.status === 'success' ? 'success' : 'danger'}
+                                        >
+                                          {testResult.status === 'success' ? `${testResult.delay}ms` : '超时'}
+                                        </Chip>
+                                      )}
+                                      <div
+                                        onClick={(e) => e.stopPropagation()}
+                                        className="flex items-center gap-1"
+                                      >
+                                        <Button
+                                          isIconOnly
+                                          size="sm"
+                                          variant="light"
+                                          className="opacity-0 group-hover:opacity-100 transition-opacity"
+                                          onPress={() => testNodeConnectivity(node.tag)}
+                                          isLoading={testingNodeTag === node.tag}
+                                        >
+                                          <Zap className="w-3 h-3" />
+                                        </Button>
+                                      </div>
+                                      <Chip size="sm" variant="flat">{node.type}</Chip>
+                                    </div>
                                   </div>
-                                  <Chip size="sm" variant="flat">{node.type}</Chip>
+                                );
+                              })}
+                              {group.nodes.length > (visibleCounts[group.source] || NODES_PER_PAGE) && (
+                                <div className="flex justify-center py-2">
+                                  <Button
+                                    size="sm"
+                                    variant="flat"
+                                    onPress={() => setVisibleCounts(prev => ({
+                                      ...prev,
+                                      [group.source]: (prev[group.source] || NODES_PER_PAGE) + NODES_PER_PAGE,
+                                    }))}
+                                  >
+                                    加载更多 ({Math.min(visibleCounts[group.source] || NODES_PER_PAGE, group.nodes.length)}/{group.nodes.length})
+                                  </Button>
                                 </div>
-                              ))}
-                              {group.nodes.length > 30 && (
-                                <p className="text-xs text-gray-500 text-center py-2">
-                                  还有 {group.nodes.length - 30} 个节点，请使用搜索
-                                </p>
                               )}
                             </div>
                           </AccordionItem>

@@ -183,6 +183,8 @@ export default function Subscriptions() {
   const [nodeUrl, setNodeUrl] = useState('');
   const [isParsing, setIsParsing] = useState(false);
   const [parseError, setParseError] = useState('');
+  const [testingUnsaved, setTestingUnsaved] = useState(false);
+  const [unsavedTestResult, setUnsavedTestResult] = useState<{ delay: number; status: string; error?: string } | null>(null);
 
   // 过滤器表单
   const [editingFilter, setEditingFilter] = useState<Filter | null>(null);
@@ -195,7 +197,7 @@ export default function Subscriptions() {
     mode: 'urltest',
     urltest_config: {
       url: 'https://www.gstatic.com/generate_204',
-      interval: '5m',
+      interval: '30m',
       tolerance: 50,
     },
     subscriptions: [],
@@ -275,6 +277,7 @@ export default function Subscriptions() {
     setNodeEnabled(true);
     setNodeUrl('');
     setParseError('');
+    setUnsavedTestResult(null);
     onNodeOpen();
   };
 
@@ -284,6 +287,7 @@ export default function Subscriptions() {
     setNodeEnabled(mn.enabled);
     setNodeUrl('');
     setParseError('');
+    setUnsavedTestResult(null);
     onNodeOpen();
   };
 
@@ -303,6 +307,26 @@ export default function Subscriptions() {
       setParseError(message);
     } finally {
       setIsParsing(false);
+    }
+  };
+
+  const handleTestUnsaved = async () => {
+    if (!nodeForm.server || !nodeForm.server_port) return;
+    setTestingUnsaved(true);
+    setUnsavedTestResult(null);
+    try {
+      const response = await nodeApi.testUnsaved({
+        type: nodeForm.type,
+        server: nodeForm.server,
+        server_port: nodeForm.server_port,
+        tag: nodeForm.tag || 'test',
+        extra: nodeForm.extra,
+      });
+      setUnsavedTestResult(response.data.data);
+    } catch (error: any) {
+      setUnsavedTestResult({ delay: -1, status: 'error', error: error.response?.data?.error || '测试失败' });
+    } finally {
+      setTestingUnsaved(false);
     }
   };
 
@@ -358,7 +382,7 @@ export default function Subscriptions() {
       mode: filter.mode || 'urltest',
       urltest_config: filter.urltest_config || {
         url: 'https://www.gstatic.com/generate_204',
-        interval: '5m',
+        interval: '30m',
         tolerance: 50,
       },
       subscriptions: filter.subscriptions || [],
@@ -903,7 +927,28 @@ export default function Subscriptions() {
                           {nodeForm.type} · {nodeForm.server}:{nodeForm.server_port}
                         </p>
                       </div>
-                      <Chip size="sm" variant="flat" color="success">已解析</Chip>
+                      {unsavedTestResult && (
+                        <Chip
+                          size="sm"
+                          variant="flat"
+                          color={unsavedTestResult.status === 'success' ? 'success' : 'danger'}
+                        >
+                          {unsavedTestResult.status === 'success'
+                            ? `${unsavedTestResult.delay}ms`
+                            : unsavedTestResult.error || '不可用'}
+                        </Chip>
+                      )}
+                      <Button
+                        size="sm"
+                        color="primary"
+                        variant="flat"
+                        onPress={handleTestUnsaved}
+                        isLoading={testingUnsaved}
+                        isDisabled={!nodeForm.server || !nodeForm.server_port}
+                        startContent={!testingUnsaved ? <Zap className="w-3 h-3" /> : undefined}
+                      >
+                        测试
+                      </Button>
                     </div>
                   </CardBody>
                 </Card>
@@ -1117,7 +1162,7 @@ export default function Subscriptions() {
                     <div className="grid grid-cols-2 gap-3">
                       <Input
                         label="测速间隔"
-                        placeholder="5m"
+                        placeholder="1h"
                         value={filterForm.urltest_config?.interval || ''}
                         onChange={(e) => setFilterForm({
                           ...filterForm,
@@ -1615,10 +1660,13 @@ function CountryNodesList({ countryGroups }: CountryNodesListProps) {
   const { subscriptions, manualNodes } = useStore();
   const [expandedCountries, setExpandedCountries] = useState<Set<string>>(new Set());
   const [countryNodes, setCountryNodes] = useState<Record<string, Node[]>>({});
+  const [countryTotals, setCountryTotals] = useState<Record<string, number>>({});
   const [loadingCountries, setLoadingCountries] = useState<Set<string>>(new Set());
   const [nodeSpeedInfos, setNodeSpeedInfos] = useState<Record<string, { delay: number; speed: number }>>({});
   const [testingNode, setTestingNode] = useState<string | null>(null);
   const [searchText, setSearchText] = useState('');
+
+  const PAGE_SIZE = 50;
 
   // 获取所有节点的测速信息
   const fetchSpeedInfos = useCallback(async () => {
@@ -1635,14 +1683,20 @@ function CountryNodesList({ countryGroups }: CountryNodesListProps) {
     fetchSpeedInfos();
   }, [fetchSpeedInfos]);
 
-  // 加载指定国家的节点
-  const loadCountryNodes = async (code: string) => {
-    if (countryNodes[code]) return; // 已加载
+  // 加载指定国家的节点（分页）
+  const loadCountryNodes = async (code: string, append = false) => {
+    const offset = append ? (countryNodes[code]?.length || 0) : 0;
 
     setLoadingCountries(prev => new Set(prev).add(code));
     try {
-      const response = await nodeApi.getByCountry(code);
-      setCountryNodes(prev => ({ ...prev, [code]: response.data.data || [] }));
+      const response = await nodeApi.getByCountry(code, PAGE_SIZE, offset);
+      const newNodes: Node[] = response.data.data || [];
+      const total: number = response.data.total || 0;
+      setCountryTotals(prev => ({ ...prev, [code]: total }));
+      setCountryNodes(prev => ({
+        ...prev,
+        [code]: append ? [...(prev[code] || []), ...newNodes] : newNodes,
+      }));
     } catch (error) {
       console.error(`加载 ${code} 节点失败:`, error);
     } finally {
@@ -1661,7 +1715,9 @@ function CountryNodesList({ countryGroups }: CountryNodesListProps) {
       next.delete(code);
     } else {
       next.add(code);
-      loadCountryNodes(code);
+      if (!countryNodes[code]) {
+        loadCountryNodes(code);
+      }
     }
     setExpandedCountries(next);
   };
@@ -1791,49 +1847,63 @@ function CountryNodesList({ countryGroups }: CountryNodesListProps) {
 
             {isExpanded && (
               <CardBody className="pt-0">
-                {isLoading ? (
+                {isLoading && nodes.length === 0 ? (
                   <div className="flex justify-center py-4">
                     <Spinner size="sm" />
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-                    {nodes.map((node: Node, idx: number) => {
-                      const speedInfo = nodeSpeedInfos[node.tag];
-                      const delayText = formatDelay(speedInfo);
-                      const speedText = formatSpeed(speedInfo);
-                      return (
-                        <div
-                          key={idx}
-                          className="flex items-center gap-2 p-2 bg-gray-50 dark:bg-gray-800 rounded text-sm group"
-                        >
-                          <span className="truncate flex-1">{node.tag}</span>
-                          {delayText && (
-                            <Chip size="sm" variant="flat" color={getDelayColor(speedInfo)}>
-                              {delayText}
-                            </Chip>
-                          )}
-                          {speedText && (
-                            <Chip size="sm" variant="flat" color="primary">
-                              {speedText}
-                            </Chip>
-                          )}
-                          <Chip size="sm" variant="flat">
-                            {node.type}
-                          </Chip>
-                          <Button
-                            isIconOnly
-                            size="sm"
-                            variant="light"
-                            className="opacity-0 group-hover:opacity-100 transition-opacity"
-                            onPress={() => testNodeDelay(node.tag)}
-                            isLoading={testingNode === node.tag}
+                  <>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+                      {nodes.map((node: Node, idx: number) => {
+                        const speedInfo = nodeSpeedInfos[node.tag];
+                        const delayText = formatDelay(speedInfo);
+                        const speedText = formatSpeed(speedInfo);
+                        return (
+                          <div
+                            key={idx}
+                            className="flex items-center gap-2 p-2 bg-gray-50 dark:bg-gray-800 rounded text-sm group"
                           >
-                            <RefreshCw className="w-3 h-3" />
-                          </Button>
-                        </div>
-                      );
-                    })}
-                  </div>
+                            <span className="truncate flex-1">{node.tag}</span>
+                            {delayText && (
+                              <Chip size="sm" variant="flat" color={getDelayColor(speedInfo)}>
+                                {delayText}
+                              </Chip>
+                            )}
+                            {speedText && (
+                              <Chip size="sm" variant="flat" color="primary">
+                                {speedText}
+                              </Chip>
+                            )}
+                            <Chip size="sm" variant="flat">
+                              {node.type}
+                            </Chip>
+                            <Button
+                              isIconOnly
+                              size="sm"
+                              variant="light"
+                              className="opacity-0 group-hover:opacity-100 transition-opacity"
+                              onPress={() => testNodeDelay(node.tag)}
+                              isLoading={testingNode === node.tag}
+                            >
+                              <RefreshCw className="w-3 h-3" />
+                            </Button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {!isSearchMode && nodes.length < (countryTotals[group.code] || group.node_count) && (
+                      <div className="flex justify-center pt-3">
+                        <Button
+                          size="sm"
+                          variant="flat"
+                          onPress={() => loadCountryNodes(group.code, true)}
+                          isLoading={isLoading}
+                        >
+                          加载更多 ({nodes.length}/{countryTotals[group.code] || group.node_count})
+                        </Button>
+                      </div>
+                    )}
+                  </>
                 )}
               </CardBody>
             )}

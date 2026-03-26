@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Card, CardBody, CardHeader, Input, Button, Switch, Chip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Select, SelectItem, Accordion, AccordionItem, useDisclosure } from '@nextui-org/react';
-import { Plus, Pencil, Trash2, Network, Download, RefreshCw } from 'lucide-react';
+import { Card, CardBody, Input, Button, Switch, Chip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Select, SelectItem, Pagination, useDisclosure } from '@nextui-org/react';
+import { Plus, Pencil, Trash2, Network, RefreshCw } from 'lucide-react';
 import { useStore } from '../store';
 import type { Settings as SettingsType } from '../store';
 import { inboundPortApi, filterApi, proxyChainApi, nodeApi } from '../api';
@@ -20,6 +20,8 @@ interface InboundPort {
   outbound: string;
   enabled: boolean;
 }
+
+type InboundPortPayload = Omit<InboundPort, 'id'>;
 
 // 过滤器类型
 interface Filter {
@@ -61,6 +63,24 @@ interface NodeGroup {
   nodes: Node[];
 }
 
+type OutboundCategory = 'basic' | 'country' | 'filter' | 'chain' | 'node';
+
+function getClientAddressHint(listen: string): string {
+  if (listen === '0.0.0.0' || listen === '::' || listen === '') {
+    const currentHost = window.location.hostname;
+    if (currentHost && currentHost !== '0.0.0.0' && currentHost !== '::') {
+      return `${currentHost}（当前访问地址）或本机局域网 IP`;
+    }
+    return '127.0.0.1 或本机局域网 IP';
+  }
+
+  if (listen === 'localhost') {
+    return '127.0.0.1';
+  }
+
+  return listen;
+}
+
 // 国家选项
 const countryOptions = [
   { code: 'HK', name: '香港', emoji: '🇭🇰' },
@@ -80,6 +100,35 @@ const countryOptions = [
   { code: 'TR', name: '土耳其', emoji: '🇹🇷' },
 ];
 
+const NODES_PER_PAGE = 20;
+
+function createDefaultPortFormData() {
+  return {
+    name: '',
+    type: 'mixed',
+    listen: '0.0.0.0',
+    port: 2081,
+    username: '',
+    password: '',
+    outbound: 'Proxy',
+    enabled: true,
+  };
+}
+
+function getApiErrorMessage(error: unknown, fallback: string): string {
+  const responseError = (error as { response?: { data?: { error?: string } } })?.response?.data?.error;
+  return typeof responseError === 'string' && responseError ? responseError : fallback;
+}
+
+function getSelectableItemClasses(isSelected: boolean): string {
+  return [
+    'cursor-pointer rounded-xl border p-3 transition-colors',
+    isSelected
+      ? 'border-primary bg-primary-50 shadow-sm dark:border-primary-400 dark:bg-primary-500/10'
+      : 'border-default-200 bg-white/80 hover:border-primary-200 hover:bg-default-50 dark:bg-default-100/70'
+  ].join(' ');
+}
+
 export default function InboundPorts() {
   const { settings, fetchSettings, updateSettings } = useStore();
   const [formData, setFormData] = useState<SettingsType | null>(null);
@@ -93,22 +142,78 @@ export default function InboundPorts() {
   const [nodeGroups, setNodeGroups] = useState<NodeGroup[]>([]);
   const { isOpen: isPortModalOpen, onOpen: onPortModalOpen, onClose: onPortModalClose } = useDisclosure();
   const [editingPort, setEditingPort] = useState<InboundPort | null>(null);
-  const [portFormData, setPortFormData] = useState({
-    name: '',
-    type: 'mixed',
-    listen: '0.0.0.0',
-    port: 2081,
-    username: '',
-    password: '',
-    outbound: 'Proxy',
-    enabled: true,
-  });
+  const [portFormData, setPortFormData] = useState(createDefaultPortFormData);
 
   // 出站选择筛选状态
-  const [outboundType, setOutboundType] = useState<string>('');
+  const [outboundType, setOutboundType] = useState<OutboundCategory>('basic');
   const [selectedCountry, setSelectedCountry] = useState<string>('');
   const [selectedSource, setSelectedSource] = useState<string>('');
   const [searchText, setSearchText] = useState<string>('');
+  const [nodePage, setNodePage] = useState(1);
+
+  async function fetchInboundPorts() {
+    try {
+      const res = await inboundPortApi.getAll();
+      setInboundPorts(res.data.data || []);
+    } catch (error) {
+      console.error('获取入站端口失败:', error);
+    }
+  }
+
+  async function fetchFilters() {
+    try {
+      const res = await filterApi.getAll();
+      setFilters(res.data.data || []);
+    } catch (error) {
+      console.error('获取过滤器列表失败:', error);
+    }
+  }
+
+  async function fetchProxyChains() {
+    try {
+      const res = await proxyChainApi.getAll();
+      setProxyChains(res.data.data || []);
+    } catch (error) {
+      console.error('获取代理链路失败:', error);
+    }
+  }
+
+  async function fetchCountryGroups() {
+    try {
+      const res = await nodeApi.getCountries();
+      setCountryGroups(res.data.data || []);
+    } catch (error) {
+      console.error('获取地区分组失败:', error);
+    }
+  }
+
+  async function fetchNodes() {
+    try {
+      const res = await nodeApi.getAll();
+      setNodes(res.data.data || []);
+    } catch (error) {
+      console.error('获取节点列表失败:', error);
+    }
+  }
+
+  async function fetchNodeGroups() {
+    try {
+      const res = await nodeApi.getGrouped();
+      setNodeGroups(res.data.data || []);
+    } catch (error) {
+      console.error('获取节点分组失败:', error);
+    }
+  }
+
+  async function refreshOutboundResources() {
+    await Promise.all([
+      fetchNodes(),
+      fetchNodeGroups(),
+      fetchCountryGroups(),
+      fetchFilters(),
+      fetchProxyChains(),
+    ]);
+  }
 
   useEffect(() => {
     fetchSettings();
@@ -118,7 +223,7 @@ export default function InboundPorts() {
     fetchCountryGroups();
     fetchNodes();
     fetchNodeGroups();
-  }, []);
+  }, [fetchSettings]);
 
   useEffect(() => {
     if (settings) {
@@ -126,82 +231,31 @@ export default function InboundPorts() {
     }
   }, [settings]);
 
-  const fetchInboundPorts = async () => {
-    try {
-      const res = await inboundPortApi.getAll();
-      setInboundPorts(res.data.data || []);
-    } catch (error) {
-      console.error('获取入站端口失败:', error);
-    }
-  };
-
-  const fetchFilters = async () => {
-    try {
-      const res = await filterApi.getAll();
-      setFilters(res.data.data || []);
-    } catch (error) {
-      console.error('获取过滤器列表失败:', error);
-    }
-  };
-
-  const fetchProxyChains = async () => {
-    try {
-      const res = await proxyChainApi.getAll();
-      setProxyChains(res.data.data || []);
-    } catch (error) {
-      console.error('获取代理链路失败:', error);
-    }
-  };
-
-  const fetchCountryGroups = async () => {
-    try {
-      const res = await nodeApi.getCountries();
-      setCountryGroups(res.data.data || []);
-    } catch (error) {
-      console.error('获取地区分组失败:', error);
-    }
-  };
-
-  const fetchNodes = async () => {
-    try {
-      const res = await nodeApi.getAll();
-      setNodes(res.data.data || []);
-    } catch (error) {
-      console.error('获取节点列表失败:', error);
-    }
-  };
-
-  const fetchNodeGroups = async () => {
-    try {
-      const res = await nodeApi.getGrouped();
-      setNodeGroups(res.data.data || []);
-    } catch (error) {
-      console.error('获取节点分组失败:', error);
-    }
-  };
-
   // 入站端口处理函数
   const handleAddPort = () => {
     setEditingPort(null);
-    setPortFormData({
-      name: '',
-      type: 'mixed',
-      listen: '0.0.0.0',
-      port: 2081,
-      username: '',
-      password: '',
-      outbound: 'Proxy',
-      enabled: true,
-    });
+    setPortFormData(createDefaultPortFormData());
     // 重置筛选状态
-    setOutboundType('');
+    setOutboundType('basic');
     setSelectedCountry('');
     setSelectedSource('');
     setSearchText('');
+    setNodePage(1);
     onPortModalOpen();
   };
 
   const handleEditPort = (port: InboundPort) => {
+    const matchedNode = nodes.find((node) => node.tag === port.outbound);
+    const matchedCategory: OutboundCategory = ['Proxy', 'DIRECT', 'Auto'].includes(port.outbound)
+      ? 'basic'
+      : countryGroups.some((country) => country.code === port.outbound)
+        ? 'country'
+        : filters.some((filter) => filter.name === port.outbound)
+          ? 'filter'
+          : proxyChains.some((chain) => chain.name === port.outbound)
+            ? 'chain'
+            : 'node';
+
     setEditingPort(port);
     setPortFormData({
       name: port.name,
@@ -214,10 +268,11 @@ export default function InboundPorts() {
       enabled: port.enabled,
     });
     // 重置筛选状态
-    setOutboundType('');
-    setSelectedCountry('');
-    setSelectedSource('');
+    setOutboundType(matchedCategory);
+    setSelectedCountry(matchedCategory === 'node' ? matchedNode?.country || '' : '');
+    setSelectedSource(matchedCategory === 'node' ? matchedNode?.source || '' : '');
     setSearchText('');
+    setNodePage(1);
     onPortModalOpen();
   };
 
@@ -227,8 +282,8 @@ export default function InboundPorts() {
       await inboundPortApi.delete(id);
       toast.success('端口已删除');
       fetchInboundPorts();
-    } catch (error: any) {
-      toast.error(error.response?.data?.error || '删除失败');
+    } catch (error: unknown) {
+      toast.error(getApiErrorMessage(error, '删除失败'));
     }
   };
 
@@ -236,8 +291,8 @@ export default function InboundPorts() {
     try {
       await inboundPortApi.update(port.id, { ...port, enabled: !port.enabled });
       fetchInboundPorts();
-    } catch (error: any) {
-      toast.error(error.response?.data?.error || '更新失败');
+    } catch (error: unknown) {
+      toast.error(getApiErrorMessage(error, '更新失败'));
     }
   };
 
@@ -251,7 +306,7 @@ export default function InboundPorts() {
       return;
     }
 
-    const data: any = {
+    const data: InboundPortPayload = {
       name: portFormData.name,
       type: portFormData.type,
       listen: portFormData.listen,
@@ -278,8 +333,8 @@ export default function InboundPorts() {
       }
       onPortModalClose();
       fetchInboundPorts();
-    } catch (error: any) {
-      toast.error(error.response?.data?.error || '操作失败');
+    } catch (error: unknown) {
+      toast.error(getApiErrorMessage(error, '操作失败'));
     }
   };
 
@@ -288,8 +343,8 @@ export default function InboundPorts() {
       try {
         await updateSettings(formData);
         toast.success('入站配置已保存');
-      } catch (error: any) {
-        toast.error(error.response?.data?.error || '保存设置失败');
+      } catch (error: unknown) {
+        toast.error(getApiErrorMessage(error, '保存设置失败'));
       }
     }
   };
@@ -311,6 +366,10 @@ export default function InboundPorts() {
   const availableCountries = countryOptions.filter(
     opt => nodes.some(node => node.country === opt.code)
   );
+
+  const enabledInboundCount = inboundPorts.filter(port => port.enabled).length;
+  const authProtectedInboundCount = inboundPorts.filter(port => Boolean(port.auth)).length;
+  const customInboundCount = inboundPorts.length;
 
   // 过滤节点分组（用于单独节点选择）
   const getFilteredNodeGroups = () => {
@@ -335,6 +394,82 @@ export default function InboundPorts() {
   };
 
   const filteredNodeGroups = getFilteredNodeGroups();
+  const flatFilteredNodes = filteredNodeGroups.flatMap(g =>
+    g.nodes.map(n => ({ ...n, source_name: g.source_name }))
+  );
+  const nodeTotalPages = Math.max(1, Math.ceil(flatFilteredNodes.length / NODES_PER_PAGE));
+  const safeNodePage = Math.min(nodePage, nodeTotalPages);
+  const pagedNodes = flatFilteredNodes.slice(
+    (safeNodePage - 1) * NODES_PER_PAGE,
+    safeNodePage * NODES_PER_PAGE
+  );
+  const basicOutboundOptions = [
+    { key: 'Proxy', label: 'Proxy（主代理）', description: '沿用主代理策略，适合作为常用默认出口。' },
+    { key: 'DIRECT', label: 'DIRECT（直连）', description: '流量直接连接目标地址，不经过代理节点。' },
+    { key: 'Auto', label: 'Auto（自动选择）', description: '按当前测速或策略结果自动选择更优线路。' },
+  ].filter(item => !searchText || item.label.toLowerCase().includes(searchText.toLowerCase()));
+
+  const filteredCountries = countryGroups.filter(
+    country => !searchText
+      || country.name.toLowerCase().includes(searchText.toLowerCase())
+      || country.code.toLowerCase().includes(searchText.toLowerCase())
+  );
+
+  const filteredFilters = enabledFilters.filter(
+    filter => !searchText || filter.name.toLowerCase().includes(searchText.toLowerCase())
+  );
+
+  const filteredChains = enabledChains.filter(
+    chain => !searchText || chain.name.toLowerCase().includes(searchText.toLowerCase())
+  );
+
+  const outboundNavItems = [
+    {
+      key: 'basic' as const,
+      title: '基础出站',
+      description: 'Proxy、DIRECT 与 Auto',
+      count: 3,
+      visible: true,
+    },
+    {
+      key: 'country' as const,
+      title: '地区节点',
+      description: '按国家或地区聚合选择',
+      count: countryGroups.length,
+      visible: countryGroups.length > 0,
+    },
+    {
+      key: 'filter' as const,
+      title: '过滤器',
+      description: '复用已启用过滤规则',
+      count: enabledFilters.length,
+      visible: enabledFilters.length > 0,
+    },
+    {
+      key: 'chain' as const,
+      title: '代理链路',
+      description: '选择已启用链路编排',
+      count: enabledChains.length,
+      visible: enabledChains.length > 0,
+    },
+    {
+      key: 'node' as const,
+      title: '单独节点',
+      description: '从来源分组中直选节点',
+      count: nodes.length,
+      visible: nodes.length > 0,
+    },
+  ].filter(item => item.visible);
+  const activeOutboundMeta = outboundNavItems.find(item => item.key === outboundType);
+  const hasOutboundResults = outboundType === 'basic'
+    ? basicOutboundOptions.length > 0
+    : outboundType === 'country'
+      ? filteredCountries.length > 0
+      : outboundType === 'filter'
+        ? filteredFilters.length > 0
+        : outboundType === 'chain'
+          ? filteredChains.length > 0
+          : filteredNodeGroups.length > 0;
 
   // 获取出站类型对应的显示名称
   const getOutboundDisplayName = (outbound: string) => {
@@ -364,199 +499,240 @@ export default function InboundPorts() {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h1 className="text-2xl font-bold text-gray-800 dark:text-white">入站管理</h1>
+      {/* Page header */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-800 dark:text-white">入站管理</h1>
+          <p className="text-sm text-default-500">
+            为不同设备、成员或使用场景分配独立入站端口与出站线路。
+          </p>
+        </div>
+        <Button
+          color="primary"
+          startContent={<Plus className="w-4 h-4" />}
+          onPress={handleAddPort}
+        >
+          添加端口
+        </Button>
       </div>
 
-      {/* 基础入站配置 */}
+      {/* System-level settings bar */}
       <Card>
-        <CardHeader className="flex justify-between items-center">
-          <div className="flex items-center">
-            <Download className="w-5 h-5 mr-2" />
-            <h2 className="text-lg font-semibold">基础配置</h2>
-          </div>
-          <Button
-            color="primary"
-            size="sm"
-            onPress={handleSaveBasicSettings}
-          >
-            保存
-          </Button>
-        </CardHeader>
-        <CardBody className="space-y-4">
-          <Input
-            type="number"
-            label="混合代理端口"
-            placeholder="2080"
-            description="默认的 HTTP/SOCKS5 混合代理端口"
-            value={String(formData.mixed_port)}
-            onChange={(e) => setFormData({ ...formData, mixed_port: parseInt(e.target.value) || 2080 })}
-          />
-          <div className="flex items-center justify-between p-3 bg-default-100 rounded-lg">
-            <div>
-              <p className="font-medium">局域网代理</p>
-              <p className="text-sm text-gray-500">开启后 Mixed 端口监听局域网</p>
+        <CardBody className="p-4">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-default-500">TUN 模式</span>
+              <Switch
+                size="sm"
+                isSelected={formData.tun_enabled}
+                onValueChange={(enabled) => setFormData({ ...formData, tun_enabled: enabled })}
+              />
             </div>
-            <Switch
-              isSelected={formData.lan_proxy_enabled || false}
-              onValueChange={(enabled) => setFormData({ ...formData, lan_proxy_enabled: enabled })}
-            />
-          </div>
-          <Input
-            label="局域网监听地址"
-            placeholder="0.0.0.0"
-            description="留空默认 0.0.0.0，仅在开启局域网代理时生效"
-            value={formData.lan_listen_ip || ''}
-            onChange={(e) => setFormData({ ...formData, lan_listen_ip: e.target.value })}
-          />
-          <div className="flex items-center justify-between p-3 bg-default-100 rounded-lg">
-            <div>
-              <p className="font-medium">TUN 模式</p>
-              <p className="text-sm text-gray-500">启用 TUN 模式进行透明代理</p>
+            <div className="flex items-center gap-3">
+              <div className="flex flex-wrap gap-2">
+                <Chip size="sm" variant="flat" color="primary">{customInboundCount} 端口</Chip>
+                <Chip size="sm" variant="flat" color="success">{enabledInboundCount} 启用</Chip>
+                {authProtectedInboundCount > 0 && (
+                  <Chip size="sm" variant="flat" color="warning">{authProtectedInboundCount} 认证</Chip>
+                )}
+              </div>
+              <Button size="sm" color="primary" variant="flat" onPress={handleSaveBasicSettings}>
+                保存设置
+              </Button>
             </div>
-            <Switch
-              isSelected={formData.tun_enabled}
-              onValueChange={(enabled) => setFormData({ ...formData, tun_enabled: enabled })}
-            />
           </div>
         </CardBody>
       </Card>
 
-      {/* 多端口管理 */}
-      <Card>
-        <CardHeader className="flex justify-between items-center">
-          <div className="flex items-center">
-            <Network className="w-5 h-5 mr-2" />
-            <h2 className="text-lg font-semibold">多端口管理</h2>
-          </div>
-          <Button
-            color="primary"
-            size="sm"
-            startContent={<Plus className="w-4 h-4" />}
-            onPress={handleAddPort}
-          >
-            添加端口
-          </Button>
-        </CardHeader>
-        <CardBody className="space-y-4">
-          <p className="text-sm text-gray-500">
-            配置多个入站端口，每个端口可以使用不同的出站线路，支持用户名密码认证。适用于多设备、多场景分流需求。
-          </p>
-
-          {inboundPorts.length === 0 ? (
-            <div className="text-center py-8 text-gray-500">
-              <Network className="w-12 h-12 mx-auto mb-4 opacity-50" />
-              <p>暂无自定义入站端口</p>
-              <p className="text-sm mt-1">点击"添加端口"创建新的入站端口</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {inboundPorts.map((port) => (
-                <div
-                  key={port.id}
-                  className="flex items-center justify-between p-4 bg-default-100 rounded-lg"
-                >
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium">{port.name}</span>
+      {/* Port list */}
+      {inboundPorts.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-default-300 py-16 text-center text-default-500">
+          <Network className="w-12 h-12 mx-auto mb-4 opacity-40" />
+          <p className="font-medium">暂无入站端口</p>
+          <p className="mt-1 text-sm">点击右上角「添加端口」创建第一个入站端口。</p>
+        </div>
+      ) : (
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {inboundPorts.map((port) => (
+            <Card key={port.id} className={!port.enabled ? 'opacity-60' : ''}>
+              <CardBody className="p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="truncate text-base font-semibold">{port.name}</span>
                       <Chip size="sm" variant="flat">{port.type}</Chip>
-                      {port.auth && <Chip size="sm" color="warning" variant="flat">需认证</Chip>}
-                      {!port.enabled && <Chip size="sm" variant="flat">已禁用</Chip>}
+                      {port.auth && <Chip size="sm" color="warning" variant="flat">认证</Chip>}
                     </div>
-                    <p className="text-sm text-gray-500 mt-1">
-                      {port.listen}:{port.port} → {port.outbound}
+                    <p className="text-sm text-default-500 tabular-nums">
+                      {port.listen}:{port.port}
                     </p>
                   </div>
-                  <div className="flex items-center gap-1">
+                  <div className="flex shrink-0 items-center gap-1">
                     <Button isIconOnly size="sm" variant="light" onPress={() => handleEditPort(port)}>
                       <Pencil className="w-4 h-4" />
                     </Button>
                     <Button isIconOnly size="sm" variant="light" color="danger" onPress={() => handleDeletePort(port.id)}>
                       <Trash2 className="w-4 h-4" />
                     </Button>
-                    <Switch
-                      size="sm"
-                      isSelected={port.enabled}
-                      onValueChange={() => handleTogglePort(port)}
+                    <Switch size="sm" isSelected={port.enabled} onValueChange={() => handleTogglePort(port)} />
+                  </div>
+                </div>
+
+                <div className="mt-3 rounded-lg bg-default-50 p-2.5 dark:bg-default-100/70">
+                  <p className="text-xs text-default-500">出口线路</p>
+                  <p className="mt-0.5 text-sm font-medium">{getOutboundDisplayName(port.outbound)}</p>
+                </div>
+
+                {(port.listen === '0.0.0.0' || port.listen === '::' || port.listen === '') && (
+                  <p className="mt-2 text-xs text-warning-600">
+                    客户端请使用 {getClientAddressHint(port.listen)}:{port.port}
+                  </p>
+                )}
+              </CardBody>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {/* 入站端口编辑弹窗 */}
+      <Modal isOpen={isPortModalOpen} onClose={onPortModalClose} size="5xl" scrollBehavior="inside">
+        <ModalContent className="max-h-[90vh]">
+          <ModalHeader>{editingPort ? '编辑入站端口' : '添加入站端口'}</ModalHeader>
+          <ModalBody className="gap-0 overflow-hidden p-0">
+            <div className="grid min-h-0 gap-0 xl:grid-cols-[360px_minmax(0,1fr)]">
+              <div className="space-y-5 border-b border-divider p-6 xl:max-h-[calc(90vh-140px)] xl:overflow-y-auto xl:border-b-0 xl:border-r">
+                <div className="space-y-4">
+                  <div>
+                    <p className="text-sm font-medium text-default-700">基础信息</p>
+                    <p className="mt-1 text-sm text-default-500">先定义端口身份，再选择对应出口线路。</p>
+                  </div>
+                  <Input
+                    label="端口名称"
+                    placeholder="例如：家人专用、办公室"
+                    value={portFormData.name}
+                    onChange={(e) => setPortFormData({ ...portFormData, name: e.target.value })}
+                  />
+                  <div className="grid gap-4">
+                    <Select
+                      label="协议类型"
+                      selectedKeys={[portFormData.type]}
+                      onSelectionChange={(keys) => {
+                        const selected = Array.from(keys)[0] as string;
+                        if (selected) setPortFormData({ ...portFormData, type: selected });
+                      }}
+                    >
+                      <SelectItem key="mixed">Mixed (HTTP + SOCKS5)</SelectItem>
+                      <SelectItem key="http">HTTP</SelectItem>
+                      <SelectItem key="socks">SOCKS5</SelectItem>
+                    </Select>
+                    <Input
+                      type="number"
+                      label="端口号"
+                      placeholder="2081"
+                      value={String(portFormData.port)}
+                      onChange={(e) => setPortFormData({ ...portFormData, port: parseInt(e.target.value) || 2081 })}
+                    />
+                    <Input
+                      label="监听地址"
+                      placeholder="0.0.0.0"
+                      value={portFormData.listen}
+                      onChange={(e) => setPortFormData({ ...portFormData, listen: e.target.value })}
+                      description={
+                        portFormData.listen === '0.0.0.0' || portFormData.listen === '::' || portFormData.listen === ''
+                          ? `客户端请使用 ${getClientAddressHint(portFormData.listen)}:${portFormData.port}，不要直接使用 0.0.0.0`
+                          : `客户端连接地址：${getClientAddressHint(portFormData.listen)}:${portFormData.port}`
+                      }
                     />
                   </div>
                 </div>
-              ))}
-            </div>
-          )}
-        </CardBody>
-      </Card>
 
-      {/* 入站端口编辑弹窗 */}
-      <Modal isOpen={isPortModalOpen} onClose={onPortModalClose} size="4xl" scrollBehavior="inside">
-        <ModalContent>
-          <ModalHeader>{editingPort ? '编辑入站端口' : '添加入站端口'}</ModalHeader>
-          <ModalBody className="gap-4">
-            <Input
-              label="端口名称"
-              placeholder="例如：家人专用、办公室"
-              value={portFormData.name}
-              onChange={(e) => setPortFormData({ ...portFormData, name: e.target.value })}
-            />
-            <div className="grid grid-cols-3 gap-4">
-              <Select
-                label="协议类型"
-                selectedKeys={[portFormData.type]}
-                onSelectionChange={(keys) => {
-                  const selected = Array.from(keys)[0] as string;
-                  if (selected) setPortFormData({ ...portFormData, type: selected });
-                }}
-              >
-                <SelectItem key="mixed">Mixed (HTTP + SOCKS5)</SelectItem>
-                <SelectItem key="http">HTTP</SelectItem>
-                <SelectItem key="socks">SOCKS5</SelectItem>
-              </Select>
-              <Input
-                type="number"
-                label="端口号"
-                placeholder="2081"
-                value={String(portFormData.port)}
-                onChange={(e) => setPortFormData({ ...portFormData, port: parseInt(e.target.value) || 2081 })}
-              />
-              <Input
-                label="监听地址"
-                placeholder="0.0.0.0"
-                value={portFormData.listen}
-                onChange={(e) => setPortFormData({ ...portFormData, listen: e.target.value })}
-              />
-            </div>
-
-            {/* 出站线路选择 - 分栏布局 */}
-            <Card className="mt-2">
-              <CardHeader className="flex justify-between items-center pb-2">
-                <h3 className="font-medium">出站线路</h3>
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-gray-500">当前选择：</span>
-                  <Chip color="primary" variant="flat">
+                <div className="rounded-2xl border border-default-200 bg-default-50/60 p-4">
+                  <p className="text-xs font-medium uppercase tracking-wide text-default-500">当前出口</p>
+                  <p className="mt-2 text-base font-semibold text-default-900">
                     {getOutboundDisplayName(portFormData.outbound)}
-                  </Chip>
+                  </p>
+                  <p className="mt-1 text-sm text-default-500">
+                    右侧选择后会立即更新这里的结果。
+                  </p>
                 </div>
-              </CardHeader>
-              <CardBody className="pt-0">
-                {/* 筛选器 */}
-                <div className="flex gap-2 mb-3">
-                  <Select
-                    placeholder="类型"
+
+                <div className="border-t border-divider pt-5">
+                  <p className="mb-3 text-sm font-medium">用户认证（可选）</p>
+                  <div className="grid gap-4">
+                    <Input
+                      label="用户名"
+                      placeholder="留空表示无需认证"
+                      value={portFormData.username}
+                      onChange={(e) => setPortFormData({ ...portFormData, username: e.target.value })}
+                    />
+                    <Input
+                      label="密码"
+                      type="password"
+                      placeholder="留空表示无需认证"
+                      value={portFormData.password}
+                      onChange={(e) => setPortFormData({ ...portFormData, password: e.target.value })}
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between rounded-2xl border border-default-200 bg-default-50/60 p-4">
+                  <div>
+                    <p className="font-medium text-default-900">启用端口</p>
+                    <p className="text-sm text-default-500">保存后立即参与入站配置。</p>
+                  </div>
+                  <Switch
+                    isSelected={portFormData.enabled}
+                    onValueChange={(enabled) => setPortFormData({ ...portFormData, enabled })}
+                  />
+                </div>
+              </div>
+
+              <div className="min-h-0 space-y-4 p-6 xl:max-h-[calc(90vh-140px)] xl:overflow-y-auto">
+                {/* Category tabs */}
+                <div className="flex flex-wrap gap-2">
+                  {outboundNavItems.map((item) => (
+                    <button
+                      key={item.key}
+                      type="button"
+                      className={[
+                        'inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition-colors',
+                        outboundType === item.key
+                          ? 'border-primary bg-primary-50 font-medium text-primary dark:border-primary-400 dark:bg-primary-500/10'
+                          : 'border-default-200 bg-white/80 text-default-700 hover:border-primary-200 hover:bg-default-50 dark:bg-default-100/70',
+                      ].join(' ')}
+                      onClick={() => {
+                        setOutboundType(item.key);
+                        setSearchText('');
+                        setNodePage(1);
+                        if (item.key !== 'node') {
+                          setSelectedCountry('');
+                          setSelectedSource('');
+                        }
+                      }}
+                    >
+                      {item.title}
+                      <span className={[
+                        'inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-xs',
+                        outboundType === item.key
+                          ? 'bg-primary/10 text-primary'
+                          : 'bg-default-100 text-default-500',
+                      ].join(' ')}>
+                        {item.count}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+
+                {/* Search & filter bar */}
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+                  <Input
+                    placeholder={`搜索${activeOutboundMeta?.title || '出站线路'}...`}
                     size="sm"
-                    selectedKeys={outboundType ? [outboundType] : []}
-                    onSelectionChange={(keys) => {
-                      const selected = Array.from(keys)[0] as string;
-                      setOutboundType(selected || '');
-                    }}
-                    className="w-28"
-                  >
-                    <SelectItem key="basic">基础出站</SelectItem>
-                    <SelectItem key="country">地区节点</SelectItem>
-                    <SelectItem key="filter">过滤器</SelectItem>
-                    <SelectItem key="chain">链路</SelectItem>
-                    <SelectItem key="node">单独节点</SelectItem>
-                  </Select>
-                  {(outboundType === 'node' || outboundType === '') && (
+                    value={searchText}
+                    onChange={(e) => { setSearchText(e.target.value); setNodePage(1); }}
+                    className="flex-1"
+                  />
+                  {outboundType === 'node' && (
                     <>
                       <Select
                         placeholder="来源"
@@ -565,8 +741,9 @@ export default function InboundPorts() {
                         onSelectionChange={(keys) => {
                           const selected = Array.from(keys)[0] as string;
                           setSelectedSource(selected || '');
+                          setNodePage(1);
                         }}
-                        className="w-28"
+                        className="lg:w-40"
                       >
                         {nodeGroups.map((group) => (
                           <SelectItem key={group.source} textValue={group.source_name}>
@@ -581,8 +758,9 @@ export default function InboundPorts() {
                         onSelectionChange={(keys) => {
                           const selected = Array.from(keys)[0] as string;
                           setSelectedCountry(selected || '');
+                          setNodePage(1);
                         }}
-                        className="w-28"
+                        className="lg:w-36"
                       >
                         {availableCountries.map((opt) => (
                           <SelectItem key={opt.code} textValue={opt.name}>
@@ -592,227 +770,134 @@ export default function InboundPorts() {
                       </Select>
                     </>
                   )}
-                  <Input
-                    placeholder="搜索..."
-                    size="sm"
-                    value={searchText}
-                    onChange={(e) => setSearchText(e.target.value)}
-                    className="flex-1"
-                  />
                   <Button
                     size="sm"
                     variant="light"
-                    startContent={<RefreshCw className="w-3 h-3" />}
-                    onPress={() => {
-                      fetchNodes();
-                      fetchNodeGroups();
-                      fetchCountryGroups();
-                      fetchFilters();
-                      fetchProxyChains();
-                    }}
+                    isIconOnly
+                    onPress={refreshOutboundResources}
                   >
-                    刷新
+                    <RefreshCw className="w-3.5 h-3.5" />
                   </Button>
                 </div>
 
-                {/* 出站选项列表 */}
-                <div className="max-h-72 overflow-y-auto">
-                  {/* 基础出站 */}
-                  {(outboundType === '' || outboundType === 'basic') && (
-                    <div className="mb-3">
-                      <div className="flex items-center gap-2 mb-2">
-                        <Chip size="sm" color="primary" variant="flat">基础出站</Chip>
-                        <span className="text-xs text-gray-500">3 个选项</span>
-                      </div>
-                      <div className="space-y-1">
-                        {[
-                          { key: 'Proxy', label: 'Proxy（主代理）' },
-                          { key: 'DIRECT', label: 'DIRECT（直连）' },
-                          { key: 'Auto', label: 'Auto（自动选择）' },
-                        ].filter(item => !searchText || item.label.toLowerCase().includes(searchText.toLowerCase()))
-                          .map((item) => (
+                {/* Results */}
+                {!hasOutboundResults ? (
+                  <div className="rounded-xl border border-dashed border-default-300 bg-default-50/60 px-4 py-10 text-center text-sm text-default-500">
+                    当前筛选条件下没有可选线路。
+                  </div>
+                ) : (
+                  <div className="max-h-[420px] space-y-3 overflow-y-auto pr-1">
+                    {outboundType === 'basic' && (
+                      <div className="grid gap-2.5 sm:grid-cols-3">
+                        {basicOutboundOptions.map((item) => (
                           <div
                             key={item.key}
-                            className={`flex items-center justify-between p-2 hover:bg-default-100 rounded-lg cursor-pointer ${portFormData.outbound === item.key ? 'bg-primary-100' : ''}`}
+                            className={getSelectableItemClasses(portFormData.outbound === item.key)}
                             onClick={() => selectOutbound(item.key)}
                           >
-                            <span className="text-sm">{item.label}</span>
-                            {portFormData.outbound === item.key && (
-                              <Chip size="sm" color="primary">已选择</Chip>
-                            )}
+                            <p className="font-medium text-default-900">{item.label}</p>
+                            <p className="mt-1 text-xs text-default-500">{item.description}</p>
                           </div>
                         ))}
                       </div>
-                    </div>
-                  )}
+                    )}
 
-                  {/* 地区节点 */}
-                  {(outboundType === '' || outboundType === 'country') && countryGroups.length > 0 && (
-                    <div className="mb-3">
-                      <div className="flex items-center gap-2 mb-2">
-                        <Chip size="sm" color="secondary" variant="flat">地区节点</Chip>
-                        <span className="text-xs text-gray-500">{countryGroups.length} 个地区</span>
-                      </div>
-                      <div className="space-y-1">
-                        {countryGroups
-                          .filter(country => !searchText ||
-                            country.name.toLowerCase().includes(searchText.toLowerCase()) ||
-                            country.code.toLowerCase().includes(searchText.toLowerCase())
-                          )
-                          .map((country) => (
+                    {outboundType === 'country' && (
+                      <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+                        {filteredCountries.map((country) => (
                           <div
                             key={country.code}
-                            className={`flex items-center justify-between p-2 hover:bg-default-100 rounded-lg cursor-pointer ${portFormData.outbound === country.code ? 'bg-primary-100' : ''}`}
+                            className={getSelectableItemClasses(portFormData.outbound === country.code)}
                             onClick={() => selectOutbound(country.code)}
                           >
-                            <div className="flex items-center gap-2">
-                              <span>{country.emoji}</span>
-                              <span className="text-sm">{country.name}</span>
-                              <span className="text-xs text-gray-500">({country.node_count} 节点)</span>
+                            <div className="flex items-center gap-2.5">
+                              <span className="text-lg">{country.emoji}</span>
+                              <div>
+                                <p className="font-medium text-default-900">{country.name}</p>
+                                <p className="text-xs text-default-500">{country.node_count} 个节点</p>
+                              </div>
                             </div>
-                            {portFormData.outbound === country.code && (
-                              <Chip size="sm" color="primary">已选择</Chip>
-                            )}
                           </div>
                         ))}
                       </div>
-                    </div>
-                  )}
+                    )}
 
-                  {/* 过滤器 */}
-                  {(outboundType === '' || outboundType === 'filter') && enabledFilters.length > 0 && (
-                    <div className="mb-3">
-                      <div className="flex items-center gap-2 mb-2">
-                        <Chip size="sm" color="warning" variant="flat">过滤器</Chip>
-                        <span className="text-xs text-gray-500">{enabledFilters.length} 个</span>
-                      </div>
-                      <div className="space-y-1">
-                        {enabledFilters
-                          .filter(filter => !searchText || filter.name.toLowerCase().includes(searchText.toLowerCase()))
-                          .map((filter) => (
+                    {outboundType === 'filter' && (
+                      <div className="grid gap-2.5 sm:grid-cols-2">
+                        {filteredFilters.map((filter) => (
                           <div
                             key={filter.name}
-                            className={`flex items-center justify-between p-2 hover:bg-default-100 rounded-lg cursor-pointer ${portFormData.outbound === filter.name ? 'bg-primary-100' : ''}`}
+                            className={getSelectableItemClasses(portFormData.outbound === filter.name)}
                             onClick={() => selectOutbound(filter.name)}
                           >
-                            <span className="text-sm">{filter.name}</span>
-                            {portFormData.outbound === filter.name && (
-                              <Chip size="sm" color="primary">已选择</Chip>
-                            )}
+                            <p className="font-medium text-default-900">{filter.name}</p>
+                            <p className="mt-1 text-xs text-default-500">按既有过滤规则组织出口策略。</p>
                           </div>
                         ))}
                       </div>
-                    </div>
-                  )}
+                    )}
 
-                  {/* 代理链路 */}
-                  {(outboundType === '' || outboundType === 'chain') && enabledChains.length > 0 && (
-                    <div className="mb-3">
-                      <div className="flex items-center gap-2 mb-2">
-                        <Chip size="sm" color="success" variant="flat">代理链路</Chip>
-                        <span className="text-xs text-gray-500">{enabledChains.length} 个</span>
-                      </div>
-                      <div className="space-y-1">
-                        {enabledChains
-                          .filter(chain => !searchText || chain.name.toLowerCase().includes(searchText.toLowerCase()))
-                          .map((chain) => (
+                    {outboundType === 'chain' && (
+                      <div className="grid gap-2.5 sm:grid-cols-2">
+                        {filteredChains.map((chain) => (
                           <div
                             key={chain.name}
-                            className={`flex items-center justify-between p-2 hover:bg-default-100 rounded-lg cursor-pointer ${portFormData.outbound === chain.name ? 'bg-primary-100' : ''}`}
+                            className={getSelectableItemClasses(portFormData.outbound === chain.name)}
                             onClick={() => selectOutbound(chain.name)}
                           >
-                            <span className="text-sm">{chain.name}</span>
-                            {portFormData.outbound === chain.name && (
-                              <Chip size="sm" color="primary">已选择</Chip>
-                            )}
+                            <p className="font-medium text-default-900">{chain.name}</p>
+                            <p className="mt-1 text-xs text-default-500">复用预先编排好的代理链路。</p>
                           </div>
                         ))}
                       </div>
-                    </div>
-                  )}
+                    )}
 
-                  {/* 单独节点 - 按来源分组 */}
-                  {(outboundType === '' || outboundType === 'node') && filteredNodeGroups.length > 0 && (
-                    <Accordion
-                      selectionMode="multiple"
-                      defaultExpandedKeys={filteredNodeGroups.map(g => `node-${g.source}`)}
-                      className="p-0"
-                    >
-                      {filteredNodeGroups.map((group) => (
-                        <AccordionItem
-                          key={`node-${group.source}`}
-                          title={
-                            <div className="flex items-center gap-2">
-                              <Chip
-                                size="sm"
-                                color={group.source === 'manual' ? 'primary' : 'default'}
-                                variant="flat"
-                              >
-                                {group.source_name}
-                              </Chip>
-                              <span className="text-xs text-gray-500">{group.nodes.length} 个节点</span>
-                            </div>
-                          }
-                          classNames={{ content: "p-0" }}
-                        >
-                          <div className="space-y-1">
-                            {group.nodes.slice(0, 50).map((node) => (
-                              <div
-                                key={node.tag}
-                                className={`flex items-center justify-between p-2 hover:bg-default-100 rounded-lg cursor-pointer ${portFormData.outbound === node.tag ? 'bg-primary-100' : ''}`}
-                                onClick={() => selectOutbound(node.tag)}
-                              >
-                                <div className="flex items-center gap-2 flex-1 min-w-0">
-                                  {node.country_emoji && <span>{node.country_emoji}</span>}
-                                  <span className="text-sm truncate">{node.tag}</span>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                  <Chip size="sm" variant="flat">{node.type}</Chip>
-                                  {portFormData.outbound === node.tag && (
-                                    <Chip size="sm" color="primary">已选择</Chip>
-                                  )}
+                    {outboundType === 'node' && (
+                      <div className="space-y-2">
+                        {pagedNodes.map((node) => (
+                          <div
+                            key={node.tag}
+                            className={getSelectableItemClasses(portFormData.outbound === node.tag)}
+                            onClick={() => selectOutbound(node.tag)}
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="flex min-w-0 items-center gap-2.5">
+                                {node.country_emoji && <span className="text-base">{node.country_emoji}</span>}
+                                <div className="min-w-0">
+                                  <p className="truncate font-medium text-default-900">{node.tag}</p>
+                                  <p className="text-xs text-default-500">
+                                    {node.server} · {node.type}
+                                    <span className="ml-2 text-default-400">{node.source_name}</span>
+                                  </p>
                                 </div>
                               </div>
-                            ))}
-                            {group.nodes.length > 50 && (
-                              <p className="text-xs text-gray-500 text-center py-2">
-                                还有 {group.nodes.length - 50} 个节点，请使用搜索
-                              </p>
-                            )}
+                              {portFormData.outbound === node.tag && (
+                                <Chip size="sm" color="primary" variant="flat">已选</Chip>
+                              )}
+                            </div>
                           </div>
-                        </AccordionItem>
-                      ))}
-                    </Accordion>
-                  )}
-                </div>
-              </CardBody>
-            </Card>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
 
-            <div className="mt-2 pt-4 border-t border-divider">
-              <p className="text-sm font-medium mb-3">用户认证（可选）</p>
-              <div className="grid grid-cols-2 gap-4">
-                <Input
-                  label="用户名"
-                  placeholder="留空表示无需认证"
-                  value={portFormData.username}
-                  onChange={(e) => setPortFormData({ ...portFormData, username: e.target.value })}
-                />
-                <Input
-                  label="密码"
-                  type="password"
-                  placeholder="留空表示无需认证"
-                  value={portFormData.password}
-                  onChange={(e) => setPortFormData({ ...portFormData, password: e.target.value })}
-                />
+                {/* Pagination for nodes */}
+                {outboundType === 'node' && flatFilteredNodes.length > NODES_PER_PAGE && (
+                  <div className="flex items-center justify-between border-t border-divider pt-3">
+                    <p className="text-xs text-default-500">
+                      共 {flatFilteredNodes.length} 个节点
+                    </p>
+                    <Pagination
+                      size="sm"
+                      total={nodeTotalPages}
+                      page={safeNodePage}
+                      onChange={setNodePage}
+                      showControls
+                    />
+                  </div>
+                )}
               </div>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <span>启用</span>
-              <Switch
-                isSelected={portFormData.enabled}
-                onValueChange={(enabled) => setPortFormData({ ...portFormData, enabled })}
-              />
             </div>
           </ModalBody>
           <ModalFooter>
