@@ -8,6 +8,7 @@ import (
 
 	"github.com/xiaobei/singbox-manager/internal/api"
 	"github.com/xiaobei/singbox-manager/internal/daemon"
+	"github.com/xiaobei/singbox-manager/internal/kernel"
 	"github.com/xiaobei/singbox-manager/internal/logger"
 	"github.com/xiaobei/singbox-manager/internal/profile"
 )
@@ -61,6 +62,15 @@ func main() {
 	logger.Printf("数据目录: %s", dataDir)
 	logger.Printf("Web 端口: %d", port)
 
+	installed, err := kernel.EnsureBundledInstalled(dataDir)
+	if err != nil {
+		logger.Printf("安装内置 sing-box 失败: %v", err)
+		os.Exit(1)
+	}
+	if installed {
+		logger.Printf("已安装内置 sing-box %s", kernel.BundledVersion())
+	}
+
 	// 初始化 Profile 管理器
 	profileMgr, err := profile.NewManager(dataDir)
 	if err != nil {
@@ -70,8 +80,8 @@ func main() {
 	logger.Printf("当前 Profile: %s", profileMgr.GetActiveProfile())
 
 	// 初始化进程管理器
-	// sing-box 二进制文件路径固定为 dataDir/bin/sing-box
-	singboxPath := filepath.Join(dataDir, "bin", "sing-box")
+	// sing-box 二进制文件路径固定在 dataDir/bin 下
+	singboxPath := kernel.DefaultBinPath(dataDir)
 	// 配置文件放在当前 Profile 目录下
 	profileDir := profileMgr.GetProfileDir()
 	configPath := filepath.Join(profileDir, "generated", "config.json")
@@ -92,7 +102,11 @@ func main() {
 	}
 
 	// 创建 API 服务器
-	server := api.NewServer(profileMgr, processManager, launchdManager, systemdManager, execPath, port, version, swaggerEnabled)
+	server, err := api.NewServer(profileMgr, processManager, launchdManager, systemdManager, execPath, port, version, swaggerEnabled)
+	if err != nil {
+		logger.Printf("初始化 API 服务器失败: %v", err)
+		os.Exit(1)
+	}
 
 	if swaggerOut != "" {
 		if err := server.WriteOpenAPISpec(swaggerOut); err != nil {

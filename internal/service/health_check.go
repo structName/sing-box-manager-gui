@@ -41,13 +41,19 @@ func getRandomSpeedTestURL() string {
 	return speedTestURLs[rand.Intn(len(speedTestURLs))]
 }
 
-func getMixedProxyAddress(settings *storage.Settings) string {
-	host := "127.0.0.1"
-	if settings.LanProxyEnabled && settings.LanListenIP != "" && settings.LanListenIP != "0.0.0.0" {
-		host = settings.LanListenIP
+
+func (h *HealthCheckService) newClashAPIRequest(fullURL string) (*http.Request, error) {
+	req, err := http.NewRequest(http.MethodGet, fullURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建 Clash API 请求失败: %w", err)
 	}
 
-	return net.JoinHostPort(host, strconv.Itoa(settings.MixedPort))
+	settings := h.store.GetSettings()
+	if settings != nil && settings.ClashAPISecret != "" {
+		req.Header.Set("Authorization", "Bearer "+settings.ClashAPISecret)
+	}
+
+	return req, nil
 }
 
 // HealthCheckService 健康检测服务
@@ -204,6 +210,40 @@ func (h *HealthCheckService) CheckChain(chainID string) (*storage.ChainHealthSta
 	return status, nil
 }
 
+// findProxyPort 从 InboundPorts 中查找可用的代理端口
+// 优先选择绑定了指定出站的端口，否则返回任意可用的代理端口
+func (h *HealthCheckService) findProxyPort(preferOutbound string) (string, error) {
+	ports := h.store.GetInboundPorts()
+
+	var fallback *storage.InboundPort
+	for i := range ports {
+		p := &ports[i]
+		if !p.Enabled || (p.Type != "mixed" && p.Type != "socks") {
+			continue
+		}
+		if p.Outbound == preferOutbound {
+			listen := p.Listen
+			if listen == "" || listen == "0.0.0.0" {
+				listen = "127.0.0.1"
+			}
+			return net.JoinHostPort(listen, strconv.Itoa(p.Port)), nil
+		}
+		if fallback == nil {
+			fallback = p
+		}
+	}
+
+	if fallback != nil {
+		listen := fallback.Listen
+		if listen == "" || listen == "0.0.0.0" {
+			listen = "127.0.0.1"
+		}
+		return net.JoinHostPort(listen, strconv.Itoa(fallback.Port)), nil
+	}
+
+	return "", fmt.Errorf("未找到可用的代理端口，请在入站端口管理中添加 mixed 或 socks 类型的端口")
+}
+
 // CheckChainSpeed 测试链路下载速度
 // 通过代理下载文件测量带宽
 func (h *HealthCheckService) CheckChainSpeed(chainID string) (*storage.ChainSpeedResult, error) {
@@ -212,19 +252,18 @@ func (h *HealthCheckService) CheckChainSpeed(chainID string) (*storage.ChainSpee
 		return nil, fmt.Errorf("chain not found: %s", chainID)
 	}
 
-	settings := h.store.GetSettings()
-	mixedPort := settings.MixedPort
-	if mixedPort <= 0 {
-		return nil, fmt.Errorf("代理端口未配置")
+	// 从 InboundPorts 中查找代理端口，优先使用绑定了该链路的端口
+	proxyAddr, err := h.findProxyPort(chain.Name)
+	if err != nil {
+		return nil, err
 	}
 
 	// 测速配置
-	// 随机选择测速服务
 	speedTestURL := getRandomSpeedTestURL()
 	timeout := 30 * time.Second
 
 	// 创建通过代理的 HTTP 客户端
-	proxyDialer, err := proxy.SOCKS5("tcp", getMixedProxyAddress(settings), nil, proxy.Direct)
+	proxyDialer, err := proxy.SOCKS5("tcp", proxyAddr, nil, proxy.Direct)
 	if err != nil {
 		return nil, fmt.Errorf("创建代理失败: %w", err)
 	}
@@ -260,7 +299,6 @@ func (h *HealthCheckService) CheckChainSpeed(chainID string) (*storage.ChainSpee
 			if err == io.EOF {
 				break
 			}
-			// 超时或其他错误，使用已下载的数据计算速度
 			break
 		}
 	}
@@ -298,7 +336,12 @@ func (h *HealthCheckService) testViaClashAPI(port int, proxyName, testURL string
 		Timeout: timeout + 2*time.Second, // 额外留 2 秒给 API 响应
 	}
 
-	resp, err := client.Get(fullURL)
+	req, err := h.newClashAPIRequest(fullURL)
+	if err != nil {
+		return 0, err
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("Clash API 请求失败: %w", err)
 	}

@@ -15,10 +15,10 @@ type Profile struct {
 // InboundPort 入站端口配置
 type InboundPort struct {
 	ID       string       `json:"id"`
-	Name     string       `json:"name"`     // 端口名称，如 "家人专用"
-	Type     string       `json:"type"`     // mixed/http/socks
-	Listen   string       `json:"listen"`   // 监听地址，默认 127.0.0.1
-	Port     int          `json:"port"`     // 端口号
+	Name     string       `json:"name"`   // 端口名称，如 "家人专用"
+	Type     string       `json:"type"`   // mixed/http/socks
+	Listen   string       `json:"listen"` // 监听地址，默认 127.0.0.1
+	Port     int          `json:"port"`   // 端口号
 	Auth     *InboundAuth `json:"auth,omitempty"`
 	Outbound string       `json:"outbound"` // 关联的出站 tag
 	Enabled  bool         `json:"enabled"`
@@ -33,12 +33,12 @@ type InboundAuth struct {
 // ProxyChain 代理链路配置
 type ProxyChain struct {
 	ID           string             `json:"id"`
-	Name         string             `json:"name"`                     // 链路名称，如 "香港中转链"
-	Description  string             `json:"description"`              // 描述
-	Nodes        []string           `json:"nodes"`                    // 有序的节点 Tag 列表（兼容旧版）
-	ChainNodes   []ChainNode        `json:"chain_nodes,omitempty"`    // 节点副本列表
+	Name         string             `json:"name"`                  // 链路名称，如 "香港中转链"
+	Description  string             `json:"description"`           // 描述
+	Nodes        []string           `json:"nodes"`                 // 有序的节点 Tag 列表（兼容旧版）
+	ChainNodes   []ChainNode        `json:"chain_nodes,omitempty"` // 节点副本列表
 	Enabled      bool               `json:"enabled"`
-	HealthConfig *ChainHealthConfig `json:"health_config,omitempty"`  // 健康检测配置
+	HealthConfig *ChainHealthConfig `json:"health_config,omitempty"` // 健康检测配置
 }
 
 // ChainNode 链路节点副本引用
@@ -51,19 +51,19 @@ type ChainNode struct {
 // ChainHealthConfig 链路健康检测配置
 type ChainHealthConfig struct {
 	Enabled      bool   `json:"enabled"`
-	Interval     int    `json:"interval"`       // 检测间隔（秒），默认 300
-	Timeout      int    `json:"timeout"`        // 超时（秒），默认 10
-	URL          string `json:"url"`            // 测试 URL
-	AlertEnabled bool   `json:"alert_enabled"`  // 启用告警
-	AutoSwitch   bool   `json:"auto_switch"`    // 自动切换
+	Interval     int    `json:"interval"`      // 检测间隔（秒），默认 300
+	Timeout      int    `json:"timeout"`       // 超时（秒），默认 10
+	URL          string `json:"url"`           // 测试 URL
+	AlertEnabled bool   `json:"alert_enabled"` // 启用告警
+	AutoSwitch   bool   `json:"auto_switch"`   // 自动切换
 }
 
 // ChainHealthStatus 链路健康状态
 type ChainHealthStatus struct {
 	ChainID      string             `json:"chain_id"`
 	LastCheck    time.Time          `json:"last_check"`
-	Status       string             `json:"status"`        // "healthy" | "degraded" | "unhealthy"
-	Latency      int                `json:"latency"`       // 总延迟 (ms)
+	Status       string             `json:"status"`  // "healthy" | "degraded" | "unhealthy"
+	Latency      int                `json:"latency"` // 总延迟 (ms)
 	NodeStatuses []NodeHealthStatus `json:"node_statuses"`
 }
 
@@ -114,7 +114,7 @@ type Traffic struct {
 // Node 节点
 type Node struct {
 	Tag          string                 `json:"tag"`
-	Type         string                 `json:"type"`                    // shadowsocks/vmess/vless/trojan/hysteria2/tuic
+	Type         string                 `json:"type"` // shadowsocks/vmess/vless/trojan/hysteria2/tuic
 	Server       string                 `json:"server"`
 	ServerPort   int                    `json:"server_port"`
 	Extra        map[string]interface{} `json:"extra,omitempty"`         // 协议特定字段
@@ -176,7 +176,7 @@ type Rule struct {
 	Values   []string `json:"values"`    // 规则值列表
 	Outbound string   `json:"outbound"`  // 目标出站
 	Enabled  bool     `json:"enabled"`
-	Priority int      `json:"priority"`  // 优先级 (越小越优先)
+	Priority int      `json:"priority"` // 优先级 (越小越优先)
 }
 
 // RuleGroup 预设规则组
@@ -210,15 +210,20 @@ type Settings struct {
 	LanListenIP     string `json:"lan_listen_ip"`     // 局域网监听地址（默认 0.0.0.0）
 
 	// DNS 配置
-	ProxyDNS      string      `json:"proxy_dns"`               // 代理 DNS
-	DirectDNS     string      `json:"direct_dns"`              // 直连 DNS
-	Hosts         []HostEntry `json:"hosts,omitempty"`         // DNS hosts 映射
+	ProxyDNS      string      `json:"proxy_dns"`                // 代理 DNS
+	DirectDNS     string      `json:"direct_dns"`               // 直连 DNS
+	Hosts         []HostEntry `json:"hosts,omitempty"`          // DNS hosts 映射
 	FakeIPEnabled bool        `json:"fakeip_enabled,omitempty"` // 启用 FakeIP 模式
 
 	// 控制面板
-	WebPort      int    `json:"web_port"`       // 管理界面端口
-	ClashAPIPort int    `json:"clash_api_port"` // Clash API 端口
-	ClashUIPath  string `json:"clash_ui_path"`  // zashboard 路径
+	WebPort            int    `json:"web_port"`                       // 管理界面端口
+	ClashAPIPort       int    `json:"clash_api_port"`                 // Clash API 端口
+	ClashUIEnabled     bool   `json:"clash_ui_enabled"`               // 是否启用 zashboard
+	ClashUIPath        string `json:"clash_ui_path"`                  // zashboard 路径
+	ClashAPISecret     string `json:"clash_api_secret"`               // zashboard 鉴权密码
+	SessionTTLMinutes  int    `json:"session_ttl_minutes,omitempty"`  // Web 会话有效期（分钟）
+	AdminPasswordHash  string `json:"admin_password_hash,omitempty"`  // 管理面板密码哈希
+	AuthBootstrappedAt string `json:"auth_bootstrapped_at,omitempty"` // 管理面板密码初始化时间
 
 	// 漏网规则
 	FinalOutbound string `json:"final_outbound"` // 默认出站
@@ -243,14 +248,17 @@ func DefaultSettings() *Settings {
 		SingBoxPath:          "bin/sing-box",
 		ConfigPath:           "generated/config.json",
 		MixedPort:            2080,
-		TunEnabled:           true,
+		TunEnabled:           false,
 		LanProxyEnabled:      false,
 		LanListenIP:          "0.0.0.0",
 		ProxyDNS:             "https://1.1.1.1/dns-query",
 		DirectDNS:            "https://dns.alidns.com/dns-query",
 		WebPort:              9090,
 		ClashAPIPort:         9091,
+		ClashUIEnabled:       true,
 		ClashUIPath:          "zashboard",
+		ClashAPISecret:       mustNewZashboardSecret(),
+		SessionTTLMinutes:    10080,
 		FinalOutbound:        "Proxy",
 		RuleSetBaseURL:       "https://github.com/lyc8503/sing-box-rules/raw/rule-set-geosite",
 		AutoApply:            true, // 默认开启自动应用
@@ -267,18 +275,27 @@ func DefaultSettings() *Settings {
 	}
 }
 
+func mustNewZashboardSecret() string {
+	secret, err := NewZashboardSecret()
+	if err != nil {
+		panic(err)
+	}
+
+	return secret
+}
+
 // AppData 应用数据
 type AppData struct {
-	Subscriptions []Subscription  `json:"subscriptions"`
-	ManualNodes   []ManualNode    `json:"manual_nodes"`
-	Filters       []Filter        `json:"filters"`
-	Rules         []Rule          `json:"rules"`
-	RuleGroups    []RuleGroup     `json:"rule_groups"`
-	Settings      *Settings       `json:"settings"`
-	Profiles      []Profile       `json:"profiles,omitempty"`        // Profile 元数据列表
-	ActiveProfile string          `json:"active_profile,omitempty"`  // 当前激活的 Profile ID
-	InboundPorts  []InboundPort   `json:"inbound_ports,omitempty"`   // 自定义入站端口
-	ProxyChains   []ProxyChain    `json:"proxy_chains,omitempty"`    // 代理链路配置
+	Subscriptions []Subscription `json:"subscriptions"`
+	ManualNodes   []ManualNode   `json:"manual_nodes"`
+	Filters       []Filter       `json:"filters"`
+	Rules         []Rule         `json:"rules"`
+	RuleGroups    []RuleGroup    `json:"rule_groups"`
+	Settings      *Settings      `json:"settings"`
+	Profiles      []Profile      `json:"profiles,omitempty"`       // Profile 元数据列表
+	ActiveProfile string         `json:"active_profile,omitempty"` // 当前激活的 Profile ID
+	InboundPorts  []InboundPort  `json:"inbound_ports,omitempty"`  // 自定义入站端口
+	ProxyChains   []ProxyChain   `json:"proxy_chains,omitempty"`   // 代理链路配置
 }
 
 // DefaultRuleGroups 默认规则组
@@ -302,96 +319,96 @@ func DefaultRuleGroups() []RuleGroup {
 
 // CountryNames 国家代码到中文名称的映射
 var CountryNames = map[string]string{
-	"HK": "香港",
-	"TW": "台湾",
-	"JP": "日本",
-	"KR": "韩国",
-	"SG": "新加坡",
-	"US": "美国",
-	"GB": "英国",
-	"DE": "德国",
-	"FR": "法国",
-	"NL": "荷兰",
-	"AU": "澳大利亚",
-	"CA": "加拿大",
-	"RU": "俄罗斯",
-	"IN": "印度",
-	"BR": "巴西",
-	"AR": "阿根廷",
-	"TR": "土耳其",
-	"TH": "泰国",
-	"VN": "越南",
-	"MY": "马来西亚",
-	"PH": "菲律宾",
-	"ID": "印尼",
-	"AE": "阿联酋",
-	"ZA": "南非",
-	"CH": "瑞士",
-	"IT": "意大利",
-	"ES": "西班牙",
-	"SE": "瑞典",
-	"NO": "挪威",
-	"FI": "芬兰",
-	"DK": "丹麦",
-	"PL": "波兰",
-	"CZ": "捷克",
-	"AT": "奥地利",
-	"IE": "爱尔兰",
-	"PT": "葡萄牙",
-	"GR": "希腊",
-	"IL": "以色列",
-	"MX": "墨西哥",
-	"CL": "智利",
-	"CO": "哥伦比亚",
-	"PE": "秘鲁",
+	"HK":    "香港",
+	"TW":    "台湾",
+	"JP":    "日本",
+	"KR":    "韩国",
+	"SG":    "新加坡",
+	"US":    "美国",
+	"GB":    "英国",
+	"DE":    "德国",
+	"FR":    "法国",
+	"NL":    "荷兰",
+	"AU":    "澳大利亚",
+	"CA":    "加拿大",
+	"RU":    "俄罗斯",
+	"IN":    "印度",
+	"BR":    "巴西",
+	"AR":    "阿根廷",
+	"TR":    "土耳其",
+	"TH":    "泰国",
+	"VN":    "越南",
+	"MY":    "马来西亚",
+	"PH":    "菲律宾",
+	"ID":    "印尼",
+	"AE":    "阿联酋",
+	"ZA":    "南非",
+	"CH":    "瑞士",
+	"IT":    "意大利",
+	"ES":    "西班牙",
+	"SE":    "瑞典",
+	"NO":    "挪威",
+	"FI":    "芬兰",
+	"DK":    "丹麦",
+	"PL":    "波兰",
+	"CZ":    "捷克",
+	"AT":    "奥地利",
+	"IE":    "爱尔兰",
+	"PT":    "葡萄牙",
+	"GR":    "希腊",
+	"IL":    "以色列",
+	"MX":    "墨西哥",
+	"CL":    "智利",
+	"CO":    "哥伦比亚",
+	"PE":    "秘鲁",
 	"NZ":    "新西兰",
 	"OTHER": "其他",
 }
 
 // CountryEmojis 国家代码到 emoji 的映射
 var CountryEmojis = map[string]string{
-	"HK": "🇭🇰",
-	"TW": "🇹🇼",
-	"JP": "🇯🇵",
-	"KR": "🇰🇷",
-	"SG": "🇸🇬",
-	"US": "🇺🇸",
-	"GB": "🇬🇧",
-	"DE": "🇩🇪",
-	"FR": "🇫🇷",
-	"NL": "🇳🇱",
-	"AU": "🇦🇺",
-	"CA": "🇨🇦",
-	"RU": "🇷🇺",
-	"IN": "🇮🇳",
-	"BR": "🇧🇷",
-	"AR": "🇦🇷",
-	"TR": "🇹🇷",
-	"TH": "🇹🇭",
-	"VN": "🇻🇳",
-	"MY": "🇲🇾",
-	"PH": "🇵🇭",
-	"ID": "🇮🇩",
-	"AE": "🇦🇪",
-	"ZA": "🇿🇦",
-	"CH": "🇨🇭",
-	"IT": "🇮🇹",
-	"ES": "🇪🇸",
-	"SE": "🇸🇪",
-	"NO": "🇳🇴",
-	"FI": "🇫🇮",
-	"DK": "🇩🇰",
-	"PL": "🇵🇱",
-	"CZ": "🇨🇿",
-	"AT": "🇦🇹",
-	"IE": "🇮🇪",
-	"PT": "🇵🇹",
-	"GR": "🇬🇷",
-	"IL": "🇮🇱",
-	"MX": "🇲🇽",
-	"CL": "🇨🇱",
-	"CO": "🇨🇴",
-	"PE": "🇵🇪",
+	"HK":    "🇭🇰",
+	"TW":    "🇹🇼",
+	"JP":    "🇯🇵",
+	"KR":    "🇰🇷",
+	"SG":    "🇸🇬",
+	"US":    "🇺🇸",
+	"GB":    "🇬🇧",
+	"DE":    "🇩🇪",
+	"FR":    "🇫🇷",
+	"NL":    "🇳🇱",
+	"AU":    "🇦🇺",
+	"CA":    "🇨🇦",
+	"RU":    "🇷🇺",
+	"IN":    "🇮🇳",
+	"BR":    "🇧🇷",
+	"AR":    "🇦🇷",
+	"TR":    "🇹🇷",
+	"TH":    "🇹🇭",
+	"VN":    "🇻🇳",
+	"MY":    "🇲🇾",
+	"PH":    "🇵🇭",
+	"ID":    "🇮🇩",
+	"AE":    "🇦🇪",
+	"ZA":    "🇿🇦",
+	"CH":    "🇨🇭",
+	"IT":    "🇮🇹",
+	"ES":    "🇪🇸",
+	"SE":    "🇸🇪",
+	"NO":    "🇳🇴",
+	"FI":    "🇫🇮",
+	"DK":    "🇩🇰",
+	"PL":    "🇵🇱",
+	"CZ":    "🇨🇿",
+	"AT":    "🇦🇹",
+	"IE":    "🇮🇪",
+	"PT":    "🇵🇹",
+	"GR":    "🇬🇷",
+	"IL":    "🇮🇱",
+	"MX":    "🇲🇽",
+	"CL":    "🇨🇱",
+	"CO":    "🇨🇴",
+	"PE":    "🇵🇪",
 	"NZ":    "🇳🇿",
 	"OTHER": "🌐",
 }

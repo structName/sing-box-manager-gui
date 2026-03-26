@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 )
 
@@ -145,10 +144,7 @@ func (m *Manager) extractTarGz(archivePath, destDir string) (string, error) {
 	tr := tar.NewReader(gzr)
 
 	var binaryPath string
-	binaryName := "sing-box"
-	if runtime.GOOS == "windows" {
-		binaryName = "sing-box.exe"
-	}
+	binaryName := defaultBinaryName()
 
 	for {
 		header, err := tr.Next()
@@ -192,10 +188,7 @@ func (m *Manager) extractZip(archivePath, destDir string) (string, error) {
 	defer r.Close()
 
 	var binaryPath string
-	binaryName := "sing-box"
-	if runtime.GOOS == "windows" {
-		binaryName = "sing-box.exe"
-	}
+	binaryName := defaultBinaryName()
 
 	for _, f := range r.File {
 		if strings.HasSuffix(f.Name, binaryName) {

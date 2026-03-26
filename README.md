@@ -58,7 +58,7 @@ A modern web-based management panel for [sing-box](https://github.com/SagerNet/s
   - Background daemon mode
 
 - **Kernel Management**
-  - Auto-download sing-box binary
+  - Built-in stable sing-box binary, with optional online update
   - Version checking and updates
   - Multi-platform support
 
@@ -146,7 +146,7 @@ After starting, open `http://localhost:9090` in your browser.
 
 - Go 1.21+ (for building)
 - Node.js 18+ (for building frontend)
-- sing-box (auto-downloaded or manual installation)
+- sing-box (built-in stable version with optional online update)
 
 ### License
 
@@ -208,7 +208,7 @@ MIT License
   - 后台守护进程模式
 
 - **内核管理**
-  - 自动下载 sing-box 二进制文件
+  - 内置稳定版 sing-box 二进制文件，并保留在线更新能力
   - 版本检查和更新
   - 多平台支持
 
@@ -296,7 +296,7 @@ cd singbox-manager
 
 - Go 1.21+（用于构建）
 - Node.js 18+（用于构建前端）
-- sing-box（可自动下载或手动安装）
+- sing-box（内置稳定版，并支持可选的在线更新）
 
 ### 许可证
 
