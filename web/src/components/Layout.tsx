@@ -1,14 +1,15 @@
 import { useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Globe, FileText, Settings, Activity, ScrollText, Layers, Link2, Network, ListTodo, Tag } from 'lucide-react';
+import { LayoutDashboard, Globe, Settings, Activity, ScrollText, Layers, Link2, Network, ListTodo, Tag } from 'lucide-react';
 import { useStore } from '../store';
+import { buildZashboardPanelUrl } from '../utils/zashboard';
+import { useAuthStore } from '../store/authStore';
 
 const menuItems = [
   { path: '/', icon: LayoutDashboard, label: '仪表盘' },
   { path: '/subscriptions', icon: Globe, label: '节点' },
   { path: '/proxy-chains', icon: Link2, label: '链路' },
   { path: '/inbound-ports', icon: Network, label: '入站' },
-  { path: '/rules', icon: FileText, label: '规则' },
   { path: '/profiles', icon: Layers, label: '配置方案' },
   { path: '/tags', icon: Tag, label: '标签' },
   { path: '/tasks', icon: ListTodo, label: '任务管理' },
@@ -23,17 +24,20 @@ interface LayoutProps {
 export default function Layout({ children }: LayoutProps) {
   const location = useLocation();
   const { settings, fetchSettings, serviceStatus, fetchServiceStatus } = useStore();
+  const logout = useAuthStore((state) => state.logout);
 
   useEffect(() => {
     if (!settings) {
-      fetchSettings();
+      void fetchSettings();
     }
     if (!serviceStatus) {
-      fetchServiceStatus();
+      void fetchServiceStatus();
     }
-  }, []);
+  }, [fetchServiceStatus, fetchSettings, serviceStatus, settings]);
 
   const clashApiPort = settings?.clash_api_port || 9091;
+  const clashApiSecret = settings?.clash_api_secret || '';
+  const clashUIEnabled = settings?.clash_ui_enabled ?? true;
 
   return (
     <div className="flex min-h-screen bg-gray-50 dark:bg-gray-900">
@@ -70,14 +74,27 @@ export default function Layout({ children }: LayoutProps) {
 
         {/* 底部链接 */}
         <div className="sticky bottom-4 left-4 right-4 mt-auto pt-4">
-          <a
-            href={`http://127.0.0.1:${clashApiPort}/ui/`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center justify-center gap-2 px-4 py-2 text-sm text-gray-500 dark:text-gray-400 hover:text-primary transition-colors"
+          {clashUIEnabled ? (
+            <a
+              href={buildZashboardPanelUrl(clashApiPort, clashApiSecret)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center justify-center gap-2 px-4 py-2 text-sm text-gray-500 dark:text-gray-400 hover:text-primary transition-colors"
+            >
+              打开 Zashboard
+            </a>
+          ) : (
+            <p className="px-4 py-2 text-center text-sm text-gray-400 dark:text-gray-500">
+              Zashboard 已关闭
+            </p>
+          )}
+          <button
+            type="button"
+            onClick={() => void logout()}
+            className="mt-2 flex w-full items-center justify-center gap-2 px-4 py-2 text-sm text-gray-500 transition-colors hover:text-primary dark:text-gray-400"
           >
-            打开 Zashboard
-          </a>
+            退出登录
+          </button>
           {serviceStatus?.sbm_version && (
             <p className="text-center text-xs text-gray-400 dark:text-gray-500 mt-2">
               v{serviceStatus.sbm_version}

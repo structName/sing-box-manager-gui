@@ -13,16 +13,12 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/crypto/bcrypt"
 )
 
 const (
-	CookieName         = "sbm_session"
-	ConfigFileName     = "auth.json"
-	DefaultSessionTTL  = 7 * 24 * time.Hour
-	MinPasswordLength  = 8
-	signingKeySize     = 32
+	ConfigFileName    = "auth.json"
+	DefaultSessionTTL = 7 * 24 * time.Hour
+	signingKeySize    = 32
 )
 
 var (
@@ -89,7 +85,7 @@ func (m *Manager) Bootstrap(password string, now time.Time) error {
 		return err
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := HashPassword(password)
 	if err != nil {
 		return fmt.Errorf("hash password: %w", err)
 	}
@@ -101,7 +97,7 @@ func (m *Manager) Bootstrap(password string, now time.Time) error {
 		return ErrAlreadyBootstrapped
 	}
 
-	m.config.PasswordHash = string(hash)
+	m.config.PasswordHash = hash
 	m.config.BootstrappedAt = now.UTC().Format(time.RFC3339)
 	return m.saveLocked()
 }
@@ -115,7 +111,7 @@ func (m *Manager) VerifyPassword(password string) error {
 		return ErrBootstrapRequired
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)); err != nil {
+	if err := CheckPassword(hash, password); err != nil {
 		return ErrInvalidCredentials
 	}
 
@@ -250,8 +246,8 @@ func (m *Manager) saveLocked() error {
 
 func validatePassword(password string) error {
 	trimmed := strings.TrimSpace(password)
-	if len(trimmed) < MinPasswordLength {
-		return fmt.Errorf("password must be at least %d characters", MinPasswordLength)
+	if err := ValidatePassword(trimmed); err != nil {
+		return err
 	}
 
 	return nil

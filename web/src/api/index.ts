@@ -3,7 +3,33 @@ import axios from 'axios';
 const api = axios.create({
   baseURL: '/api',
   timeout: 30000,
+  withCredentials: true,
 });
+
+let responseInterceptorId: number | null = null;
+
+export function registerAuthErrorHandlers(handlers: {
+  onUnauthorized: () => void;
+  onBootstrapRequired: () => void;
+}) {
+  if (responseInterceptorId !== null) {
+    api.interceptors.response.eject(responseInterceptorId);
+  }
+
+  responseInterceptorId = api.interceptors.response.use(
+    (response) => response,
+    (error) => {
+      const status = error?.response?.status;
+      if (status === 401) {
+        handlers.onUnauthorized();
+      }
+      if (status === 428) {
+        handlers.onBootstrapRequired();
+      }
+      return Promise.reject(error);
+    },
+  );
+}
 
 // 订阅 API
 export const subscriptionApi = {
@@ -22,26 +48,6 @@ export const filterApi = {
   add: (data: any) => api.post('/filters', data),
   update: (id: string, data: any) => api.put(`/filters/${id}`, data),
   delete: (id: string) => api.delete(`/filters/${id}`),
-};
-
-// 规则 API
-export const ruleApi = {
-  getAll: () => api.get('/rules'),
-  add: (data: any) => api.post('/rules', data),
-  update: (id: string, data: any) => api.put(`/rules/${id}`, data),
-  delete: (id: string) => api.delete(`/rules/${id}`),
-};
-
-// 规则组 API
-export const ruleGroupApi = {
-  getAll: () => api.get('/rule-groups'),
-  update: (id: string, data: any) => api.put(`/rule-groups/${id}`, data),
-};
-
-// 规则集验证 API
-export const ruleSetApi = {
-  validate: (type: 'geosite' | 'geoip', name: string) =>
-    api.get('/ruleset/validate', { params: { type, name } }),
 };
 
 // 设置 API
@@ -131,7 +137,8 @@ export const nodeApi = {
   getAll: () => api.get('/nodes'),
   getGrouped: () => api.get('/nodes/grouped'),
   getCountries: () => api.get('/nodes/countries'),
-  getByCountry: (code: string) => api.get(`/nodes/country/${code}`),
+  getByCountry: (code: string, limit?: number, offset?: number) =>
+    api.get(`/nodes/country/${code}`, { params: { limit, offset } }),
   parse: (url: string) => api.post('/nodes/parse', { url }),
   // 获取所有节点的延迟（从数据库）
   getDelays: () => api.get('/nodes/delays'),
@@ -139,6 +146,9 @@ export const nodeApi = {
   testDelay: (tag: string) => api.post(`/nodes/${encodeURIComponent(tag)}/delay`),
   // 批量刷新所有节点延迟
   refreshAllDelays: () => api.post('/nodes/delays/refresh'),
+  // 测试未保存节点的连通性
+  testUnsaved: (node: { type: string; server: string; server_port: number; tag?: string; extra?: any; link?: string }) =>
+    api.post('/nodes/test-unsaved', node),
 };
 
 // 手动节点 API

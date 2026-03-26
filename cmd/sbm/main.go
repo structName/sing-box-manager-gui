@@ -102,7 +102,11 @@ func main() {
 	}
 
 	// 创建 API 服务器
-	server := api.NewServer(profileMgr, processManager, launchdManager, systemdManager, execPath, port, version, swaggerEnabled)
+	server, err := api.NewServer(profileMgr, processManager, launchdManager, systemdManager, execPath, port, version, swaggerEnabled)
+	if err != nil {
+		logger.Printf("初始化 API 服务器失败: %v", err)
+		os.Exit(1)
+	}
 
 	if swaggerOut != "" {
 		if err := server.WriteOpenAPISpec(swaggerOut); err != nil {

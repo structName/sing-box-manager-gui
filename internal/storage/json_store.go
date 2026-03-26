@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -71,9 +72,13 @@ func (s *JSONStore) load() error {
 		return fmt.Errorf("解析数据文件失败: %w", err)
 	}
 
+	needSave := false
+
 	// 确保 Settings 不为空
 	if s.data.Settings == nil {
 		s.data.Settings = DefaultSettings()
+	} else {
+		migrateLegacyZashboardSettings(data, s.data.Settings, &needSave)
 	}
 
 	// 确保 RuleGroups 不为空
@@ -82,7 +87,6 @@ func (s *JSONStore) load() error {
 	}
 
 	// 迁移旧的路径格式（移除多余的 data/ 前缀）
-	needSave := false
 	if s.data.Settings.SingBoxPath == "data/bin/sing-box" {
 		s.data.Settings.SingBoxPath = "bin/sing-box"
 		needSave = true
@@ -336,8 +340,48 @@ func (s *JSONStore) UpdateSettings(settings *Settings) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.data.Settings = settings
+	merged := *settings
+	if s.data.Settings != nil {
+		preserveAuthenticationSettings(s.data.Settings, &merged)
+	}
+	if merged.SessionTTLMinutes <= 0 {
+		merged.SessionTTLMinutes = DefaultSettings().SessionTTLMinutes
+	}
+
+	s.data.Settings = &merged
 	return s.saveInternal()
+}
+
+func preserveAuthenticationSettings(current *Settings, next *Settings) {
+	if next.ClashAPISecret == "" {
+		next.ClashAPISecret = current.ClashAPISecret
+	}
+	if next.AdminPasswordHash == "" {
+		next.AdminPasswordHash = current.AdminPasswordHash
+	}
+	if next.SessionTTLMinutes <= 0 {
+		next.SessionTTLMinutes = current.SessionTTLMinutes
+	}
+	if next.AuthBootstrappedAt == "" {
+		next.AuthBootstrappedAt = current.AuthBootstrappedAt
+	}
+}
+
+func migrateLegacyZashboardSettings(rawData []byte, settings *Settings, needSave *bool) {
+	if settings.ClashUIPath == "" {
+		settings.ClashUIPath = DefaultSettings().ClashUIPath
+		*needSave = true
+	}
+
+	if settings.ClashAPISecret == "" {
+		settings.ClashAPISecret = mustNewZashboardSecret()
+		*needSave = true
+	}
+
+	if !bytes.Contains(rawData, []byte(`"clash_ui_enabled"`)) {
+		settings.ClashUIEnabled = true
+		*needSave = true
+	}
 }
 
 // ==================== 手动节点操作 ====================
@@ -463,18 +507,18 @@ func (s *JSONStore) GetNodesGrouped() []NodeGroup {
 	return groups
 }
 
-// GetNodesByCountry 按国家获取节点
-func (s *JSONStore) GetNodesByCountry(countryCode string) []Node {
+// GetNodesByCountry 按国家获取节点，支持分页（limit<=0 表示不分页）
+func (s *JSONStore) GetNodesByCountry(countryCode string, limit, offset int) ([]Node, int) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var nodes []Node
+	var all []Node
 	// 订阅节点
 	for _, sub := range s.data.Subscriptions {
 		if sub.Enabled {
 			for _, node := range sub.Nodes {
 				if node.Country == countryCode {
-					nodes = append(nodes, node)
+					all = append(all, node)
 				}
 			}
 		}
@@ -482,10 +526,23 @@ func (s *JSONStore) GetNodesByCountry(countryCode string) []Node {
 	// 手动节点
 	for _, mn := range s.data.ManualNodes {
 		if mn.Enabled && mn.Node.Country == countryCode {
-			nodes = append(nodes, mn.Node)
+			all = append(all, mn.Node)
 		}
 	}
-	return nodes
+
+	total := len(all)
+	if limit <= 0 {
+		return all, total
+	}
+
+	if offset >= total {
+		return nil, total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return all[offset:end], total
 }
 
 // GetCountryGroups 获取所有国家节点分组

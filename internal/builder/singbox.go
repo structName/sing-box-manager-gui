@@ -6,10 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 
-	"github.com/xiaobei/singbox-manager/internal/rulesets"
 	"github.com/xiaobei/singbox-manager/internal/storage"
 )
 
@@ -100,7 +98,6 @@ type DomainResolver struct {
 // RouteConfig 路由配置
 type RouteConfig struct {
 	Rules                 []RouteRule     `json:"rules,omitempty"`
-	RuleSet               []RuleSet       `json:"rule_set,omitempty"`
 	Final                 string          `json:"final,omitempty"`
 	AutoDetectInterface   bool            `json:"auto_detect_interface,omitempty"`
 	DefaultDomainResolver *DomainResolver `json:"default_domain_resolver,omitempty"`
@@ -108,16 +105,6 @@ type RouteConfig struct {
 
 // RouteRule 路由规则
 type RouteRule map[string]interface{}
-
-// RuleSet 规则集
-type RuleSet struct {
-	Tag            string `json:"tag"`
-	Type           string `json:"type"`
-	Format         string `json:"format"`
-	Path           string `json:"path,omitempty"`
-	URL            string `json:"url,omitempty"`
-	DownloadDetour string `json:"download_detour,omitempty"`
-}
 
 // ExperimentalConfig 实验性配置
 type ExperimentalConfig struct {
@@ -146,21 +133,17 @@ type ConfigBuilder struct {
 	settings     *storage.Settings
 	nodes        []storage.Node
 	filters      []storage.Filter
-	rules        []storage.Rule
-	ruleGroups   []storage.RuleGroup
 	inboundPorts []storage.InboundPort
 	proxyChains  []storage.ProxyChain
 	dataDir      string // 数据目录路径
 }
 
 // NewConfigBuilder 创建配置生成器
-func NewConfigBuilder(settings *storage.Settings, nodes []storage.Node, filters []storage.Filter, rules []storage.Rule, ruleGroups []storage.RuleGroup, inboundPorts []storage.InboundPort, proxyChains []storage.ProxyChain) *ConfigBuilder {
+func NewConfigBuilder(settings *storage.Settings, nodes []storage.Node, filters []storage.Filter, inboundPorts []storage.InboundPort, proxyChains []storage.ProxyChain) *ConfigBuilder {
 	return &ConfigBuilder{
 		settings:     settings,
 		nodes:        nodes,
 		filters:      filters,
-		rules:        rules,
-		ruleGroups:   ruleGroups,
 		inboundPorts: inboundPorts,
 		proxyChains:  proxyChains,
 	}
@@ -171,47 +154,9 @@ func (b *ConfigBuilder) SetDataDir(dataDir string) {
 	b.dataDir = dataDir
 }
 
-// buildRuleSetURL 构建规则集 URL（支持 GitHub 代理）
-func (b *ConfigBuilder) buildRuleSetURL(originalURL string) string {
-	if b.settings.GithubProxy != "" {
-		return b.settings.GithubProxy + originalURL
-	}
-	return originalURL
-}
-
-func (b *ConfigBuilder) buildRuleSet(ruleType, name string) (RuleSet, error) {
-	tag := fmt.Sprintf("%s-%s", ruleType, name)
-	if rulesets.Has(ruleType, name) {
-		path, err := rulesets.Materialize(b.dataDir, ruleType, name)
-		if err != nil {
-			return RuleSet{}, err
-		}
-
-		return RuleSet{
-			Tag:    tag,
-			Type:   "local",
-			Format: "binary",
-			Path:   path,
-		}, nil
-	}
-
-	return RuleSet{
-		Tag:            tag,
-		Type:           "remote",
-		Format:         "binary",
-		URL:            b.buildRuleSetURL(rulesets.RemoteURL(b.settings.RuleSetBaseURL, ruleType, name)),
-		DownloadDetour: "DIRECT",
-	}, nil
-}
-
 // Build 构建 sing-box 配置
 func (b *ConfigBuilder) Build() (*SingBoxConfig, error) {
 	outbounds, err := b.buildOutbounds()
-	if err != nil {
-		return nil, err
-	}
-
-	route, err := b.buildRoute()
 	if err != nil {
 		return nil, err
 	}
@@ -222,7 +167,7 @@ func (b *ConfigBuilder) Build() (*SingBoxConfig, error) {
 		NTP:          b.buildNTP(),
 		Inbounds:     b.buildInbounds(),
 		Outbounds:    outbounds,
-		Route:        route,
+		Route:        b.buildRoute(),
 		Experimental: b.buildExperimental(), // 始终启用，FakeIP 需要 cache_file
 	}
 
@@ -309,17 +254,7 @@ func (b *ConfigBuilder) buildDNS() *DNSConfig {
 	}
 
 	// 基础 DNS 规则
-	rules := []DNSRule{
-		{
-			RuleSet: []string{"geosite-category-ads-all"},
-			Action:  "reject",
-		},
-		{
-			RuleSet: []string{"geosite-geolocation-cn"},
-			Server:  "dns_direct",
-			Action:  "route",
-		},
-	}
+	var rules []DNSRule
 
 	// 如果启用 FakeIP
 	if b.settings.FakeIPEnabled {
@@ -407,25 +342,7 @@ func (b *ConfigBuilder) buildNTP() *NTPConfig {
 
 // buildInbounds 构建入站配置
 func (b *ConfigBuilder) buildInbounds() []Inbound {
-	listen := "127.0.0.1"
-	if b.settings.LanProxyEnabled {
-		if b.settings.LanListenIP != "" {
-			listen = b.settings.LanListenIP
-		} else {
-			listen = "0.0.0.0"
-		}
-	}
-
-	inbounds := []Inbound{
-		{
-			Type:                     "mixed",
-			Tag:                      "mixed-in",
-			Listen:                   listen,
-			ListenPort:               b.settings.MixedPort,
-			Sniff:                    true,
-			SniffOverrideDestination: true,
-		},
-	}
+	var inbounds []Inbound
 
 	if b.settings.TunEnabled {
 		inbounds = append(inbounds, Inbound{
@@ -440,7 +357,7 @@ func (b *ConfigBuilder) buildInbounds() []Inbound {
 		})
 	}
 
-	// 添加自定义入站端口
+	// 所有入站端口统一由多端口管理
 	for _, port := range b.inboundPorts {
 		if !port.Enabled {
 			continue
@@ -455,7 +372,6 @@ func (b *ConfigBuilder) buildInbounds() []Inbound {
 			SniffOverrideDestination: true,
 		}
 
-		// 如果有认证配置，添加用户
 		if port.Auth != nil && port.Auth.Username != "" {
 			inbound.Users = []InboundUser{
 				{
@@ -606,7 +522,7 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 				group["tolerance"] = filter.URLTestConfig.Tolerance
 			} else {
 				group["url"] = "https://www.gstatic.com/generate_204"
-				group["interval"] = "5m"
+				group["interval"] = "1h"
 				group["tolerance"] = 50
 			}
 		}
@@ -636,14 +552,14 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 		countryGroupTags = append(countryGroupTags, groupTag)
 
 		// 创建自动选择分组
-		outbounds = append(outbounds, Outbound{
-			"tag":       groupTag,
-			"type":      "urltest",
-			"outbounds": nodes,
-			"url":       "https://www.gstatic.com/generate_204",
-			"interval":  "5m",
-			"tolerance": 50,
-		})
+			outbounds = append(outbounds, Outbound{
+				"tag":       groupTag,
+				"type":      "urltest",
+				"outbounds": nodes,
+				"url":       "https://www.gstatic.com/generate_204",
+				"interval":  "30m",
+				"tolerance": 50,
+			})
 	}
 
 	// 创建自动选择组（所有节点）
@@ -653,7 +569,7 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 			"type":      "urltest",
 			"outbounds": allNodeTags,
 			"url":       "https://www.gstatic.com/generate_204",
-			"interval":  "5m",
+			"interval":  "30m",
 			"tolerance": 50,
 		})
 	}
@@ -710,38 +626,6 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 		"outbounds": proxyOutbounds,
 		"default":   proxyDefault,
 	})
-
-	// 为启用的规则组创建选择器
-	for _, rg := range b.ruleGroups {
-		if !rg.Enabled {
-			continue
-		}
-
-		var selectorOutbounds []string
-
-		// 根据规则组的默认出站类型决定可选项
-		if rg.Outbound == "DIRECT" || rg.Outbound == "REJECT" {
-			// 直连/拦截规则组：只提供基础选项
-			selectorOutbounds = []string{"DIRECT", "REJECT", "Proxy"}
-		} else {
-			// 代理规则组：提供完整选项（但不包含单节点）
-			selectorOutbounds = []string{"Proxy", "DIRECT", "REJECT"}
-			// 只有在有节点时才添加 Auto
-			if len(allNodeTags) > 0 {
-				selectorOutbounds = append(selectorOutbounds, "Auto")
-			}
-			selectorOutbounds = append(selectorOutbounds, countryGroupTags...) // 添加国家分组
-			selectorOutbounds = append(selectorOutbounds, filterGroupTags...)
-			selectorOutbounds = append(selectorOutbounds, chainGroupTags...) // 添加链路分组
-		}
-
-		outbounds = append(outbounds, Outbound{
-			"tag":       rg.Name,
-			"type":      "selector",
-			"outbounds": selectorOutbounds,
-			"default":   rg.Outbound,
-		})
-	}
 
 	// 创建漏网规则选择器
 	fallbackOutbounds := []string{"Proxy", "DIRECT"}
@@ -972,7 +856,7 @@ func (b *ConfigBuilder) matchFilter(node storage.Node, filter storage.Filter) bo
 }
 
 // buildRoute 构建路由配置
-func (b *ConfigBuilder) buildRoute() (*RouteConfig, error) {
+func (b *ConfigBuilder) buildRoute() *RouteConfig {
 	route := &RouteConfig{
 		AutoDetectInterface: true,
 		Final:               "Final",
@@ -982,73 +866,6 @@ func (b *ConfigBuilder) buildRoute() (*RouteConfig, error) {
 			RewriteTTL: 60,
 		},
 	}
-
-	// 构建规则集
-	ruleSetMap := make(map[string]bool)
-	var ruleSets []RuleSet
-
-	// 从规则组收集需要的规则集
-	for _, rg := range b.ruleGroups {
-		if !rg.Enabled {
-			continue
-		}
-		for _, sr := range rg.SiteRules {
-			tag := fmt.Sprintf("geosite-%s", sr)
-			if !ruleSetMap[tag] {
-				ruleSet, err := b.buildRuleSet("geosite", sr)
-				if err != nil {
-					return nil, err
-				}
-				ruleSetMap[tag] = true
-				ruleSets = append(ruleSets, ruleSet)
-			}
-		}
-		for _, ir := range rg.IPRules {
-			tag := fmt.Sprintf("geoip-%s", ir)
-			if !ruleSetMap[tag] {
-				ruleSet, err := b.buildRuleSet("geoip", ir)
-				if err != nil {
-					return nil, err
-				}
-				ruleSetMap[tag] = true
-				ruleSets = append(ruleSets, ruleSet)
-			}
-		}
-	}
-
-	// 从自定义规则收集需要的规则集
-	for _, rule := range b.rules {
-		if !rule.Enabled {
-			continue
-		}
-		if rule.RuleType == "geosite" {
-			for _, v := range rule.Values {
-				tag := fmt.Sprintf("geosite-%s", v)
-				if !ruleSetMap[tag] {
-					ruleSet, err := b.buildRuleSet("geosite", v)
-					if err != nil {
-						return nil, err
-					}
-					ruleSetMap[tag] = true
-					ruleSets = append(ruleSets, ruleSet)
-				}
-			}
-		} else if rule.RuleType == "geoip" {
-			for _, v := range rule.Values {
-				tag := fmt.Sprintf("geoip-%s", v)
-				if !ruleSetMap[tag] {
-					ruleSet, err := b.buildRuleSet("geoip", v)
-					if err != nil {
-						return nil, err
-					}
-					ruleSetMap[tag] = true
-					ruleSets = append(ruleSets, ruleSet)
-				}
-			}
-		}
-	}
-
-	route.RuleSet = ruleSets
 
 	// 构建路由规则
 	var rules []RouteRule
@@ -1096,102 +913,21 @@ func (b *ConfigBuilder) buildRoute() (*RouteConfig, error) {
 			continue
 		}
 
+		outbound := port.Outbound
+		// 国家代码（如 "JP"）需要映射为 outbound tag（如 "🇯🇵 日本"）
+		if _, isCountry := storage.CountryEmojis[outbound]; isCountry {
+			outbound = fmt.Sprintf("%s %s", storage.GetCountryEmoji(outbound), storage.GetCountryName(outbound))
+		}
+
 		rules = append(rules, RouteRule{
 			"inbound":  []string{fmt.Sprintf("custom-%s", port.ID)},
-			"outbound": port.Outbound,
+			"outbound": outbound,
 		})
-	}
-
-	// 按优先级排序自定义规则
-	sortedRules := make([]storage.Rule, len(b.rules))
-	copy(sortedRules, b.rules)
-	sort.Slice(sortedRules, func(i, j int) bool {
-		return sortedRules[i].Priority < sortedRules[j].Priority
-	})
-
-	// 添加自定义规则
-	for _, rule := range sortedRules {
-		if !rule.Enabled {
-			continue
-		}
-
-		routeRule := RouteRule{
-			"outbound": rule.Outbound,
-		}
-
-		switch rule.RuleType {
-		case "domain_suffix":
-			routeRule["domain_suffix"] = rule.Values
-		case "domain_keyword":
-			routeRule["domain_keyword"] = rule.Values
-		case "domain":
-			routeRule["domain"] = rule.Values
-		case "ip_cidr":
-			routeRule["ip_cidr"] = rule.Values
-		case "port":
-			// 将端口字符串转换为整数
-			var ports []uint16
-			for _, v := range rule.Values {
-				if port, err := strconv.ParseUint(v, 10, 16); err == nil {
-					ports = append(ports, uint16(port))
-				}
-			}
-			if len(ports) == 1 {
-				routeRule["port"] = ports[0]
-			} else if len(ports) > 1 {
-				routeRule["port"] = ports
-			}
-		case "geosite":
-			var tags []string
-			for _, v := range rule.Values {
-				tags = append(tags, fmt.Sprintf("geosite-%s", v))
-			}
-			routeRule["rule_set"] = tags
-		case "geoip":
-			var tags []string
-			for _, v := range rule.Values {
-				tags = append(tags, fmt.Sprintf("geoip-%s", v))
-			}
-			routeRule["rule_set"] = tags
-		}
-
-		rules = append(rules, routeRule)
-	}
-
-	// 添加规则组的路由规则
-	for _, rg := range b.ruleGroups {
-		if !rg.Enabled {
-			continue
-		}
-
-		// Site 规则
-		if len(rg.SiteRules) > 0 {
-			var tags []string
-			for _, sr := range rg.SiteRules {
-				tags = append(tags, fmt.Sprintf("geosite-%s", sr))
-			}
-			rules = append(rules, RouteRule{
-				"rule_set": tags,
-				"outbound": rg.Name,
-			})
-		}
-
-		// IP 规则
-		if len(rg.IPRules) > 0 {
-			var tags []string
-			for _, ir := range rg.IPRules {
-				tags = append(tags, fmt.Sprintf("geoip-%s", ir))
-			}
-			rules = append(rules, RouteRule{
-				"rule_set": tags,
-				"outbound": rg.Name,
-			})
-		}
 	}
 
 	route.Rules = rules
 
-	return route, nil
+	return route
 }
 
 // buildExperimental 构建实验性配置
@@ -1214,10 +950,15 @@ func (b *ConfigBuilder) buildExperimental() *ExperimentalConfig {
 	// 如果启用了 Clash API，添加配置
 	if b.settings.ClashAPIPort > 0 {
 		exp.ClashAPI = &ClashAPIConfig{
-			ExternalController:    fmt.Sprintf("127.0.0.1:%d", b.settings.ClashAPIPort),
-			ExternalUI:            b.settings.ClashUIPath,
-			ExternalUIDownloadURL: "https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip",
-			DefaultMode:           "rule",
+			ExternalController: fmt.Sprintf("127.0.0.1:%d", b.settings.ClashAPIPort),
+			DefaultMode:        "rule",
+		}
+		if b.settings.ClashUIEnabled {
+			exp.ClashAPI.ExternalUI = b.settings.ClashUIPath
+			exp.ClashAPI.ExternalUIDownloadURL = "https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip"
+		}
+		if b.settings.ClashAPISecret != "" {
+			exp.ClashAPI.Secret = b.settings.ClashAPISecret
 		}
 	}
 

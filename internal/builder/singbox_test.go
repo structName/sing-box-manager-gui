@@ -1,8 +1,6 @@
 package builder
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/xiaobei/singbox-manager/internal/storage"
@@ -70,34 +68,14 @@ func TestBuildRoutePrioritizesCustomInboundOutbound(t *testing.T) {
 				Outbound: "chain-a",
 			},
 		},
-		rules: []storage.Rule{
-			{
-				ID:       "rule-1",
-				Enabled:  true,
-				Priority: 1,
-				RuleType: "domain",
-				Values:   []string{"example.com"},
-				Outbound: "DIRECT",
-			},
-		},
 	}
 
-	route, err := builder.buildRoute()
-	if err != nil {
-		t.Fatalf("buildRoute returned error: %v", err)
-	}
-
+	route := builder.buildRoute()
 	inboundIndex := -1
-	customRuleIndex := -1
 	for index, rule := range route.Rules {
 		if outbound, _ := rule["outbound"].(string); outbound == "chain-a" {
 			if inbound, ok := rule["inbound"].([]string); ok && len(inbound) == 1 && inbound[0] == "custom-port-1" {
 				inboundIndex = index
-			}
-		}
-		if outbound, _ := rule["outbound"].(string); outbound == "DIRECT" {
-			if domains, ok := rule["domain"].([]string); ok && len(domains) == 1 && domains[0] == "example.com" {
-				customRuleIndex = index
 			}
 		}
 	}
@@ -105,87 +83,64 @@ func TestBuildRoutePrioritizesCustomInboundOutbound(t *testing.T) {
 	if inboundIndex == -1 {
 		t.Fatal("custom inbound route rule not found")
 	}
-	if customRuleIndex == -1 {
-		t.Fatal("custom domain route rule not found")
+}
+
+func TestBuildRouteDoesNotGenerateRuleSets(t *testing.T) {
+	builder := &ConfigBuilder{
+		settings: &storage.Settings{},
 	}
-	if inboundIndex >= customRuleIndex {
-		t.Fatalf("custom inbound rule index = %d, want before custom rule index = %d", inboundIndex, customRuleIndex)
+
+	route := builder.buildRoute()
+
+	if len(route.Rules) < 2 {
+		t.Fatalf("route rule count = %d, want at least 2 base rules", len(route.Rules))
+	}
+
+	if action, _ := route.Rules[0]["action"].(string); action != "sniff" {
+		t.Fatalf("first route action = %s, want sniff", action)
+	}
+	if action, _ := route.Rules[1]["action"].(string); action != "hijack-dns" {
+		t.Fatalf("second route action = %s, want hijack-dns", action)
 	}
 }
 
-func TestBuildRouteUsesBundledRuleSetsAsLocalFiles(t *testing.T) {
-	dataDir := t.TempDir()
+func TestBuildExperimentalIncludesClashAPISecret(t *testing.T) {
 	builder := &ConfigBuilder{
 		settings: &storage.Settings{
-			RuleSetBaseURL: "https://example.com/rules",
-		},
-		dataDir: dataDir,
-		ruleGroups: []storage.RuleGroup{
-			{
-				ID:        "group-1",
-				Enabled:   true,
-				SiteRules: []string{"openai"},
-				IPRules:   []string{"private"},
-			},
+			ClashAPIPort:   9091,
+			ClashUIEnabled: true,
+			ClashUIPath:    "zashboard",
+			ClashAPISecret: "test-secret",
 		},
 	}
 
-	route, err := builder.buildRoute()
-	if err != nil {
-		t.Fatalf("buildRoute returned error: %v", err)
+	experimental := builder.buildExperimental()
+	if experimental.ClashAPI == nil {
+		t.Fatal("clash api config = nil")
 	}
-
-	if len(route.RuleSet) != 2 {
-		t.Fatalf("rule set count = %d, want 2", len(route.RuleSet))
-	}
-
-	for _, ruleSet := range route.RuleSet {
-		if ruleSet.Type != "local" {
-			t.Fatalf("rule set %s type = %s, want local", ruleSet.Tag, ruleSet.Type)
-		}
-		if ruleSet.Path == "" {
-			t.Fatalf("rule set %s path is empty", ruleSet.Tag)
-		}
-		if !filepath.IsAbs(ruleSet.Path) {
-			t.Fatalf("rule set %s path = %s, want absolute path", ruleSet.Tag, ruleSet.Path)
-		}
-		if _, err := os.Stat(ruleSet.Path); err != nil {
-			t.Fatalf("rule set %s path stat error: %v", ruleSet.Tag, err)
-		}
+	if experimental.ClashAPI.Secret != "test-secret" {
+		t.Fatalf("secret = %q, want %q", experimental.ClashAPI.Secret, "test-secret")
 	}
 }
 
-func TestBuildRouteFallsBackToRemoteRuleSets(t *testing.T) {
+func TestBuildExperimentalDisablesExternalUIWhenZashboardClosed(t *testing.T) {
 	builder := &ConfigBuilder{
 		settings: &storage.Settings{
-			RuleSetBaseURL: "https://example.com/rules",
-			GithubProxy:    "https://mirror.example/",
-		},
-		rules: []storage.Rule{
-			{
-				ID:       "rule-1",
-				Enabled:  true,
-				RuleType: "geosite",
-				Values:   []string{"custom-service"},
-			},
+			ClashAPIPort:   9091,
+			ClashUIEnabled: false,
+			ClashUIPath:    "zashboard",
+			ClashAPISecret: "test-secret",
 		},
 	}
 
-	route, err := builder.buildRoute()
-	if err != nil {
-		t.Fatalf("buildRoute returned error: %v", err)
+	experimental := builder.buildExperimental()
+	if experimental.ClashAPI == nil {
+		t.Fatal("clash api config = nil")
 	}
-
-	if len(route.RuleSet) != 1 {
-		t.Fatalf("rule set count = %d, want 1", len(route.RuleSet))
+	if experimental.ClashAPI.ExternalUI != "" {
+		t.Fatalf("external ui = %q, want empty", experimental.ClashAPI.ExternalUI)
 	}
-
-	ruleSet := route.RuleSet[0]
-	if ruleSet.Type != "remote" {
-		t.Fatalf("rule set type = %s, want remote", ruleSet.Type)
-	}
-	wantURL := "https://mirror.example/https://example.com/rules/geosite-custom-service.srs"
-	if ruleSet.URL != wantURL {
-		t.Fatalf("rule set url = %s, want %s", ruleSet.URL, wantURL)
+	if experimental.ClashAPI.ExternalUIDownloadURL != "" {
+		t.Fatalf("external ui download url = %q, want empty", experimental.ClashAPI.ExternalUIDownloadURL)
 	}
 }
