@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/xiaobei/singbox-manager/internal/storage"
+	"github.com/xiaobei/singbox-manager/internal/zashboard"
 )
 
 // SingBoxConfig sing-box 配置结构
@@ -120,6 +121,8 @@ type ClashAPIConfig struct {
 	Secret                string `json:"secret,omitempty"`
 	DefaultMode           string `json:"default_mode,omitempty"`
 }
+
+const defaultZashboardExternalUIDownloadURL = "https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip"
 
 // CacheFileConfig 缓存文件配置
 type CacheFileConfig struct {
@@ -552,14 +555,14 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 		countryGroupTags = append(countryGroupTags, groupTag)
 
 		// 创建自动选择分组
-			outbounds = append(outbounds, Outbound{
-				"tag":       groupTag,
-				"type":      "urltest",
-				"outbounds": nodes,
-				"url":       "https://www.gstatic.com/generate_204",
-				"interval":  "30m",
-				"tolerance": 50,
-			})
+		outbounds = append(outbounds, Outbound{
+			"tag":       groupTag,
+			"type":      "urltest",
+			"outbounds": nodes,
+			"url":       "https://www.gstatic.com/generate_204",
+			"interval":  "30m",
+			"tolerance": 50,
+		})
 	}
 
 	// 创建自动选择组（所有节点）
@@ -954,8 +957,15 @@ func (b *ConfigBuilder) buildExperimental() *ExperimentalConfig {
 			DefaultMode:        "rule",
 		}
 		if b.settings.ClashUIEnabled {
-			exp.ClashAPI.ExternalUI = b.settings.ClashUIPath
-			exp.ClashAPI.ExternalUIDownloadURL = "https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip"
+			externalUIPath := strings.TrimSpace(b.settings.ClashUIPath)
+			if externalUIPath == "" {
+				externalUIPath = zashboard.DefaultUIPath
+			}
+
+			exp.ClashAPI.ExternalUI = externalUIPath
+			if !zashboard.UsesEmbeddedPath(externalUIPath) {
+				exp.ClashAPI.ExternalUIDownloadURL = b.buildGitHubDownloadURL(defaultZashboardExternalUIDownloadURL)
+			}
 		}
 		if b.settings.ClashAPISecret != "" {
 			exp.ClashAPI.Secret = b.settings.ClashAPISecret
@@ -963,4 +973,21 @@ func (b *ConfigBuilder) buildExperimental() *ExperimentalConfig {
 	}
 
 	return exp
+}
+
+func (b *ConfigBuilder) buildGitHubDownloadURL(originalURL string) string {
+	if b.settings == nil {
+		return originalURL
+	}
+
+	githubProxy := strings.TrimSpace(b.settings.GithubProxy)
+	if githubProxy == "" {
+		return originalURL
+	}
+
+	if !strings.HasSuffix(githubProxy, "/") {
+		githubProxy += "/"
+	}
+
+	return githubProxy + originalURL
 }
