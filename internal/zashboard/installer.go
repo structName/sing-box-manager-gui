@@ -3,6 +3,8 @@ package zashboard
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +16,7 @@ const (
 	// DefaultUIPath 与默认设置中的 clash_ui_path 保持一致。
 	DefaultUIPath = "zashboard"
 	zipRootPrefix = "dist/"
+	markerFile    = ".sbm-embedded-ui.sha256"
 )
 
 // UsesEmbeddedPath 判断当前面板路径是否使用内置 zashboard 资源。
@@ -29,9 +32,13 @@ func EnsureEmbeddedUI(dataDir, uiPath string) error {
 	}
 
 	targetDir := resolveTargetDir(dataDir, uiPath)
-	indexPath := filepath.Join(targetDir, "index.html")
-	if stat, err := os.Stat(indexPath); err == nil && !stat.IsDir() {
+	distHash := embeddedDistHash()
+	if isEmbeddedUICurrent(targetDir, distHash) {
 		return nil
+	}
+
+	if err := os.RemoveAll(targetDir); err != nil {
+		return fmt.Errorf("cleanup stale zashboard dir: %w", err)
 	}
 
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
@@ -42,7 +49,31 @@ func EnsureEmbeddedUI(dataDir, uiPath string) error {
 		return fmt.Errorf("extract embedded zashboard dist: %w", err)
 	}
 
+	if err := os.WriteFile(filepath.Join(targetDir, markerFile), []byte(distHash), 0o644); err != nil {
+		return fmt.Errorf("write zashboard marker: %w", err)
+	}
+
 	return nil
+}
+
+func embeddedDistHash() string {
+	sum := sha256.Sum256(embeddedDistZip)
+	return hex.EncodeToString(sum[:])
+}
+
+func isEmbeddedUICurrent(targetDir, distHash string) bool {
+	indexPath := filepath.Join(targetDir, "index.html")
+	if stat, err := os.Stat(indexPath); err != nil || stat.IsDir() {
+		return false
+	}
+
+	markerPath := filepath.Join(targetDir, markerFile)
+	markerData, err := os.ReadFile(markerPath)
+	if err != nil {
+		return false
+	}
+
+	return strings.TrimSpace(string(markerData)) == distHash
 }
 
 func resolveTargetDir(dataDir, uiPath string) string {
