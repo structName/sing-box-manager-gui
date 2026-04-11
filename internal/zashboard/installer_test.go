@@ -43,3 +43,34 @@ func TestEnsureEmbeddedUIExtractsDefaultAssets(t *testing.T) {
 		t.Fatalf("EnsureEmbeddedUI second run returned error: %v", err)
 	}
 }
+
+func TestEnsureEmbeddedUIReplacesLegacyFiles(t *testing.T) {
+	dataDir := t.TempDir()
+	targetDir := filepath.Join(dataDir, DefaultUIPath)
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	legacyContent := []byte("legacy-ui")
+	if err := os.WriteFile(filepath.Join(targetDir, "index.html"), legacyContent, 0o644); err != nil {
+		t.Fatalf("WriteFile(index.html) error = %v", err)
+	}
+
+	if err := EnsureEmbeddedUI(dataDir, DefaultUIPath); err != nil {
+		t.Fatalf("EnsureEmbeddedUI() error = %v", err)
+	}
+
+	indexPath := filepath.Join(targetDir, "index.html")
+	currentContent, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatalf("ReadFile(index.html) error = %v", err)
+	}
+	if string(currentContent) == string(legacyContent) {
+		t.Fatalf("index.html remains legacy content")
+	}
+
+	markerPath := filepath.Join(targetDir, markerFile)
+	if stat, err := os.Stat(markerPath); err != nil || stat.IsDir() {
+		t.Fatalf("marker file not found: %v", err)
+	}
+}
