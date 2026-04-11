@@ -1161,6 +1161,14 @@ func (s *Server) buildAndSaveCurrentConfig() error {
 	return s.saveConfigFile(s.resolvePath(settings.ConfigPath), configJSON)
 }
 
+func rebuildConfigAndRestart(build func() error, restart func() error) error {
+	if err := build(); err != nil {
+		return err
+	}
+
+	return restart()
+}
+
 func (s *Server) buildConfig() (string, error) {
 	settings := s.store.GetSettings()
 	if settings.ClashUIEnabled {
@@ -1549,12 +1557,7 @@ func (s *Server) stopService(c *gin.Context) {
 }
 
 func (s *Server) restartService(c *gin.Context) {
-	if err := s.buildAndSaveCurrentConfig(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	if err := s.processManager.Restart(); err != nil {
+	if err := rebuildConfigAndRestart(s.buildAndSaveCurrentConfig, s.processManager.Restart); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -1668,7 +1671,7 @@ func (s *Server) restartLaunchd(c *gin.Context) {
 		return
 	}
 
-	if err := s.launchdManager.Restart(); err != nil {
+	if err := rebuildConfigAndRestart(s.buildAndSaveCurrentConfig, s.launchdManager.Restart); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -1767,7 +1770,7 @@ func (s *Server) restartSystemd(c *gin.Context) {
 		return
 	}
 
-	if err := s.systemdManager.Restart(); err != nil {
+	if err := rebuildConfigAndRestart(s.buildAndSaveCurrentConfig, s.systemdManager.Restart); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -1905,26 +1908,27 @@ func (s *Server) uninstallDaemon(c *gin.Context) {
 }
 
 func (s *Server) restartDaemon(c *gin.Context) {
-	var err error
+	var restart func() error
+
 	switch runtime.GOOS {
 	case "darwin":
 		if s.launchdManager == nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "当前系统不支持守护进程服务"})
 			return
 		}
-		err = s.launchdManager.Restart()
+		restart = s.launchdManager.Restart
 	case "linux":
 		if s.systemdManager == nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "当前系统不支持守护进程服务"})
 			return
 		}
-		err = s.systemdManager.Restart()
+		restart = s.systemdManager.Restart
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "当前系统不支持守护进程服务"})
 		return
 	}
 
-	if err != nil {
+	if err := rebuildConfigAndRestart(s.buildAndSaveCurrentConfig, restart); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
