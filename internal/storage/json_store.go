@@ -368,6 +368,11 @@ func preserveAuthenticationSettings(current *Settings, next *Settings) {
 }
 
 func migrateLegacyZashboardSettings(rawData []byte, settings *Settings, needSave *bool) {
+	if !bytes.Contains(rawData, []byte(`"clash_api_lan_enabled"`)) {
+		settings.ClashAPILanEnabled = DefaultSettings().ClashAPILanEnabled
+		*needSave = true
+	}
+
 	if settings.ClashUIPath == "" {
 		settings.ClashUIPath = DefaultSettings().ClashUIPath
 		*needSave = true

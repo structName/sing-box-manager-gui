@@ -256,7 +256,7 @@ func DefaultSettings() *Settings {
 		DirectDNS:            "https://dns.alidns.com/dns-query",
 		WebPort:              9090,
 		ClashAPIPort:         9091,
-		ClashAPILanEnabled:   false,
+		ClashAPILanEnabled:   true,
 		ClashUIEnabled:       true,
 		ClashUIPath:          "zashboard",
 		ClashAPISecret:       mustNewZashboardSecret(),
