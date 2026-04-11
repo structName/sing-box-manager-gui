@@ -144,3 +144,83 @@ func TestBuildExperimentalDisablesExternalUIWhenZashboardClosed(t *testing.T) {
 		t.Fatalf("external ui download url = %q, want empty", experimental.ClashAPI.ExternalUIDownloadURL)
 	}
 }
+
+func TestBuildExperimentalUsesEmbeddedExternalUIByDefault(t *testing.T) {
+	builder := &ConfigBuilder{
+		settings: &storage.Settings{
+			ClashAPIPort:   9091,
+			ClashUIEnabled: true,
+			ClashUIPath:    "zashboard",
+		},
+	}
+
+	experimental := builder.buildExperimental()
+	if experimental.ClashAPI == nil {
+		t.Fatal("clash api config = nil")
+	}
+	if experimental.ClashAPI.ExternalUI != "zashboard" {
+		t.Fatalf("external ui = %q, want zashboard", experimental.ClashAPI.ExternalUI)
+	}
+	if experimental.ClashAPI.ExternalUIDownloadURL != "" {
+		t.Fatalf("external ui download url = %q, want empty", experimental.ClashAPI.ExternalUIDownloadURL)
+	}
+}
+
+func TestBuildExperimentalFallsBackToEmbeddedUIPathWhenEmpty(t *testing.T) {
+	builder := &ConfigBuilder{
+		settings: &storage.Settings{
+			ClashAPIPort:   9091,
+			ClashUIEnabled: true,
+			ClashUIPath:    "   ",
+		},
+	}
+
+	experimental := builder.buildExperimental()
+	if experimental.ClashAPI == nil {
+		t.Fatal("clash api config = nil")
+	}
+	if experimental.ClashAPI.ExternalUI != "zashboard" {
+		t.Fatalf("external ui = %q, want zashboard", experimental.ClashAPI.ExternalUI)
+	}
+	if experimental.ClashAPI.ExternalUIDownloadURL != "" {
+		t.Fatalf("external ui download url = %q, want empty", experimental.ClashAPI.ExternalUIDownloadURL)
+	}
+}
+
+func TestBuildExperimentalUsesDefaultExternalUIDownloadURLForCustomUIPath(t *testing.T) {
+	builder := &ConfigBuilder{
+		settings: &storage.Settings{
+			ClashAPIPort:   9091,
+			ClashUIEnabled: true,
+			ClashUIPath:    "custom-ui",
+		},
+	}
+
+	experimental := builder.buildExperimental()
+	if experimental.ClashAPI == nil {
+		t.Fatal("clash api config = nil")
+	}
+	if experimental.ClashAPI.ExternalUIDownloadURL != defaultZashboardExternalUIDownloadURL {
+		t.Fatalf("external ui download url = %q, want %q", experimental.ClashAPI.ExternalUIDownloadURL, defaultZashboardExternalUIDownloadURL)
+	}
+}
+
+func TestBuildExperimentalUsesGithubProxyForCustomExternalUIDownloadURL(t *testing.T) {
+	builder := &ConfigBuilder{
+		settings: &storage.Settings{
+			ClashAPIPort:   9091,
+			ClashUIEnabled: true,
+			ClashUIPath:    "custom-ui",
+			GithubProxy:    "https://ghproxy.com",
+		},
+	}
+
+	experimental := builder.buildExperimental()
+	if experimental.ClashAPI == nil {
+		t.Fatal("clash api config = nil")
+	}
+	expected := "https://ghproxy.com/" + defaultZashboardExternalUIDownloadURL
+	if experimental.ClashAPI.ExternalUIDownloadURL != expected {
+		t.Fatalf("external ui download url = %q, want %q", experimental.ClashAPI.ExternalUIDownloadURL, expected)
+	}
+}

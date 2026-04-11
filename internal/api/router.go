@@ -30,6 +30,7 @@ import (
 	"github.com/xiaobei/singbox-manager/internal/service"
 	"github.com/xiaobei/singbox-manager/internal/speedtest"
 	"github.com/xiaobei/singbox-manager/internal/storage"
+	"github.com/xiaobei/singbox-manager/internal/zashboard"
 	"github.com/xiaobei/singbox-manager/web"
 )
 
@@ -1162,6 +1163,12 @@ func (s *Server) buildAndSaveCurrentConfig() error {
 
 func (s *Server) buildConfig() (string, error) {
 	settings := s.store.GetSettings()
+	if settings.ClashUIEnabled {
+		if err := zashboard.EnsureEmbeddedUI(s.store.GetDataDir(), settings.ClashUIPath); err != nil {
+			return "", fmt.Errorf("准备内置 zashboard 资源失败: %w", err)
+		}
+	}
+
 	nodes := s.store.GetAllNodes()
 	filters := s.store.GetFilters()
 	inboundPorts := s.store.GetInboundPorts()

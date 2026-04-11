@@ -74,7 +74,7 @@ export function CoreSettingsCard({ formData, kernelInfo, onValueChange, onDownlo
         </div>
         <div>
           <h2 className="text-lg font-semibold text-slate-900 dark:text-white">核心路径</h2>
-          <p className="text-sm text-slate-500 dark:text-slate-400">统一管理内核位置、生成文件与远程规则源。</p>
+          <p className="text-sm text-slate-500 dark:text-slate-400">统一管理内核位置、生成文件与远程规则源，默认内置 Zashboard，切换自定义面板路径时可通过 GitHub 代理下载资源。</p>
         </div>
       </CardHeader>
       <CardBody className="space-y-4">
