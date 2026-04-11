@@ -1549,6 +1549,11 @@ func (s *Server) stopService(c *gin.Context) {
 }
 
 func (s *Server) restartService(c *gin.Context) {
+	if err := s.buildAndSaveCurrentConfig(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
 	if err := s.processManager.Restart(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
