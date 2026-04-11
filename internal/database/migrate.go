@@ -114,6 +114,7 @@ type LegacySettings struct {
 	FakeIPEnabled        bool                     `json:"fakeip_enabled,omitempty"`
 	WebPort              int                      `json:"web_port"`
 	ClashAPIPort         int                      `json:"clash_api_port"`
+	ClashAPILanEnabled   bool                     `json:"clash_api_lan_enabled"`
 	ClashUIEnabled       bool                     `json:"clash_ui_enabled"`
 	ClashUIPath          string                   `json:"clash_ui_path"`
 	ClashAPISecret       string                   `json:"clash_api_secret"`
@@ -413,6 +414,7 @@ func MigrateFromJSON(dataDir string, db *gorm.DB) error {
 				"fakeip_enabled":        strconv.FormatBool(appData.Settings.FakeIPEnabled),
 				"web_port":              strconv.Itoa(appData.Settings.WebPort),
 				"clash_api_port":        strconv.Itoa(appData.Settings.ClashAPIPort),
+				"clash_api_lan_enabled": strconv.FormatBool(appData.Settings.ClashAPILanEnabled),
 				"clash_ui_enabled":      strconv.FormatBool(appData.Settings.ClashUIEnabled),
 				"clash_ui_path":         appData.Settings.ClashUIPath,
 				"clash_api_secret":      appData.Settings.ClashAPISecret,

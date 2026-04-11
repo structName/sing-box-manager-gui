@@ -84,6 +84,7 @@ export interface Settings {
   fakeip_enabled?: boolean;      // FakeIP 模式
   web_port: number;
   clash_api_port: number;
+  clash_api_lan_enabled: boolean;
   clash_ui_enabled: boolean;
   clash_ui_path: string;
   clash_api_secret: string;

@@ -952,8 +952,13 @@ func (b *ConfigBuilder) buildExperimental() *ExperimentalConfig {
 
 	// 如果启用了 Clash API，添加配置
 	if b.settings.ClashAPIPort > 0 {
+		externalControllerHost := "127.0.0.1"
+		if b.settings.ClashAPILanEnabled {
+			externalControllerHost = "0.0.0.0"
+		}
+
 		exp.ClashAPI = &ClashAPIConfig{
-			ExternalController: fmt.Sprintf("127.0.0.1:%d", b.settings.ClashAPIPort),
+			ExternalController: fmt.Sprintf("%s:%d", externalControllerHost, b.settings.ClashAPIPort),
 			DefaultMode:        "rule",
 		}
 		if b.settings.ClashUIEnabled {
