@@ -1528,13 +1528,7 @@ func (s *Server) getServiceStatus(c *gin.Context) {
 }
 
 func (s *Server) startService(c *gin.Context) {
-	configPath := s.resolvePath(s.store.GetSettings().ConfigPath)
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		if err := s.buildAndSaveCurrentConfig(); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-	} else if err != nil {
+	if err := s.buildAndSaveCurrentConfig(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

@@ -46,6 +46,9 @@ func TestNewJSONStoreMigratesLegacyZashboardSettings(t *testing.T) {
 	}
 
 	settings := store.GetSettings()
+	if !settings.ClashAPILanEnabled {
+		t.Fatalf("ClashAPILanEnabled = false, want true")
+	}
 	if !settings.ClashUIEnabled {
 		t.Fatalf("ClashUIEnabled = false, want true")
 	}
