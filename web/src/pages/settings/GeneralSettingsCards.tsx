@@ -121,6 +121,15 @@ export function ControlPanelCard({ formData, onValueChange, onNumberChange, setu
           </div>
           <Switch isSelected={zashboardEnabled} onValueChange={(enabled) => onValueChange('clash_ui_enabled', enabled)} />
         </div>
+        <div className="flex items-center justify-between rounded-xl bg-slate-50 p-4 dark:bg-slate-800/50">
+          <div>
+            <p className="font-medium text-slate-900 dark:text-white">允许局域网访问 Clash API</p>
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              关闭时监听 127.0.0.1；开启后监听 0.0.0.0，可由局域网设备访问。
+            </p>
+          </div>
+          <Switch isSelected={formData.clash_api_lan_enabled} onValueChange={(enabled) => onValueChange('clash_api_lan_enabled', enabled)} />
+        </div>
         <div className="grid gap-4">
           <Input isDisabled label="Web 管理端口" value={String(formData.web_port)} />
           <Input

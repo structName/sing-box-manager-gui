@@ -218,6 +218,7 @@ type Settings struct {
 	// 控制面板
 	WebPort            int    `json:"web_port"`                       // 管理界面端口
 	ClashAPIPort       int    `json:"clash_api_port"`                 // Clash API 端口
+	ClashAPILanEnabled bool   `json:"clash_api_lan_enabled"`          // 是否允许局域网访问 Clash API（0.0.0.0）
 	ClashUIEnabled     bool   `json:"clash_ui_enabled"`               // 是否启用 zashboard
 	ClashUIPath        string `json:"clash_ui_path"`                  // zashboard 路径
 	ClashAPISecret     string `json:"clash_api_secret"`               // zashboard 鉴权密码
@@ -255,6 +256,7 @@ func DefaultSettings() *Settings {
 		DirectDNS:            "https://dns.alidns.com/dns-query",
 		WebPort:              9090,
 		ClashAPIPort:         9091,
+		ClashAPILanEnabled:   false,
 		ClashUIEnabled:       true,
 		ClashUIPath:          "zashboard",
 		ClashAPISecret:       mustNewZashboardSecret(),

@@ -121,6 +121,28 @@ func TestBuildExperimentalIncludesClashAPISecret(t *testing.T) {
 	if experimental.ClashAPI.Secret != "test-secret" {
 		t.Fatalf("secret = %q, want %q", experimental.ClashAPI.Secret, "test-secret")
 	}
+	if experimental.ClashAPI.ExternalController != "127.0.0.1:9091" {
+		t.Fatalf("external controller = %q, want %q", experimental.ClashAPI.ExternalController, "127.0.0.1:9091")
+	}
+}
+
+func TestBuildExperimentalEnablesLANClashAPIController(t *testing.T) {
+	builder := &ConfigBuilder{
+		settings: &storage.Settings{
+			ClashAPIPort:       9091,
+			ClashAPILanEnabled: true,
+			ClashUIEnabled:     true,
+			ClashUIPath:        "zashboard",
+		},
+	}
+
+	experimental := builder.buildExperimental()
+	if experimental.ClashAPI == nil {
+		t.Fatal("clash api config = nil")
+	}
+	if experimental.ClashAPI.ExternalController != "0.0.0.0:9091" {
+		t.Fatalf("external controller = %q, want %q", experimental.ClashAPI.ExternalController, "0.0.0.0:9091")
+	}
 }
 
 func TestBuildExperimentalDisablesExternalUIWhenZashboardClosed(t *testing.T) {

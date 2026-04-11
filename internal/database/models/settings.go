@@ -44,6 +44,7 @@ var DefaultSettings = map[string]string{
 	"fakeip_enabled":        "false",
 	"web_port":              "9090",
 	"clash_api_port":        "9091",
+	"clash_api_lan_enabled": "false",
 	"clash_ui_enabled":      "true",
 	"clash_ui_path":         "zashboard",
 	"clash_api_secret":      "",
