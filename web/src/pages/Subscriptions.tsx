@@ -1018,7 +1018,7 @@ export default function Subscriptions() {
                         }}
                       >
                         {countryOptions.map((opt) => (
-                          <SelectItem key={opt.code}>
+                          <SelectItem key={opt.code} textValue={`${opt.emoji} ${opt.name}`}>
                             {opt.emoji} {opt.name}
                           </SelectItem>
                         ))}
