@@ -109,6 +109,31 @@ const nodeTypeOptions = [
   { value: 'socks', label: 'SOCKS' },
 ];
 
+const ssCipherOptions = [
+  'aes-128-gcm',
+  'aes-192-gcm',
+  'aes-256-gcm',
+  'chacha20-ietf-poly1305',
+  'xchacha20-ietf-poly1305',
+  '2022-blake3-aes-128-gcm',
+  '2022-blake3-aes-256-gcm',
+  '2022-blake3-chacha20-poly1305',
+  'none',
+];
+
+const vmessSecurityOptions = [
+  'auto',
+  'aes-128-gcm',
+  'chacha20-poly1305',
+  'none',
+  'zero',
+];
+
+const vlessFlowOptions = [
+  { value: '', label: '无' },
+  { value: 'xtls-rprx-vision', label: 'xtls-rprx-vision' },
+];
+
 const countryOptions = [
   { code: 'HK', name: '香港', emoji: '🇭🇰' },
   { code: 'TW', name: '台湾', emoji: '🇹🇼' },
@@ -133,6 +158,7 @@ const defaultNode: Node = {
   server_port: 443,
   country: 'HK',
   country_emoji: '🇭🇰',
+  extra: {},
 };
 
 export default function Subscriptions() {
@@ -1015,6 +1041,192 @@ export default function Subscriptions() {
                         onChange={(e) => setNodeForm({ ...nodeForm, server_port: parseInt(e.target.value) || 443 })}
                       />
                     </div>
+
+                    {/* Shadowsocks 参数 */}
+                    {nodeForm.type === 'shadowsocks' && (
+                      <div className="grid grid-cols-2 gap-4">
+                        <Select
+                          label="加密方式"
+                          placeholder="选择加密方式"
+                          selectedKeys={nodeForm.extra?.method ? [nodeForm.extra.method] : []}
+                          onChange={(e) => setNodeForm({ ...nodeForm, extra: { ...nodeForm.extra, method: e.target.value } })}
+                        >
+                          {ssCipherOptions.map((cipher) => (
+                            <SelectItem key={cipher} value={cipher}>
+                              {cipher}
+                            </SelectItem>
+                          ))}
+                        </Select>
+                        <Input
+                          label="密码"
+                          placeholder="输入密码"
+                          value={nodeForm.extra?.password || ''}
+                          onChange={(e) => setNodeForm({ ...nodeForm, extra: { ...nodeForm.extra, password: e.target.value } })}
+                        />
+                      </div>
+                    )}
+
+                    {/* VMess 参数 */}
+                    {nodeForm.type === 'vmess' && (
+                      <div className="space-y-4">
+                        <Input
+                          label="UUID"
+                          placeholder="输入 UUID"
+                          value={nodeForm.extra?.uuid || ''}
+                          onChange={(e) => setNodeForm({ ...nodeForm, extra: { ...nodeForm.extra, uuid: e.target.value } })}
+                        />
+                        <div className="grid grid-cols-2 gap-4">
+                          <Input
+                            type="number"
+                            label="Alter ID"
+                            placeholder="0"
+                            value={String(nodeForm.extra?.alter_id ?? 0)}
+                            onChange={(e) => setNodeForm({ ...nodeForm, extra: { ...nodeForm.extra, alter_id: parseInt(e.target.value) || 0 } })}
+                          />
+                          <Select
+                            label="加密方式"
+                            selectedKeys={[nodeForm.extra?.security || 'auto']}
+                            onChange={(e) => setNodeForm({ ...nodeForm, extra: { ...nodeForm.extra, security: e.target.value } })}
+                          >
+                            {vmessSecurityOptions.map((opt) => (
+                              <SelectItem key={opt} value={opt}>
+                                {opt}
+                              </SelectItem>
+                            ))}
+                          </Select>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* VLESS 参数 */}
+                    {nodeForm.type === 'vless' && (
+                      <div className="space-y-4">
+                        <Input
+                          label="UUID"
+                          placeholder="输入 UUID"
+                          value={nodeForm.extra?.uuid || ''}
+                          onChange={(e) => setNodeForm({ ...nodeForm, extra: { ...nodeForm.extra, uuid: e.target.value } })}
+                        />
+                        <Select
+                          label="Flow"
+                          selectedKeys={[nodeForm.extra?.flow || '']}
+                          onChange={(e) => setNodeForm({ ...nodeForm, extra: { ...nodeForm.extra, flow: e.target.value || undefined } })}
+                        >
+                          {vlessFlowOptions.map((opt) => (
+                            <SelectItem key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </SelectItem>
+                          ))}
+                        </Select>
+                      </div>
+                    )}
+
+                    {/* Trojan 参数 */}
+                    {nodeForm.type === 'trojan' && (
+                      <Input
+                        label="密码"
+                        placeholder="输入密码"
+                        value={nodeForm.extra?.password || ''}
+                        onChange={(e) => setNodeForm({ ...nodeForm, extra: { ...nodeForm.extra, password: e.target.value } })}
+                      />
+                    )}
+
+                    {/* Hysteria2 参数 */}
+                    {nodeForm.type === 'hysteria2' && (
+                      <Input
+                        label="密码"
+                        placeholder="输入密码"
+                        value={nodeForm.extra?.password || ''}
+                        onChange={(e) => setNodeForm({ ...nodeForm, extra: { ...nodeForm.extra, password: e.target.value } })}
+                      />
+                    )}
+
+                    {/* TUIC 参数 */}
+                    {nodeForm.type === 'tuic' && (
+                      <div className="grid grid-cols-2 gap-4">
+                        <Input
+                          label="UUID"
+                          placeholder="输入 UUID"
+                          value={nodeForm.extra?.uuid || ''}
+                          onChange={(e) => setNodeForm({ ...nodeForm, extra: { ...nodeForm.extra, uuid: e.target.value } })}
+                        />
+                        <Input
+                          label="密码"
+                          placeholder="输入密码"
+                          value={nodeForm.extra?.password || ''}
+                          onChange={(e) => setNodeForm({ ...nodeForm, extra: { ...nodeForm.extra, password: e.target.value } })}
+                        />
+                      </div>
+                    )}
+
+                    {/* SOCKS 参数 */}
+                    {nodeForm.type === 'socks' && (
+                      <div className="grid grid-cols-2 gap-4">
+                        <Input
+                          label="用户名"
+                          placeholder="可选"
+                          value={nodeForm.extra?.username || ''}
+                          onChange={(e) => setNodeForm({ ...nodeForm, extra: { ...nodeForm.extra, username: e.target.value } })}
+                        />
+                        <Input
+                          label="密码"
+                          placeholder="可选"
+                          value={nodeForm.extra?.password || ''}
+                          onChange={(e) => setNodeForm({ ...nodeForm, extra: { ...nodeForm.extra, password: e.target.value } })}
+                        />
+                      </div>
+                    )}
+
+                    {/* TLS 设置 */}
+                    {['vmess', 'vless', 'trojan', 'hysteria2', 'tuic'].includes(nodeForm.type) && (
+                      <div className="space-y-3 p-3 bg-default-50 rounded-lg">
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm font-medium">TLS</span>
+                          <Switch
+                            size="sm"
+                            isSelected={!!nodeForm.extra?.tls?.enabled}
+                            onValueChange={(val) => setNodeForm({
+                              ...nodeForm,
+                              extra: {
+                                ...nodeForm.extra,
+                                tls: { ...(nodeForm.extra?.tls || {}), enabled: val },
+                              },
+                            })}
+                          />
+                        </div>
+                        {nodeForm.extra?.tls?.enabled && (
+                          <div className="grid grid-cols-2 gap-4">
+                            <Input
+                              size="sm"
+                              label="SNI (服务器名称)"
+                              placeholder="example.com"
+                              value={nodeForm.extra?.tls?.server_name || ''}
+                              onChange={(e) => setNodeForm({
+                                ...nodeForm,
+                                extra: {
+                                  ...nodeForm.extra,
+                                  tls: { ...(nodeForm.extra?.tls || {}), server_name: e.target.value },
+                                },
+                              })}
+                            />
+                            <div className="flex items-center gap-2 pt-2">
+                              <Switch
+                                size="sm"
+                                isSelected={!!nodeForm.extra?.tls?.insecure}
+                                onValueChange={(val) => setNodeForm({
+                                  ...nodeForm,
+                                  extra: {
+                                    ...nodeForm.extra,
+                                    tls: { ...(nodeForm.extra?.tls || {}), insecure: val },
+                                  },
+                                })}
+                              />
+                              <span className="text-sm">跳过证书验证</span>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </AccordionItem>
               </Accordion>
