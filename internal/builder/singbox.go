@@ -967,8 +967,13 @@ func (b *ConfigBuilder) buildExperimental() *ExperimentalConfig {
 				externalUIPath = zashboard.DefaultUIPath
 			}
 
+			// 转换为绝对路径，避免 sing-box 找不到文件
+			if !filepath.IsAbs(externalUIPath) {
+				externalUIPath = filepath.Join(b.dataDir, externalUIPath)
+			}
+
 			exp.ClashAPI.ExternalUI = externalUIPath
-			if !zashboard.UsesEmbeddedPath(externalUIPath) {
+			if !zashboard.UsesEmbeddedPath(b.settings.ClashUIPath) {
 				exp.ClashAPI.ExternalUIDownloadURL = b.buildGitHubDownloadURL(defaultZashboardExternalUIDownloadURL)
 			}
 		}
