@@ -1,6 +1,7 @@
 package builder
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/xiaobei/singbox-manager/internal/storage"
@@ -112,6 +113,7 @@ func TestBuildExperimentalIncludesClashAPISecret(t *testing.T) {
 			ClashUIPath:    "zashboard",
 			ClashAPISecret: "test-secret",
 		},
+		dataDir: "/test/data",
 	}
 
 	experimental := builder.buildExperimental()
@@ -134,6 +136,7 @@ func TestBuildExperimentalEnablesLANClashAPIController(t *testing.T) {
 			ClashUIEnabled:     true,
 			ClashUIPath:        "zashboard",
 		},
+		dataDir: "/test/data",
 	}
 
 	experimental := builder.buildExperimental()
@@ -153,6 +156,7 @@ func TestBuildExperimentalDisablesExternalUIWhenZashboardClosed(t *testing.T) {
 			ClashUIPath:    "zashboard",
 			ClashAPISecret: "test-secret",
 		},
+		dataDir: "/test/data",
 	}
 
 	experimental := builder.buildExperimental()
@@ -168,20 +172,23 @@ func TestBuildExperimentalDisablesExternalUIWhenZashboardClosed(t *testing.T) {
 }
 
 func TestBuildExperimentalUsesEmbeddedExternalUIByDefault(t *testing.T) {
+	dataDir := "/test/data"
 	builder := &ConfigBuilder{
 		settings: &storage.Settings{
 			ClashAPIPort:   9091,
 			ClashUIEnabled: true,
 			ClashUIPath:    "zashboard",
 		},
+		dataDir: dataDir,
 	}
 
 	experimental := builder.buildExperimental()
 	if experimental.ClashAPI == nil {
 		t.Fatal("clash api config = nil")
 	}
-	if experimental.ClashAPI.ExternalUI != "zashboard" {
-		t.Fatalf("external ui = %q, want zashboard", experimental.ClashAPI.ExternalUI)
+	expectedPath := filepath.Join(dataDir, "zashboard")
+	if experimental.ClashAPI.ExternalUI != expectedPath {
+		t.Fatalf("external ui = %q, want %q", experimental.ClashAPI.ExternalUI, expectedPath)
 	}
 	if experimental.ClashAPI.ExternalUIDownloadURL != "" {
 		t.Fatalf("external ui download url = %q, want empty", experimental.ClashAPI.ExternalUIDownloadURL)
@@ -189,20 +196,23 @@ func TestBuildExperimentalUsesEmbeddedExternalUIByDefault(t *testing.T) {
 }
 
 func TestBuildExperimentalFallsBackToEmbeddedUIPathWhenEmpty(t *testing.T) {
+	dataDir := "/test/data"
 	builder := &ConfigBuilder{
 		settings: &storage.Settings{
 			ClashAPIPort:   9091,
 			ClashUIEnabled: true,
 			ClashUIPath:    "   ",
 		},
+		dataDir: dataDir,
 	}
 
 	experimental := builder.buildExperimental()
 	if experimental.ClashAPI == nil {
 		t.Fatal("clash api config = nil")
 	}
-	if experimental.ClashAPI.ExternalUI != "zashboard" {
-		t.Fatalf("external ui = %q, want zashboard", experimental.ClashAPI.ExternalUI)
+	expectedPath := filepath.Join(dataDir, "zashboard")
+	if experimental.ClashAPI.ExternalUI != expectedPath {
+		t.Fatalf("external ui = %q, want %q", experimental.ClashAPI.ExternalUI, expectedPath)
 	}
 	if experimental.ClashAPI.ExternalUIDownloadURL != "" {
 		t.Fatalf("external ui download url = %q, want empty", experimental.ClashAPI.ExternalUIDownloadURL)
@@ -210,12 +220,14 @@ func TestBuildExperimentalFallsBackToEmbeddedUIPathWhenEmpty(t *testing.T) {
 }
 
 func TestBuildExperimentalUsesDefaultExternalUIDownloadURLForCustomUIPath(t *testing.T) {
+	dataDir := "/test/data"
 	builder := &ConfigBuilder{
 		settings: &storage.Settings{
 			ClashAPIPort:   9091,
 			ClashUIEnabled: true,
 			ClashUIPath:    "custom-ui",
 		},
+		dataDir: dataDir,
 	}
 
 	experimental := builder.buildExperimental()
@@ -228,6 +240,7 @@ func TestBuildExperimentalUsesDefaultExternalUIDownloadURLForCustomUIPath(t *tes
 }
 
 func TestBuildExperimentalUsesGithubProxyForCustomExternalUIDownloadURL(t *testing.T) {
+	dataDir := "/test/data"
 	builder := &ConfigBuilder{
 		settings: &storage.Settings{
 			ClashAPIPort:   9091,
@@ -235,6 +248,7 @@ func TestBuildExperimentalUsesGithubProxyForCustomExternalUIDownloadURL(t *testi
 			ClashUIPath:    "custom-ui",
 			GithubProxy:    "https://ghproxy.com",
 		},
+		dataDir: dataDir,
 	}
 
 	experimental := builder.buildExperimental()

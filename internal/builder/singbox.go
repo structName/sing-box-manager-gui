@@ -335,12 +335,9 @@ func (b *ConfigBuilder) buildDNS() *DNSConfig {
 	}
 }
 
-// buildNTP 构建 NTP 配置
+// buildNTP 默认不生成 NTP 配置，避免额外的外部时间同步请求
 func (b *ConfigBuilder) buildNTP() *NTPConfig {
-	return &NTPConfig{
-		Enabled: true,
-		Server:  "time.apple.com",
-	}
+	return nil
 }
 
 // buildInbounds 构建入站配置
@@ -967,8 +964,13 @@ func (b *ConfigBuilder) buildExperimental() *ExperimentalConfig {
 				externalUIPath = zashboard.DefaultUIPath
 			}
 
+			// 转换为绝对路径，避免 sing-box 找不到文件
+			if !filepath.IsAbs(externalUIPath) {
+				externalUIPath = filepath.Join(b.dataDir, externalUIPath)
+			}
+
 			exp.ClashAPI.ExternalUI = externalUIPath
-			if !zashboard.UsesEmbeddedPath(externalUIPath) {
+			if !zashboard.UsesEmbeddedPath(b.settings.ClashUIPath) {
 				exp.ClashAPI.ExternalUIDownloadURL = b.buildGitHubDownloadURL(defaultZashboardExternalUIDownloadURL)
 			}
 		}
