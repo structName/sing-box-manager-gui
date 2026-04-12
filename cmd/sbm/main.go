@@ -14,7 +14,7 @@ import (
 )
 
 var (
-	version        = "0.2.9"
+	Version        = "0.2.9"
 	dataDir        string
 	port           int
 	swaggerEnabled bool
@@ -58,7 +58,7 @@ func main() {
 	}
 
 	// 打印启动信息
-	logger.Printf("singbox-manager v%s", version)
+	logger.Printf("singbox-manager v%s", Version)
 	logger.Printf("数据目录: %s", dataDir)
 	logger.Printf("Web 端口: %d", port)
 
@@ -102,7 +102,7 @@ func main() {
 	}
 
 	// 创建 API 服务器
-	server, err := api.NewServer(profileMgr, processManager, launchdManager, systemdManager, execPath, port, version, swaggerEnabled)
+	server, err := api.NewServer(profileMgr, processManager, launchdManager, systemdManager, execPath, port, Version, swaggerEnabled)
 	if err != nil {
 		logger.Printf("初始化 API 服务器失败: %v", err)
 		os.Exit(1)
