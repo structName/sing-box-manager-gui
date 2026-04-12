@@ -41,7 +41,6 @@ func getRandomSpeedTestURL() string {
 	return speedTestURLs[rand.Intn(len(speedTestURLs))]
 }
 
-
 func (h *HealthCheckService) newClashAPIRequest(fullURL string) (*http.Request, error) {
 	req, err := http.NewRequest(http.MethodGet, fullURL, nil)
 	if err != nil {
@@ -132,8 +131,12 @@ func (h *HealthCheckService) CheckChain(chainID string) (*storage.ChainHealthSta
 	// 获取所有节点信息（用于 TCP 测试）
 	allNodes := h.store.GetAllNodes()
 	nodeMap := make(map[string]storage.Node)
+	countryNodeCount := make(map[string]int)
 	for _, n := range allNodes {
 		nodeMap[n.Tag] = n
+		if n.Country != "" {
+			countryNodeCount[n.Country]++
+		}
 	}
 
 	timeout := time.Duration(config.Timeout) * time.Second
@@ -171,8 +174,16 @@ func (h *HealthCheckService) CheckChain(chainID string) (*storage.ChainHealthSta
 		} else {
 			// 入口/中转节点：TCP 连接测试
 			// 测试能否连接到节点服务器
-			node, exists := nodeMap[nodeTag]
-			if !exists {
+			if storage.IsChainCountryNodeTag(nodeTag) {
+				countryCode := storage.ParseChainCountryNodeCode(nodeTag)
+				if countryNodeCount[countryCode] == 0 {
+					nodeStatus.Status = "unhealthy"
+					nodeStatus.Error = "地区下没有可用节点"
+					unhealthyCount++
+				} else {
+					nodeStatus.Status = "healthy"
+				}
+			} else if node, exists := nodeMap[nodeTag]; !exists {
 				nodeStatus.Status = "unhealthy"
 				nodeStatus.Error = "节点不存在"
 				unhealthyCount++
@@ -378,14 +389,37 @@ func (h *HealthCheckService) testViaClashAPI(port int, proxyName, testURL string
 func (h *HealthCheckService) checkChainSimple(chain *storage.ProxyChain, config *storage.ChainHealthConfig, status *storage.ChainHealthStatus) (*storage.ChainHealthStatus, error) {
 	allNodes := h.store.GetAllNodes()
 	nodeMap := make(map[string]storage.Node)
+	countryNodeCount := make(map[string]int)
 	for _, n := range allNodes {
 		nodeMap[n.Tag] = n
+		if n.Country != "" {
+			countryNodeCount[n.Country]++
+		}
 	}
 
 	timeout := time.Duration(config.Timeout) * time.Second
 	unhealthyCount := 0
 
 	for _, nodeTag := range chain.Nodes {
+		if storage.IsChainCountryNodeTag(nodeTag) {
+			countryCode := storage.ParseChainCountryNodeCode(nodeTag)
+			if countryNodeCount[countryCode] == 0 {
+				status.NodeStatuses = append(status.NodeStatuses, storage.NodeHealthStatus{
+					Tag:    nodeTag,
+					Status: "unhealthy",
+					Error:  "地区下没有可用节点",
+				})
+				unhealthyCount++
+				continue
+			}
+
+			status.NodeStatuses = append(status.NodeStatuses, storage.NodeHealthStatus{
+				Tag:    nodeTag,
+				Status: "healthy",
+			})
+			continue
+		}
+
 		node, exists := nodeMap[nodeTag]
 		if !exists {
 			status.NodeStatuses = append(status.NodeStatuses, storage.NodeHealthStatus{

@@ -397,14 +397,28 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 
 	// 收集所有节点标签和按国家分组
 	var allNodeTags []string
-	nodeTagSet := make(map[string]bool)
 	countryNodes := make(map[string][]string) // 国家代码 -> 节点标签列表
-	nodeOutboundIndex := make(map[string]int) // 节点 Tag -> outbound 索引
 
-	// 构建节点 Tag 到节点的映射
+	// 构建节点 Tag 到节点的映射，并预先整理国家分组
 	nodeMap := make(map[string]storage.Node)
 	for _, node := range b.nodes {
 		nodeMap[node.Tag] = node
+		allNodeTags = append(allNodeTags, node.Tag)
+
+		countryCode := node.Country
+		if countryCode == "" {
+			countryCode = "OTHER"
+		}
+		countryNodes[countryCode] = append(countryNodes[countryCode], node.Tag)
+	}
+
+	chainNodeExists := func(nodeTag string) bool {
+		if storage.IsChainCountryNodeTag(nodeTag) {
+			countryCode := storage.ParseChainCountryNodeCode(nodeTag)
+			return len(countryNodes[countryCode]) > 0
+		}
+		_, exists := nodeMap[nodeTag]
+		return exists
 	}
 
 	// 生成链路节点副本（独立的副本，不影响原始节点）
@@ -417,7 +431,7 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 		// 验证链路中的所有节点是否存在
 		allNodesExist := true
 		for _, nodeTag := range chain.Nodes {
-			if _, exists := nodeMap[nodeTag]; !exists {
+			if !chainNodeExists(nodeTag) {
 				allNodesExist = false
 				break
 			}
@@ -430,32 +444,68 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 		// 链路顺序: [入口, 中间..., 出口]
 		// detour 方向: 出口节点的 detour 指向前一个节点
 		// 流量路径: 客户端 → 入口 → 中间... → 出口 → 目标
-		for i, nodeTag := range chain.Nodes {
-			copyTag := storage.GenerateChainNodeCopyTag(chain.Name, nodeTag)
+		var prevCopyTag string
+		for _, nodeTag := range chain.Nodes {
+			if storage.IsChainCountryNodeTag(nodeTag) {
+				countryCode := storage.ParseChainCountryNodeCode(nodeTag)
+				candidateTags := countryNodes[countryCode]
+				if len(candidateTags) == 0 {
+					continue
+				}
 
-			// 避免重复创建
-			if chainCopyTags[copyTag] {
+				groupCopyTag := storage.GenerateChainNodeCopyTag(chain.Name, nodeTag)
+				virtualOutbounds := make([]string, 0, len(candidateTags))
+				for _, candidateTag := range candidateTags {
+					candidateCopyTag := storage.GenerateChainCountryCandidateCopyTag(chain.Name, nodeTag, candidateTag)
+					virtualOutbounds = append(virtualOutbounds, candidateCopyTag)
+					if chainCopyTags[candidateCopyTag] {
+						continue
+					}
+
+					copyOutbound, err := b.nodeToOutbound(nodeMap[candidateTag])
+					if err != nil {
+						return nil, err
+					}
+					copyOutbound["tag"] = candidateCopyTag
+					if prevCopyTag != "" {
+						copyOutbound["detour"] = prevCopyTag
+					}
+
+					outbounds = append(outbounds, copyOutbound)
+					chainCopyTags[candidateCopyTag] = true
+				}
+
+				if !chainCopyTags[groupCopyTag] {
+					outbounds = append(outbounds, Outbound{
+						"tag":       groupCopyTag,
+						"type":      "urltest",
+						"outbounds": virtualOutbounds,
+						"url":       "https://www.gstatic.com/generate_204",
+						"interval":  "30m",
+						"tolerance": 50,
+					})
+					chainCopyTags[groupCopyTag] = true
+				}
+				prevCopyTag = groupCopyTag
 				continue
 			}
-			chainCopyTags[copyTag] = true
 
-			// 获取原节点并创建副本
-			originalNode := nodeMap[nodeTag]
-			copyOutbound, err := b.nodeToOutbound(originalNode)
-			if err != nil {
-				return nil, err
-			}
-			copyOutbound["tag"] = copyTag
+			copyTag := storage.GenerateChainNodeCopyTag(chain.Name, nodeTag)
+			if !chainCopyTags[copyTag] {
+				copyOutbound, err := b.nodeToOutbound(nodeMap[nodeTag])
+				if err != nil {
+					return nil, err
+				}
+				copyOutbound["tag"] = copyTag
+				if prevCopyTag != "" {
+					copyOutbound["detour"] = prevCopyTag
+				}
 
-			// 设置 detour: 当前节点通过前一个节点出站
-			// 入口节点(i=0)不需要 detour，直接连接
-			// 后续节点需要通过前一个节点
-			if i > 0 {
-				prevCopyTag := storage.GenerateChainNodeCopyTag(chain.Name, chain.Nodes[i-1])
-				copyOutbound["detour"] = prevCopyTag
+				outbounds = append(outbounds, copyOutbound)
+				chainCopyTags[copyTag] = true
 			}
 
-			outbounds = append(outbounds, copyOutbound)
+			prevCopyTag = copyTag
 		}
 	}
 
@@ -466,26 +516,11 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 			return nil, err
 		}
 
-		nodeOutboundIndex[node.Tag] = len(outbounds)
 		outbounds = append(outbounds, outbound)
-		tag := node.Tag
-		if !nodeTagSet[tag] {
-			allNodeTags = append(allNodeTags, tag)
-			nodeTagSet[tag] = true
-		}
-
-		// 按国家分组
-		if node.Country != "" {
-			countryNodes[node.Country] = append(countryNodes[node.Country], tag)
-		} else {
-			// 未识别国家的节点归入 "其他" 分组
-			countryNodes["OTHER"] = append(countryNodes["OTHER"], tag)
-		}
 	}
 
 	// 收集过滤器分组
 	var filterGroupTags []string
-	filterNodeMap := make(map[string][]string)
 
 	for _, filter := range b.filters {
 		if !filter.Enabled {
@@ -506,7 +541,6 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 
 		groupTag := filter.Name
 		filterGroupTags = append(filterGroupTags, groupTag)
-		filterNodeMap[groupTag] = filteredTags
 
 		// 创建分组
 		group := Outbound{
@@ -584,7 +618,7 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 		// 验证链路中的所有节点是否存在
 		allNodesExist := true
 		for _, nodeTag := range chain.Nodes {
-			if !nodeTagSet[nodeTag] {
+			if !chainNodeExists(nodeTag) {
 				allNodesExist = false
 				break
 			}
