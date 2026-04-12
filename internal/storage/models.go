@@ -1,6 +1,14 @@
 package storage
 
-import "time"
+import (
+	"strings"
+	"time"
+)
+
+const (
+	ChainCountryNodePrefix = "country:"
+	ChainCountryNodeSource = "country"
+)
 
 // Profile 配置方案
 type Profile struct {
@@ -87,6 +95,42 @@ type ChainSpeedResult struct {
 // GenerateChainNodeCopyTag 生成链路节点副本 Tag
 func GenerateChainNodeCopyTag(chainName, originalTag string) string {
 	return chainName + "-" + originalTag
+}
+
+// GenerateChainCountryCandidateCopyTag 生成链路中地区自动选择候选节点的副本 Tag
+func GenerateChainCountryCandidateCopyTag(chainName, countryTag, originalTag string) string {
+	return GenerateChainNodeCopyTag(chainName, countryTag+"-"+originalTag)
+}
+
+// MakeChainCountryNodeTag 生成链路中的地区自动选择节点 Tag
+func MakeChainCountryNodeTag(countryCode string) string {
+	code := strings.ToUpper(strings.TrimSpace(countryCode))
+	if code == "" {
+		return ""
+	}
+	return ChainCountryNodePrefix + code
+}
+
+// ParseChainCountryNodeCode 解析链路地区自动选择节点的国家代码
+func ParseChainCountryNodeCode(tag string) string {
+	if !strings.HasPrefix(tag, ChainCountryNodePrefix) {
+		return ""
+	}
+	return strings.ToUpper(strings.TrimSpace(strings.TrimPrefix(tag, ChainCountryNodePrefix)))
+}
+
+// IsChainCountryNodeTag 判断是否为链路中的地区自动选择节点 Tag
+func IsChainCountryNodeTag(tag string) bool {
+	return ParseChainCountryNodeCode(tag) != ""
+}
+
+// GetChainCountryNodeSource 获取地区自动选择节点的来源标识
+func GetChainCountryNodeSource(countryCode string) string {
+	code := strings.ToUpper(strings.TrimSpace(countryCode))
+	if code == "" {
+		return ChainCountryNodeSource
+	}
+	return ChainCountryNodeSource + ":" + code
 }
 
 // Subscription 订阅

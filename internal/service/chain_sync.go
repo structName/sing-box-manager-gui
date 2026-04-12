@@ -33,7 +33,11 @@ func (s *ChainSyncService) SyncChainNodes() error {
 
 		// 检查每个链路节点是否仍然有效
 		for _, chainNode := range chain.ChainNodes {
-			if node, exists := validNodeTags[chainNode.OriginalTag]; exists {
+			if storage.IsChainCountryNodeTag(chainNode.OriginalTag) {
+				chainNode.Source = storage.GetChainCountryNodeSource(storage.ParseChainCountryNodeCode(chainNode.OriginalTag))
+				validChainNodes = append(validChainNodes, chainNode)
+				validNodes = append(validNodes, chainNode.OriginalTag)
+			} else if node, exists := validNodeTags[chainNode.OriginalTag]; exists {
 				// 节点仍然存在，保留并更新来源信息
 				chainNode.Source = node.Source
 				validChainNodes = append(validChainNodes, chainNode)
@@ -83,6 +87,13 @@ func (s *ChainSyncService) SyncChainNodesForSubscription(subID string) error {
 		validNodes := make([]string, 0, len(chain.Nodes))
 
 		for _, chainNode := range chain.ChainNodes {
+			if storage.IsChainCountryNodeTag(chainNode.OriginalTag) {
+				chainNode.Source = storage.GetChainCountryNodeSource(storage.ParseChainCountryNodeCode(chainNode.OriginalTag))
+				validChainNodes = append(validChainNodes, chainNode)
+				validNodes = append(validNodes, chainNode.OriginalTag)
+				continue
+			}
+
 			// 只检查来自此订阅的节点
 			if chainNode.Source == subID {
 				if subNodeTags[chainNode.OriginalTag] {
@@ -128,11 +139,16 @@ func (s *ChainSyncService) RegenerateChainNodes(chainID string) error {
 
 	newChainNodes := make([]storage.ChainNode, 0, len(chain.Nodes))
 	for _, tag := range chain.Nodes {
-		node := nodeMap[tag]
+		source := ""
+		if storage.IsChainCountryNodeTag(tag) {
+			source = storage.GetChainCountryNodeSource(storage.ParseChainCountryNodeCode(tag))
+		} else {
+			source = nodeMap[tag].Source
+		}
 		newChainNodes = append(newChainNodes, storage.ChainNode{
 			OriginalTag: tag,
 			CopyTag:     storage.GenerateChainNodeCopyTag(chain.Name, tag),
-			Source:      node.Source,
+			Source:      source,
 		})
 	}
 

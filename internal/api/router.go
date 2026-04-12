@@ -2592,7 +2592,9 @@ func (s *Server) generateChainNodes(chainName string, nodeTags []string) []stora
 	for _, tag := range nodeTags {
 		node, exists := nodeMap[tag]
 		source := ""
-		if exists {
+		if storage.IsChainCountryNodeTag(tag) {
+			source = storage.GetChainCountryNodeSource(storage.ParseChainCountryNodeCode(tag))
+		} else if exists {
 			source = node.Source
 		}
 		result = append(result, storage.ChainNode{
