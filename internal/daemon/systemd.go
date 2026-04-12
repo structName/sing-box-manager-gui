@@ -7,11 +7,36 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"text/template"
 	"time"
 )
 
+// systemdTemplate 系统级服务模板
 const systemdTemplate = `[Unit]
+Description=SingBox Manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={{.SbmPath}} -data {{.DataDir}} -port {{.Port}}
+WorkingDirectory={{.WorkingDir}}
+Restart=on-failure
+RestartSec=5
+{{if .UseJournal}}StandardOutput=journal
+StandardError=journal{{else}}StandardOutput=append:{{.LogPath}}/sbm.log
+StandardError=append:{{.LogPath}}/sbm.error.log{{end}}
+Environment="HOME={{.HomeDir}}"
+{{if .User}}User={{.User}}
+{{end}}{{if .Group}}Group={{.Group}}
+{{end}}
+[Install]
+WantedBy=multi-user.target
+`
+
+// systemdUserTemplate 用户级服务模板
+const systemdUserTemplate = `[Unit]
 Description=SingBox Manager
 After=network.target
 
@@ -19,14 +44,14 @@ After=network.target
 Type=simple
 ExecStart={{.SbmPath}} -data {{.DataDir}} -port {{.Port}}
 WorkingDirectory={{.WorkingDir}}
-Restart={{if .KeepAlive}}always{{else}}no{{end}}
+Restart=on-failure
 RestartSec=5
 StandardOutput=append:{{.LogPath}}/sbm.log
 StandardError=append:{{.LogPath}}/sbm.error.log
 Environment="HOME={{.HomeDir}}"
 
 [Install]
-WantedBy={{if .RunAtLoad}}default.target{{else}}multi-user.target{{end}}
+WantedBy=default.target
 `
 
 // SystemdConfig systemd 配置
@@ -39,13 +64,46 @@ type SystemdConfig struct {
 	HomeDir    string
 	RunAtLoad  bool
 	KeepAlive  bool
+	User       string // 系统级模式下的运行用户
+	Group      string // 系统级模式下的运行组
+	UseJournal bool   // 是否使用 journald 输出（旧版 systemd 兼容）
 }
 
 // SystemdManager systemd 管理器
 type SystemdManager struct {
 	serviceName string
 	servicePath string
-	userMode    bool
+	userMode    bool // true=用户级, false=系统级
+}
+
+// isSystemdAvailable 检测 systemd 是否可用
+func isSystemdAvailable() bool {
+	cmd := exec.Command("systemctl", "--version")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return false
+	}
+	// 检查输出是否包含 systemd 版本信息
+	return len(output) > 0 && strings.Contains(string(output), "systemd")
+}
+
+// isUserDBusAvailable 检测用户级 D-Bus 是否可用
+func isUserDBusAvailable() bool {
+	cmd := exec.Command("systemctl", "--user", "status")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		outputStr := string(output)
+		// 检查是否是 D-Bus 相关错误
+		if strings.Contains(outputStr, "D-Bus") ||
+			strings.Contains(outputStr, "No such file or directory") ||
+			strings.Contains(outputStr, "Failed to get D-Bus connection") {
+			return false
+		}
+		// 其他错误可能意味着服务不存在，但 D-Bus 可用
+		// 例如 "Loaded: not-found" 表示 D-Bus 正常但服务未安装
+	}
+	// 如果没有 D-Bus 错误，则认为 D-Bus 可用
+	return true
 }
 
 // NewSystemdManager 创建 systemd 管理器
@@ -54,20 +112,48 @@ func NewSystemdManager() (*SystemdManager, error) {
 		return nil, fmt.Errorf("systemd 仅在 Linux 上支持")
 	}
 
-	serviceName := "singbox-manager.service"
-	homeDir, err := getUserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("获取用户目录失败: %w", err)
+	// 检测 systemd 是否可用
+	if !isSystemdAvailable() {
+		return nil, fmt.Errorf("systemd 不可用")
 	}
 
-	// 用户级服务路径
-	servicePath := filepath.Join(homeDir, ".config", "systemd", "user", serviceName)
+	serviceName := "singbox-manager.service"
+	userMode := false
+	var servicePath string
+
+	if os.Getuid() == 0 {
+		// root 用户，使用系统级
+		servicePath = filepath.Join("/etc/systemd/system", serviceName)
+		userMode = false
+	} else {
+		// 普通用户，检测用户级 D-Bus 是否可用
+		if isUserDBusAvailable() {
+			homeDir, err := getUserHomeDir()
+			if err != nil {
+				return nil, fmt.Errorf("获取用户目录失败: %w", err)
+			}
+			servicePath = filepath.Join(homeDir, ".config", "systemd", "user", serviceName)
+			userMode = true
+		} else {
+			// D-Bus 不可用，回退系统级
+			servicePath = filepath.Join("/etc/systemd/system", serviceName)
+			userMode = false
+		}
+	}
 
 	return &SystemdManager{
 		serviceName: serviceName,
 		servicePath: servicePath,
-		userMode:    true,
+		userMode:    userMode,
 	}, nil
+}
+
+// GetMode 获取当前运行模式
+func (sm *SystemdManager) GetMode() string {
+	if sm.userMode {
+		return "user"
+	}
+	return "system"
 }
 
 // Install 安装 systemd 服务
@@ -76,11 +162,20 @@ func (sm *SystemdManager) Install(config SystemdConfig) error {
 		return fmt.Errorf("创建日志目录失败: %w", err)
 	}
 
+	// 创建服务目录
 	if err := os.MkdirAll(filepath.Dir(sm.servicePath), 0755); err != nil {
 		return fmt.Errorf("创建 systemd 目录失败: %w", err)
 	}
 
-	tmpl, err := template.New("systemd").Parse(systemdTemplate)
+	// 选择模板
+	var tmplStr string
+	if sm.userMode {
+		tmplStr = systemdUserTemplate
+	} else {
+		tmplStr = systemdTemplate
+	}
+
+	tmpl, err := template.New("systemd").Parse(tmplStr)
 	if err != nil {
 		return fmt.Errorf("解析模板失败: %w", err)
 	}
@@ -165,6 +260,7 @@ func (sm *SystemdManager) GetServicePath() string {
 	return sm.servicePath
 }
 
+// runSystemctl 执行 systemctl 命令
 func (sm *SystemdManager) runSystemctl(args ...string) error {
 	if sm.userMode {
 		args = append([]string{"--user"}, args...)

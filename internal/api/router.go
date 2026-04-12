@@ -1699,6 +1699,7 @@ func (s *Server) getSystemdStatus(c *gin.Context) {
 			"running":     s.systemdManager.IsRunning(),
 			"servicePath": s.systemdManager.GetServicePath(),
 			"supported":   true,
+			"mode":        s.systemdManager.GetMode(),
 		},
 	})
 }
@@ -1719,14 +1720,14 @@ func (s *Server) installSystemd(c *gin.Context) {
 		}
 	}
 
-	logsDir := s.store.GetDataDir() + "/logs"
+	logsDir := s.baseDir + "/logs"
 
 	config := daemon.SystemdConfig{
 		SbmPath:    s.sbmPath,
-		DataDir:    s.store.GetDataDir(),
+		DataDir:    s.baseDir,
 		Port:       strconv.Itoa(s.port),
 		LogPath:    logsDir,
-		WorkingDir: s.store.GetDataDir(),
+		WorkingDir: s.baseDir,
 		HomeDir:    homeDir,
 		RunAtLoad:  true,
 		KeepAlive:  true,
@@ -1738,8 +1739,15 @@ func (s *Server) installSystemd(c *gin.Context) {
 	}
 
 	if err := s.systemdManager.Start(); err != nil {
+		mode := s.systemdManager.GetMode()
+		var startCmd string
+		if mode == "user" {
+			startCmd = "systemctl --user start singbox-manager"
+		} else {
+			startCmd = "systemctl start singbox-manager"
+		}
 		c.JSON(http.StatusOK, gin.H{
-			"message": "服务已安装，但启动失败: " + err.Error() + "。请执行 systemctl --user start singbox-manager",
+			"message": "服务已安装，但启动失败: " + err.Error() + "。请执行 " + startCmd,
 			"action":  "manual",
 		})
 		return
@@ -1779,6 +1787,19 @@ func (s *Server) restartSystemd(c *gin.Context) {
 
 // ==================== 统一守护进程 API ====================
 
+// getDaemonMode 获取守护进程运行模式
+func (s *Server) getDaemonMode() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "user" // launchd 总是用户级
+	case "linux":
+		if s.systemdManager != nil {
+			return s.systemdManager.GetMode()
+		}
+	}
+	return "unknown"
+}
+
 func (s *Server) getDaemonStatus(c *gin.Context) {
 	platform := runtime.GOOS
 	var installed, running, supported bool
@@ -1808,6 +1829,7 @@ func (s *Server) getDaemonStatus(c *gin.Context) {
 			"configPath": configPath,
 			"supported":  supported,
 			"platform":   platform,
+			"mode":       s.getDaemonMode(),
 		},
 	})
 }
@@ -1823,7 +1845,7 @@ func (s *Server) installDaemon(c *gin.Context) {
 		}
 	}
 
-	logsDir := s.store.GetDataDir() + "/logs"
+	logsDir := s.baseDir + "/logs"
 
 	switch runtime.GOOS {
 	case "darwin":
@@ -1833,10 +1855,10 @@ func (s *Server) installDaemon(c *gin.Context) {
 		}
 		config := daemon.LaunchdConfig{
 			SbmPath:    s.sbmPath,
-			DataDir:    s.store.GetDataDir(),
+			DataDir:    s.baseDir,
 			Port:       strconv.Itoa(s.port),
 			LogPath:    logsDir,
-			WorkingDir: s.store.GetDataDir(),
+			WorkingDir: s.baseDir,
 			HomeDir:    homeDir,
 			RunAtLoad:  true,
 			KeepAlive:  true,
@@ -1856,10 +1878,10 @@ func (s *Server) installDaemon(c *gin.Context) {
 		}
 		config := daemon.SystemdConfig{
 			SbmPath:    s.sbmPath,
-			DataDir:    s.store.GetDataDir(),
+			DataDir:    s.baseDir,
 			Port:       strconv.Itoa(s.port),
 			LogPath:    logsDir,
-			WorkingDir: s.store.GetDataDir(),
+			WorkingDir: s.baseDir,
 			HomeDir:    homeDir,
 			RunAtLoad:  true,
 			KeepAlive:  true,
