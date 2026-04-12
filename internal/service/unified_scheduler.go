@@ -346,14 +346,19 @@ func (s *UnifiedScheduler) IsRunning() bool {
 	return s.started
 }
 
-// IntervalToCron 将间隔分钟数转换为 cron 表达式
+// IntervalToCron 将间隔分钟数转换为调度表达式
+// 使用 @every 语法实现真正的固定间隔调度，避免 */N 对齐到固定时钟点的问题
 func IntervalToCron(minutes int) string {
 	if minutes <= 0 {
 		minutes = 60
 	}
-	if minutes < 60 {
-		return fmt.Sprintf("0 */%d * * * *", minutes)
-	}
 	hours := minutes / 60
-	return fmt.Sprintf("0 0 */%d * * *", hours)
+	remainingMinutes := minutes % 60
+	if hours > 0 && remainingMinutes > 0 {
+		return fmt.Sprintf("@every %dh%dm", hours, remainingMinutes)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("@every %dh", hours)
+	}
+	return fmt.Sprintf("@every %dm", minutes)
 }
