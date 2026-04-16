@@ -271,12 +271,12 @@ function ServiceStatusCard({
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">版本</p>
             <div className="flex items-center gap-1">
               <p className="font-semibold text-gray-800 dark:text-white">
-                {serviceStatus?.version?.match(/version\s+([\d.]+)/)?.[1] || serviceStatus?.version || '-'}
+                {serviceStatus?.version?.match(/version\s+(\S+)/)?.[1] || serviceStatus?.version || '-'}
               </p>
               {serviceStatus?.version && (
                 <Tooltip
                   content={
-                    <div className="max-w-xs whitespace-pre-wrap text-xs p-1">
+                    <div className="max-w-md whitespace-pre-wrap text-xs p-1 break-all">
                       {serviceStatus.version}
                     </div>
                   }
