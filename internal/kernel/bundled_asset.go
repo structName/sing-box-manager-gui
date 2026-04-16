@@ -7,7 +7,7 @@ import (
 	"runtime"
 )
 
-const bundledVersion = "v1.13.3"
+const bundledVersion = "ve7cfc42-ssr"
 
 type bundledAsset struct {
 	archiveName string

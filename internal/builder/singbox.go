@@ -67,18 +67,18 @@ type NTPConfig struct {
 }
 
 // Inbound 入站配置
+// 注意: sniff/sniff_override_destination 已在 sing-box 1.11.0 中从 inbound 移除，
+// 改为通过 route rule_actions 配置（见 buildRoute 中的 sniff action）
 type Inbound struct {
-	Type                     string        `json:"type"`
-	Tag                      string        `json:"tag"`
-	Listen                   string        `json:"listen,omitempty"`
-	ListenPort               int           `json:"listen_port,omitempty"`
-	Address                  []string      `json:"address,omitempty"`
-	AutoRoute                bool          `json:"auto_route,omitempty"`
-	StrictRoute              bool          `json:"strict_route,omitempty"`
-	Stack                    string        `json:"stack,omitempty"`
-	Sniff                    bool          `json:"sniff,omitempty"`
-	SniffOverrideDestination bool          `json:"sniff_override_destination,omitempty"`
-	Users                    []InboundUser `json:"users,omitempty"` // 用户认证
+	Type       string        `json:"type"`
+	Tag        string        `json:"tag"`
+	Listen     string        `json:"listen,omitempty"`
+	ListenPort int           `json:"listen_port,omitempty"`
+	Address    []string      `json:"address,omitempty"`
+	AutoRoute  bool          `json:"auto_route,omitempty"`
+	StrictRoute bool         `json:"strict_route,omitempty"`
+	Stack      string        `json:"stack,omitempty"`
+	Users      []InboundUser `json:"users,omitempty"`
 }
 
 // InboundUser 入站用户认证
@@ -346,14 +346,12 @@ func (b *ConfigBuilder) buildInbounds() []Inbound {
 
 	if b.settings.TunEnabled {
 		inbounds = append(inbounds, Inbound{
-			Type:                     "tun",
-			Tag:                      "tun-in",
-			Address:                  []string{"172.19.0.1/30", "fdfe:dcba:9876::1/126"},
-			AutoRoute:                true,
-			StrictRoute:              true,
-			Stack:                    "system",
-			Sniff:                    true,
-			SniffOverrideDestination: true,
+			Type:      "tun",
+			Tag:       "tun-in",
+			Address:   []string{"172.19.0.1/30", "fdfe:dcba:9876::1/126"},
+			AutoRoute: true,
+			StrictRoute: true,
+			Stack:     "system",
 		})
 	}
 
@@ -364,12 +362,10 @@ func (b *ConfigBuilder) buildInbounds() []Inbound {
 		}
 
 		inbound := Inbound{
-			Type:                     port.Type,
-			Tag:                      fmt.Sprintf("custom-%s", port.ID),
-			Listen:                   port.Listen,
-			ListenPort:               port.Port,
-			Sniff:                    true,
-			SniffOverrideDestination: true,
+			Type:       port.Type,
+			Tag:        fmt.Sprintf("custom-%s", port.ID),
+			Listen:     port.Listen,
+			ListenPort: port.Port,
 		}
 
 		if port.Auth != nil && port.Auth.Username != "" {

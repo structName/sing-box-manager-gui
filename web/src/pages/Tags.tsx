@@ -119,6 +119,7 @@ const protocolOptions = [
   { value: 'trojan', label: 'Trojan' },
   { value: 'hysteria2', label: 'Hysteria2' },
   { value: 'tuic', label: 'TUIC' },
+  { value: 'ssr', label: 'ShadowsocksR' },
 ];
 
 // 常用国家代码选项

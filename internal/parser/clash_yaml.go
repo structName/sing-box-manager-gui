@@ -52,6 +52,10 @@ type ClashProxy struct {
 	CongestionController string `yaml:"congestion-controller,omitempty"`
 	UDPRelayMode         string `yaml:"udp-relay-mode,omitempty"`
 	ReduceRTT            bool   `yaml:"reduce-rtt,omitempty"`
+	// SSR 特有 (obfs 字段复用 Hysteria2 的 Obfs)
+	SSRProtocol      string `yaml:"protocol,omitempty"`
+	SSRProtocolParam string `yaml:"protocol-param,omitempty"`
+	SSRObfsParam     string `yaml:"obfs-param,omitempty"`
 }
 
 // WSOpts WebSocket 选项
@@ -174,6 +178,23 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 		}
 		if proxy.ReduceRTT {
 			extra["zero_rtt_handshake"] = true
+		}
+
+	case "ssr", "shadowsocksr":
+		nodeType = "shadowsocksr"
+		extra["method"] = proxy.Cipher
+		extra["password"] = proxy.Password
+		if proxy.SSRProtocol != "" {
+			extra["protocol"] = proxy.SSRProtocol
+		}
+		if proxy.SSRProtocolParam != "" {
+			extra["protocol_param"] = proxy.SSRProtocolParam
+		}
+		if proxy.Obfs != "" {
+			extra["obfs"] = proxy.Obfs
+		}
+		if proxy.SSRObfsParam != "" {
+			extra["obfs_param"] = proxy.SSRObfsParam
 		}
 
 	case "socks", "socks5":

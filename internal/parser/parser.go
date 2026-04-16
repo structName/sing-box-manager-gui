@@ -46,6 +46,8 @@ func ParseURL(rawURL string) (*storage.Node, error) {
 		parser = &TuicParser{}
 	case "socks", "socks5", "socks4", "socks4a":
 		parser = &SocksParser{}
+	case "ssr":
+		parser = &ShadowsocksRParser{}
 	default:
 		return nil, fmt.Errorf("不支持的协议: %s", protocol)
 	}
