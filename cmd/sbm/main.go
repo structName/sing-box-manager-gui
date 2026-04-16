@@ -14,7 +14,7 @@ import (
 )
 
 var (
-	Version        = "0.2.9"
+	Version        = "0.2.12"
 	dataDir        string
 	port           int
 	swaggerEnabled bool

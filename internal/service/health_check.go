@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/xiaobei/singbox-manager/internal/database/models"
+	"github.com/xiaobei/singbox-manager/internal/speedtest"
 	"github.com/xiaobei/singbox-manager/internal/storage"
 	"golang.org/x/net/proxy"
 )
@@ -156,15 +158,27 @@ func (h *HealthCheckService) CheckChain(chainID string) (*storage.ChainHealthSta
 			Tag: nodeTag,
 		}
 
-		if isExitNode && clashAPIPort > 0 {
-			// 出口节点：通过 Clash API 测试端到端 HTTP 延迟
-			// 这会测试整个链路：客户端 → 入口 → 中转... → 出口 → 测试URL
-			copyTag := storage.GenerateChainNodeCopyTag(chain.Name, nodeTag)
-			latency, err := h.testViaClashAPI(clashAPIPort, copyTag, testURL, timeout)
+		if isExitNode {
+			// 出口节点：端到端延迟测试
+			// 优先通过 Clash API（测试完整链路路径），失败则回退到 mihomo 直连测试
+			var latency int
+			var testErr error
 
-			if err != nil {
+			if clashAPIPort > 0 {
+				copyTag := storage.GenerateChainNodeCopyTag(chain.Name, nodeTag)
+				latency, testErr = h.testViaClashAPI(clashAPIPort, copyTag, testURL, timeout)
+			}
+
+			// Clash API 不可用时，通过 mihomo adapter 直接测试出口节点
+			if clashAPIPort <= 0 || testErr != nil {
+				if node, exists := nodeMap[nodeTag]; exists {
+					latency, testErr = h.testNodeViaMihomo(node, testURL, timeout)
+				}
+			}
+
+			if testErr != nil {
 				nodeStatus.Status = "unhealthy"
-				nodeStatus.Error = err.Error()
+				nodeStatus.Error = testErr.Error()
 				unhealthyCount++
 			} else {
 				nodeStatus.Status = "healthy"
@@ -458,6 +472,34 @@ func (h *HealthCheckService) checkChainSimple(chain *storage.ProxyChain, config 
 	}
 
 	return status, nil
+}
+
+// testNodeViaMihomo 通过 mihomo adapter 直接测试节点延迟
+// 不需要任何监听端口，在内存中建立代理连接测试
+func (h *HealthCheckService) testNodeViaMihomo(node storage.Node, testURL string, timeout time.Duration) (int, error) {
+	// 将 storage.Node 转换为 models.Node（mihomo adapter 需要的格式）
+	mihomoNode := &models.Node{
+		Tag:        node.Tag,
+		Type:       node.Type,
+		Server:     node.Server,
+		ServerPort: node.ServerPort,
+		Extra:      models.JSONMap(node.Extra),
+	}
+
+	proxyAdapter, err := speedtest.GetMihomoAdapter(mihomoNode)
+	if err != nil {
+		return 0, fmt.Errorf("创建代理 adapter 失败: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	delay, err := proxyAdapter.URLTest(ctx, testURL, nil)
+	if err != nil {
+		return 0, fmt.Errorf("节点延迟测试失败: %w", err)
+	}
+
+	return int(delay), nil
 }
 
 // testNodeTCP 简单的 TCP 连接测试
