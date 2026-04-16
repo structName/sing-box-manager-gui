@@ -393,6 +393,27 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 			proxy["congestion-controller"] = congestion
 		}
 
+	case "shadowsocksr", "ssr":
+		proxy["type"] = "ssr"
+		if method, ok := extra["method"].(string); ok {
+			proxy["cipher"] = method
+		}
+		if password, ok := extra["password"].(string); ok {
+			proxy["password"] = password
+		}
+		if protocol, ok := extra["protocol"].(string); ok {
+			proxy["protocol"] = protocol
+		}
+		if protocolParam, ok := extra["protocol_param"].(string); ok {
+			proxy["protocol-param"] = protocolParam
+		}
+		if obfs, ok := extra["obfs"].(string); ok {
+			proxy["obfs"] = obfs
+		}
+		if obfsParam, ok := extra["obfs_param"].(string); ok {
+			proxy["obfs-param"] = obfsParam
+		}
+
 	default:
 		return nil, fmt.Errorf("不支持的协议类型: %s", node.Type)
 	}
