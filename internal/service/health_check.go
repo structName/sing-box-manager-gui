@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	mihomoConstant "github.com/metacubex/mihomo/constant"
 	"github.com/xiaobei/singbox-manager/internal/database/models"
 	"github.com/xiaobei/singbox-manager/internal/speedtest"
 	"github.com/xiaobei/singbox-manager/internal/storage"
@@ -130,14 +131,16 @@ func (h *HealthCheckService) CheckChain(chainID string) (*storage.ChainHealthSta
 		return status, nil
 	}
 
-	// 获取所有节点信息（用于 TCP 测试）
+	// 获取所有节点信息（用于 TCP 测试和地区节点查找）
 	allNodes := h.store.GetAllNodes()
 	nodeMap := make(map[string]storage.Node)
 	countryNodeCount := make(map[string]int)
+	countryNodes := make(map[string][]storage.Node) // 地区 → 节点列表
 	for _, n := range allNodes {
 		nodeMap[n.Tag] = n
 		if n.Country != "" {
 			countryNodeCount[n.Country]++
+			countryNodes[n.Country] = append(countryNodes[n.Country], n)
 		}
 	}
 
@@ -172,7 +175,17 @@ func (h *HealthCheckService) CheckChain(chainID string) (*storage.ChainHealthSta
 			// Clash API 不可用时，通过 mihomo adapter 直接测试出口节点
 			if clashAPIPort <= 0 || testErr != nil {
 				if node, exists := nodeMap[nodeTag]; exists {
+					// 普通节点：直接测试
 					latency, testErr = h.testNodeViaMihomo(node, testURL, timeout)
+				} else if storage.IsChainCountryNodeTag(nodeTag) {
+					// 地区节点：随机选一个该地区的节点测试
+					countryCode := storage.ParseChainCountryNodeCode(nodeTag)
+					if nodes := countryNodes[countryCode]; len(nodes) > 0 {
+						picked := nodes[rand.Intn(len(nodes))]
+						latency, testErr = h.testNodeViaMihomo(picked, testURL, timeout)
+					} else {
+						testErr = fmt.Errorf("地区 %s 下没有可用节点", countryCode)
+					}
 				}
 			}
 
@@ -270,24 +283,41 @@ func (h *HealthCheckService) findProxyPort(preferOutbound string) (string, error
 }
 
 // CheckChainSpeed 测试链路下载速度
-// 通过代理下载文件测量带宽
+// 优先通过代理端口下载测量带宽，无端口时回退到 mihomo adapter 直测出口节点
 func (h *HealthCheckService) CheckChainSpeed(chainID string) (*storage.ChainSpeedResult, error) {
 	chain := h.store.GetProxyChain(chainID)
 	if chain == nil {
 		return nil, fmt.Errorf("chain not found: %s", chainID)
 	}
 
-	// 从 InboundPorts 中查找代理端口，优先使用绑定了该链路的端口
-	proxyAddr, err := h.findProxyPort(chain.Name)
-	if err != nil {
-		return nil, err
-	}
-
 	// 测速配置
 	speedTestURL := getRandomSpeedTestURL()
 	timeout := 30 * time.Second
 
-	// 创建通过代理的 HTTP 客户端
+	// 优先尝试通过代理端口测速
+	proxyAddr, portErr := h.findProxyPort(chain.Name)
+	if portErr == nil {
+		result, err := h.speedTestViaProxy(chainID, proxyAddr, speedTestURL, timeout)
+		if err == nil {
+			return result, nil
+		}
+		// 代理端口测速失败，继续尝试 mihomo
+	}
+
+	// 回退：通过 mihomo adapter 直接测试出口节点
+	exitNode, err := h.resolveExitNode(chain)
+	if err != nil {
+		if portErr != nil {
+			return nil, fmt.Errorf("%v; mihomo 回退也失败: %w", portErr, err)
+		}
+		return nil, err
+	}
+
+	return h.speedTestViaMihomo(chainID, exitNode, speedTestURL, timeout)
+}
+
+// speedTestViaProxy 通过 SOCKS 代理端口测速
+func (h *HealthCheckService) speedTestViaProxy(chainID, proxyAddr, speedTestURL string, timeout time.Duration) (*storage.ChainSpeedResult, error) {
 	proxyDialer, err := proxy.SOCKS5("tcp", proxyAddr, nil, proxy.Direct)
 	if err != nil {
 		return nil, fmt.Errorf("创建代理失败: %w", err)
@@ -304,7 +334,47 @@ func (h *HealthCheckService) CheckChainSpeed(chainID string) (*storage.ChainSpee
 		Timeout:   timeout,
 	}
 
-	// 开始测速
+	return h.doSpeedTest(chainID, client, speedTestURL)
+}
+
+// speedTestViaMihomo 通过 mihomo adapter 直测节点速度
+func (h *HealthCheckService) speedTestViaMihomo(chainID string, node storage.Node, speedTestURL string, timeout time.Duration) (*storage.ChainSpeedResult, error) {
+	mihomoNode := &models.Node{
+		Tag:        node.Tag,
+		Type:       node.Type,
+		Server:     node.Server,
+		ServerPort: node.ServerPort,
+		Extra:      models.JSONMap(node.Extra),
+	}
+
+	proxyAdapter, err := speedtest.GetMihomoAdapter(mihomoNode)
+	if err != nil {
+		return nil, fmt.Errorf("创建代理 adapter 失败: %w", err)
+	}
+
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, portStr, _ := net.SplitHostPort(addr)
+			portInt, _ := strconv.Atoi(portStr)
+			md := &mihomoConstant.Metadata{
+				Host:    host,
+				DstPort: uint16(portInt),
+				Type:    mihomoConstant.HTTP,
+			}
+			return proxyAdapter.DialContext(ctx, md)
+		},
+	}
+
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   timeout,
+	}
+
+	return h.doSpeedTest(chainID, client, speedTestURL)
+}
+
+// doSpeedTest 执行实际的下载测速
+func (h *HealthCheckService) doSpeedTest(chainID string, client *http.Client, speedTestURL string) (*storage.ChainSpeedResult, error) {
 	start := time.Now()
 
 	resp, err := client.Get(speedTestURL)
@@ -313,9 +383,8 @@ func (h *HealthCheckService) CheckChainSpeed(chainID string) (*storage.ChainSpee
 	}
 	defer resp.Body.Close()
 
-	// 读取数据并计算速度
 	var totalBytes int64
-	buf := make([]byte, 32*1024) // 32KB buffer
+	buf := make([]byte, 32*1024)
 
 	for {
 		n, err := resp.Body.Read(buf)
@@ -329,19 +398,50 @@ func (h *HealthCheckService) CheckChainSpeed(chainID string) (*storage.ChainSpee
 	}
 
 	duration := time.Since(start)
-
-	// 计算速度 (Mbps)
 	speedMbps := float64(totalBytes*8) / duration.Seconds() / 1000000
 
-	result := &storage.ChainSpeedResult{
+	return &storage.ChainSpeedResult{
 		ChainID:    chainID,
 		TestTime:   time.Now(),
 		SpeedMbps:  speedMbps,
 		BytesTotal: totalBytes,
 		Duration:   duration.Milliseconds(),
+	}, nil
+}
+
+// resolveExitNode 解析链路的出口节点（支持地区节点）
+func (h *HealthCheckService) resolveExitNode(chain *storage.ProxyChain) (storage.Node, error) {
+	if len(chain.Nodes) == 0 {
+		return storage.Node{}, fmt.Errorf("链路没有节点")
 	}
 
-	return result, nil
+	exitTag := chain.Nodes[len(chain.Nodes)-1]
+
+	allNodes := h.store.GetAllNodes()
+
+	// 普通节点：直接查找
+	if !storage.IsChainCountryNodeTag(exitTag) {
+		for _, n := range allNodes {
+			if n.Tag == exitTag {
+				return n, nil
+			}
+		}
+		return storage.Node{}, fmt.Errorf("出口节点 %s 不存在", exitTag)
+	}
+
+	// 地区节点：随机选一个该地区的节点
+	countryCode := storage.ParseChainCountryNodeCode(exitTag)
+	var candidates []storage.Node
+	for _, n := range allNodes {
+		if n.Country == countryCode {
+			candidates = append(candidates, n)
+		}
+	}
+	if len(candidates) == 0 {
+		return storage.Node{}, fmt.Errorf("地区 %s 下没有可用节点", countryCode)
+	}
+
+	return candidates[rand.Intn(len(candidates))], nil
 }
 
 // testViaClashAPI 通过 Clash API 测试代理延迟

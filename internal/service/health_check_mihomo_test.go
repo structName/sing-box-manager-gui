@@ -134,6 +134,72 @@ func TestCheckChain_FallbackPath(t *testing.T) {
 	})
 }
 
+// TestCheckChain_CountryExitNode 测试出口节点为地区节点时的回退
+func TestCheckChain_CountryExitNode(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, _ := storage.NewJSONStore(tmpDir)
+
+	settings := store.GetSettings()
+	settings.ClashAPIPort = 0 // 禁用 Clash API
+	store.UpdateSettings(settings)
+
+	// 添加一个带地区信息的节点
+	store.AddManualNode(storage.ManualNode{
+		ID:      "mn-sg-node",
+		Enabled: true,
+		Node: storage.Node{
+			Tag:        "🇸🇬 新加坡・01",
+			Type:       "shadowsocksr",
+			Server:     "6kusjo.ps6ywnxy.com",
+			ServerPort: 1070,
+			Country:    "SG",
+			Extra: map[string]interface{}{
+				"method":         "chacha20-ietf",
+				"obfs":           "plain",
+				"obfs_param":     "11061346320.microsoft.com",
+				"password":       "bxsnucrgk6hfish",
+				"protocol":       "auth_aes128_sha1",
+				"protocol_param": "346320:HEQHnc",
+			},
+		},
+	})
+
+	// 创建链路：入口=country:TW(无节点), 出口=country:SG
+	store.AddProxyChain(storage.ProxyChain{
+		ID:      "test-country-chain",
+		Name:    "country-chain",
+		Enabled: true,
+		Nodes:   []string{"country:SG"},
+	})
+
+	svc := NewHealthCheckService(store)
+
+	t.Run("country_exit_node_uses_mihomo", func(t *testing.T) {
+		status, err := svc.CheckChain("test-country-chain")
+		if err != nil {
+			t.Fatalf("CheckChain 不应返回错误: %v", err)
+		}
+
+		t.Logf("链路状态: %s", status.Status)
+		for _, ns := range status.NodeStatuses {
+			t.Logf("  节点 [%s]: status=%s latency=%d err=%s",
+				ns.Tag, ns.Status, ns.Latency, ns.Error)
+		}
+
+		// 关键验证：不应出现 Clash API 错误
+		for _, ns := range status.NodeStatuses {
+			if ns.Error != "" && contains(ns.Error, "Clash API") {
+				t.Errorf("地区出口节点不应出现 Clash API 错误: %s", ns.Error)
+			}
+		}
+
+		// 如果节点可达，应该有延迟
+		if status.Status == "healthy" && status.Latency > 0 {
+			fmt.Printf("\n✓ 地区出口节点 country:SG → mihomo 回退成功, latency=%dms\n", status.Latency)
+		}
+	})
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)
 }
