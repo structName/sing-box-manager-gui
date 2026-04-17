@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactElement } from 'react';
-import { Card, CardBody, CardHeader, Button, Chip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Input, Textarea, useDisclosure, Switch, Select, SelectItem, Accordion, AccordionItem } from '@nextui-org/react';
+import { Card, CardBody, CardHeader, Button, Chip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Input, Textarea, useDisclosure, Switch, Select, SelectItem, Accordion, AccordionItem, Tooltip } from '@nextui-org/react';
 import { Plus, Link2, Trash2, Pencil, ArrowRight, ChevronUp, ChevronDown, Activity, RefreshCw, Download, Zap } from 'lucide-react';
 import { proxyChainApi, nodeApi } from '../api';
 import { toast } from '../components/Toast';
@@ -181,13 +181,23 @@ export default function ProxyChains() {
     setTestingChain(chainId);
     try {
       const res = await proxyChainApi.checkHealth(chainId);
+      const data = res.data.data;
       setHealthStatuses(prev => ({
         ...prev,
-        [chainId]: res.data.data
+        [chainId]: data
       }));
-      toast.success('延迟检测完成');
+      // 根据检测结果显示不同提示
+      if (data.status === 'healthy') {
+        toast.success(`延迟检测完成${data.latency > 0 ? `: ${data.latency}ms` : ''}`);
+      } else {
+        const failedNodes = data.node_statuses
+          ?.filter((ns: any) => ns.status !== 'healthy' && ns.error)
+          .map((ns: any) => `${ns.tag}: ${ns.error}`)
+          .join('; ');
+        toast.error(`延迟检测${data.status === 'degraded' ? '部分失败' : '失败'}${failedNodes ? ': ' + failedNodes : ''}`);
+      }
     } catch (error: any) {
-      toast.error('延迟检测失败');
+      toast.error('延迟检测失败: ' + (error.response?.data?.error || error.message));
     } finally {
       setTestingChain(null);
     }
@@ -203,7 +213,8 @@ export default function ProxyChains() {
       }));
       toast.success(`测速完成: ${res.data.data.speed_mbps.toFixed(2)} Mbps`);
     } catch (error: any) {
-      toast.error('测速失败: ' + (error.response?.data?.error || error.message));
+      const errMsg = error.response?.data?.error || error.message || '未知错误';
+      toast.error(`测速失败: ${errMsg}`);
     } finally {
       setSpeedTestingChain(null);
     }
@@ -639,17 +650,22 @@ export default function ProxyChains() {
                           const nodeHealth = health?.node_statuses?.find(ns => ns.tag === nodeTag);
                           return (
                             <div key={index} className="flex items-center gap-2">
-                              <Chip
-                                variant="bordered"
-                                startContent={nodeDisplay.emoji}
-                                color={nodeHealth ? getHealthColor(nodeHealth.status) : 'default'}
+                              <Tooltip
+                                content={nodeHealth?.error || (nodeHealth?.latency ? `${nodeHealth.latency}ms` : '')}
+                                isDisabled={!nodeHealth?.error && !nodeHealth?.latency}
+                                color={nodeHealth?.error ? 'danger' : 'default'}
                               >
-                                {nodeDisplay.label}
-                                {/* 显示每个节点的延迟 */}
-                                {nodeHealth && nodeHealth.latency > 0 && (
-                                  <span className="text-xs ml-1 opacity-70">{nodeHealth.latency}ms</span>
-                                )}
-                              </Chip>
+                                <Chip
+                                  variant="bordered"
+                                  startContent={nodeDisplay.emoji}
+                                  color={nodeHealth ? getHealthColor(nodeHealth.status) : 'default'}
+                                >
+                                  {nodeDisplay.label}
+                                  {nodeHealth && nodeHealth.latency > 0 && (
+                                    <span className="text-xs ml-1 opacity-70">{nodeHealth.latency}ms</span>
+                                  )}
+                                </Chip>
+                              </Tooltip>
                               {index < chain.nodes.length - 1 && (
                                 <ArrowRight className="w-4 h-4 text-gray-400" />
                               )}
