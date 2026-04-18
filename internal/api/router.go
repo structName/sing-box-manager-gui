@@ -1423,6 +1423,11 @@ func (s *Server) activateProfile(c *gin.Context) {
 	os.MkdirAll(filepath.Join(profileDir, "generated"), 0755)
 	s.processManager.SetConfigPath(configPath)
 
+	// 重新生成配置文件（基于新 Profile 的数据）
+	if err := s.buildAndSaveCurrentConfig(); err != nil {
+		logger.Warn("切换 Profile 后重新生成配置失败: %v", err)
+	}
+
 	c.JSON(http.StatusOK, gin.H{"message": "已切换到 Profile: " + name})
 }
 
