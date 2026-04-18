@@ -35,7 +35,7 @@ export default function Layout({ children }: LayoutProps) {
     }
   }, [fetchServiceStatus, fetchSettings, serviceStatus, settings]);
 
-  const clashApiPort = settings?.clash_api_port || 9091;
+  const clashApiPort = settings?.clash_api_port || 19091;
   const clashApiSecret = settings?.clash_api_secret || '';
   const clashUIEnabled = settings?.clash_ui_enabled ?? true;
 

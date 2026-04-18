@@ -27,7 +27,7 @@ func init() {
 	defaultDataDir := filepath.Join(homeDir, ".singbox-manager")
 
 	flag.StringVar(&dataDir, "data", defaultDataDir, "数据目录")
-	flag.IntVar(&port, "port", 9090, "Web 服务端口")
+	flag.IntVar(&port, "port", 19090, "Web 服务端口")
 	flag.BoolVar(&swaggerEnabled, "swagger", false, "启用 Swagger UI")
 	flag.StringVar(&swaggerOut, "swagger-out", "", "导出 OpenAPI JSON 文件")
 }

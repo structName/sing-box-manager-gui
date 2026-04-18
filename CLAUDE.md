@@ -31,7 +31,7 @@ SKIP_FRONTEND=1 ./build.sh current
 cd web && pnpm dev
 
 # 后端开发（手动重启）
-go run ./cmd/sbm/ -port 9090
+go run ./cmd/sbm/ -port 19090
 
 # 运行测试
 go test ./...

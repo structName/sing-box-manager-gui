@@ -20,7 +20,7 @@ import { useHostsManager } from './settings/useHostsManager';
 import { useKernelManager } from './settings/useKernelManager';
 import { useSettingsForm } from './settings/useSettingsForm';
 
-const DEFAULT_CLASH_API_PORT = 9091;
+const DEFAULT_CLASH_API_PORT = 19091;
 
 function LoadingState() {
   return (

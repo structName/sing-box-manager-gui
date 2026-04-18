@@ -134,7 +134,7 @@ VERSION=1.0.0 ./build.sh all         # Custom version
 ### Usage
 
 ```bash
-# Basic usage (default port: 9090)
+# Basic usage (default port: 19090)
 ./sbm
 
 # Custom data directory and port
@@ -151,11 +151,11 @@ VERSION=1.0.0 ./build.sh all         # Custom version
 | Option | Default | Description |
 |--------|---------|-------------|
 | `-data` | `~/.singbox-manager` | Data directory path |
-| `-port` | `9090` | Web server port |
+| `-port` | `19090` | Web server port |
 | `-swagger` | `false` | Enable Swagger UI at `/swagger` |
 | `-swagger-out` | - | Export OpenAPI JSON spec to file |
 
-After starting, open `http://localhost:9090` in your browser.
+After starting, open `http://localhost:19090` in your browser.
 
 ### Configuration
 
@@ -359,7 +359,7 @@ VERSION=1.0.0 ./build.sh all         # 自定义版本号
 ### 使用方法
 
 ```bash
-# 基本用法（默认端口 9090）
+# 基本用法（默认端口 19090）
 ./sbm
 
 # 自定义数据目录和端口
@@ -376,11 +376,11 @@ VERSION=1.0.0 ./build.sh all         # 自定义版本号
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `-data` | `~/.singbox-manager` | 数据目录路径 |
-| `-port` | `9090` | Web 服务端口 |
+| `-port` | `19090` | Web 服务端口 |
 | `-swagger` | `false` | 启用 Swagger UI（`/swagger`） |
 | `-swagger-out` | - | 导出 OpenAPI JSON 规范到文件 |
 
-启动后，在浏览器中打开 `http://localhost:9090`。
+启动后，在浏览器中打开 `http://localhost:19090`。
 
 ### 配置
 
