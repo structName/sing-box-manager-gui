@@ -205,13 +205,13 @@ func (m *Manager) Create(name, description string) error {
 		return err
 	}
 
-	// 初始化该 Profile 的数据库（创建空数据库）
-	db, err := database.InitDBWithPath(dir)
+	// 初始化该 Profile 的数据库（创建空数据库，不影响全局活跃连接）
+	newDB, err := database.OpenDB(dir)
 	if err != nil {
 		return fmt.Errorf("初始化 Profile 数据库失败: %w", err)
 	}
-	// 关闭连接
-	sqlDB, _ := db.DB()
+	// 关闭连接（仅用于建表，不需要保持）
+	sqlDB, _ := newDB.DB()
 	sqlDB.Close()
 
 	logger.Info("创建 Profile: %s", name)

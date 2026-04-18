@@ -63,6 +63,7 @@ type HealthCheckService struct {
 	store *storage.JSONStore
 
 	healthCache map[string]*storage.ChainHealthStatus
+	speedCache  map[string]*storage.ChainSpeedResult
 	cacheMu     sync.RWMutex
 
 	stopCh  chan struct{}
@@ -77,6 +78,7 @@ func NewHealthCheckService(store *storage.JSONStore) *HealthCheckService {
 	return &HealthCheckService{
 		store:       store,
 		healthCache: make(map[string]*storage.ChainHealthStatus),
+		speedCache:  make(map[string]*storage.ChainSpeedResult),
 		stopCh:      make(chan struct{}),
 	}
 }
@@ -299,6 +301,7 @@ func (h *HealthCheckService) CheckChainSpeed(chainID string) (*storage.ChainSpee
 	if portErr == nil {
 		result, err := h.speedTestViaProxy(chainID, proxyAddr, speedTestURL, timeout)
 		if err == nil {
+			h.cacheSpeedResult(chainID, result)
 			return result, nil
 		}
 		// 代理端口测速失败，继续尝试 mihomo
@@ -313,7 +316,11 @@ func (h *HealthCheckService) CheckChainSpeed(chainID string) (*storage.ChainSpee
 		return nil, err
 	}
 
-	return h.speedTestViaMihomo(chainID, exitNode, speedTestURL, timeout)
+	result, err := h.speedTestViaMihomo(chainID, exitNode, speedTestURL, timeout)
+	if err == nil {
+		h.cacheSpeedResult(chainID, result)
+	}
+	return result, err
 }
 
 // speedTestViaProxy 通过 SOCKS 代理端口测速
@@ -636,6 +643,13 @@ func (h *HealthCheckService) cacheStatus(chainID string, status *storage.ChainHe
 	h.cacheMu.Unlock()
 }
 
+// cacheSpeedResult 缓存测速结果
+func (h *HealthCheckService) cacheSpeedResult(chainID string, result *storage.ChainSpeedResult) {
+	h.cacheMu.Lock()
+	h.speedCache[chainID] = result
+	h.cacheMu.Unlock()
+}
+
 // Start 启动定时健康检测
 func (h *HealthCheckService) Start() {
 	h.mu.Lock()
@@ -718,6 +732,25 @@ func (h *HealthCheckService) GetAllCachedStatuses() map[string]*storage.ChainHea
 
 	result := make(map[string]*storage.ChainHealthStatus)
 	for k, v := range h.healthCache {
+		result[k] = v
+	}
+	return result
+}
+
+// GetCachedSpeedResult 获取缓存的测速结果
+func (h *HealthCheckService) GetCachedSpeedResult(chainID string) *storage.ChainSpeedResult {
+	h.cacheMu.RLock()
+	defer h.cacheMu.RUnlock()
+	return h.speedCache[chainID]
+}
+
+// GetAllCachedSpeedResults 获取所有缓存的测速结果
+func (h *HealthCheckService) GetAllCachedSpeedResults() map[string]*storage.ChainSpeedResult {
+	h.cacheMu.RLock()
+	defer h.cacheMu.RUnlock()
+
+	result := make(map[string]*storage.ChainSpeedResult)
+	for k, v := range h.speedCache {
 		result[k] = v
 	}
 	return result

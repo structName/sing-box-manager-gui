@@ -178,6 +178,7 @@ export const proxyChainApi = {
   getHealth: (id: string) => api.get(`/proxy-chains/${id}/health`),
   checkHealth: (id: string) => api.post(`/proxy-chains/${id}/health/check`),
   // 速度测试
+  getAllSpeed: () => api.get('/proxy-chains/speed'),
   checkSpeed: (id: string) => api.post(`/proxy-chains/${id}/speed`),
 };
 

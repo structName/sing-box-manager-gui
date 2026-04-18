@@ -28,11 +28,18 @@ func InitDB(dataDir string) (*gorm.DB, error) {
 	return db, err
 }
 
-// InitDBWithPath 初始化指定路径的数据库（支持多 Profile）
+// InitDBWithPath 初始化指定路径的数据库并设置为活跃连接（支持多 Profile 切换）
 func InitDBWithPath(dataDir string) (*gorm.DB, error) {
 	mu.Lock()
 	defer mu.Unlock()
 	return initDBInternal(dataDir)
+}
+
+// OpenDB 打开指定路径的数据库（不设置全局单例，用于创建新 Profile 等场景）
+func OpenDB(dataDir string) (*gorm.DB, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	return openDBInternal(dataDir)
 }
 
 // ResetDB 重置数据库单例（用于 Profile 切换）
@@ -43,8 +50,8 @@ func ResetDB() {
 	db = nil
 }
 
-// initDBInternal 内部初始化逻辑
-func initDBInternal(dataDir string) (*gorm.DB, error) {
+// openDBInternal 打开并初始化数据库（不修改全局单例）
+func openDBInternal(dataDir string) (*gorm.DB, error) {
 	// 确保数据目录存在
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		return nil, fmt.Errorf("创建数据目录失败: %w", err)
@@ -75,6 +82,15 @@ func initDBInternal(dataDir string) (*gorm.DB, error) {
 	}
 
 	logger.Info("数据库初始化完成")
+	return newDB, nil
+}
+
+// initDBInternal 打开数据库并设置为全局活跃连接
+func initDBInternal(dataDir string) (*gorm.DB, error) {
+	newDB, err := openDBInternal(dataDir)
+	if err != nil {
+		return nil, err
+	}
 	db = newDB
 	return newDB, nil
 }

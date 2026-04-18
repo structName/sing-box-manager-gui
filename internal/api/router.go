@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -611,6 +612,7 @@ func (s *Server) setupRoutes() {
 
 		// 代理链路健康检测
 		api.GET("/proxy-chains/health", s.getAllChainHealth)
+		api.GET("/proxy-chains/speed", s.getAllChainSpeed)
 		api.GET("/proxy-chains/:id/health", s.getChainHealth)
 		api.POST("/proxy-chains/:id/health/check", s.checkChainHealth)
 		api.POST("/proxy-chains/:id/speed", s.checkChainSpeed)
@@ -2525,6 +2527,13 @@ func (s *Server) addProxyChain(c *gin.Context) {
 func (s *Server) updateProxyChain(c *gin.Context) {
 	id := c.Param("id")
 
+	// 获取旧链路数据，用于检测改名和停用
+	oldChain := s.store.GetProxyChain(id)
+	if oldChain == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "代理链路不存在"})
+		return
+	}
+
 	var chain storage.ProxyChain
 	if err := c.ShouldBindJSON(&chain); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -2535,6 +2544,37 @@ func (s *Server) updateProxyChain(c *gin.Context) {
 
 	// 自动生成 ChainNodes（从 Nodes 生成副本信息）
 	chain.ChainNodes = s.generateChainNodes(chain.Name, chain.Nodes)
+
+	// 检测级联操作
+	var cascadeMessages []string
+
+	// 改名：更新关联入站端口的 Outbound 引用
+	if oldChain.Name != chain.Name {
+		renamed, err := s.updateInboundPortsOutbound(oldChain.Name, chain.Name)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if len(renamed) > 0 {
+			cascadeMessages = append(cascadeMessages, fmt.Sprintf("已更新 %d 个关联入站端口", len(renamed)))
+		}
+	}
+
+	// 停用：停用关联入站端口
+	if oldChain.Enabled && !chain.Enabled {
+		outboundName := chain.Name
+		if oldChain.Name != chain.Name {
+			outboundName = chain.Name // 如果同时改名，用新名字（已更新过了）
+		}
+		disabled, err := s.disableInboundPortsForOutbound(outboundName)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if len(disabled) > 0 {
+			cascadeMessages = append(cascadeMessages, fmt.Sprintf("已停用 %d 个关联入站端口", len(disabled)))
+		}
+	}
 
 	if err := s.store.UpdateProxyChain(chain); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -2547,7 +2587,11 @@ func (s *Server) updateProxyChain(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "更新成功"})
+	message := "更新成功"
+	if len(cascadeMessages) > 0 {
+		message = "更新成功，" + strings.Join(cascadeMessages, "，")
+	}
+	c.JSON(http.StatusOK, gin.H{"message": message})
 }
 
 func (s *Server) deleteProxyChain(c *gin.Context) {
@@ -2581,6 +2625,25 @@ func (s *Server) deleteProxyChain(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": message})
+}
+
+func (s *Server) updateInboundPortsOutbound(oldOutbound, newOutbound string) ([]storage.InboundPort, error) {
+	ports := s.store.GetInboundPorts()
+	updated := make([]storage.InboundPort, 0)
+
+	for _, port := range ports {
+		if port.Outbound != oldOutbound {
+			continue
+		}
+
+		port.Outbound = newOutbound
+		if err := s.store.UpdateInboundPort(port); err != nil {
+			return nil, fmt.Errorf("更新入站端口 %s 的出站引用失败: %w", port.Name, err)
+		}
+		updated = append(updated, port)
+	}
+
+	return updated, nil
 }
 
 func (s *Server) disableInboundPortsForOutbound(outbound string) ([]storage.InboundPort, error) {
@@ -2649,6 +2712,11 @@ func (s *Server) checkChainHealth(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": status})
+}
+
+func (s *Server) getAllChainSpeed(c *gin.Context) {
+	results := s.healthCheckSvc.GetAllCachedSpeedResults()
+	c.JSON(http.StatusOK, gin.H{"data": results})
 }
 
 func (s *Server) checkChainSpeed(c *gin.Context) {

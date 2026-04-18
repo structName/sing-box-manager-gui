@@ -128,13 +128,14 @@ export default function ProxyChains() {
     fetchNodeGroups();
     fetchCountryGroups();
     fetchAllHealth();
+    fetchAllSpeed();
   }, []);
 
   const fetchChains = async () => {
     try {
       const res = await proxyChainApi.getAll();
       setChains(res.data.data || []);
-    } catch (error: any) {
+    } catch {
       toast.error('获取链路列表失败');
     } finally {
       setLoading(false);
@@ -174,6 +175,15 @@ export default function ProxyChains() {
       setHealthStatuses(res.data.data || {});
     } catch (error: any) {
       console.error('获取健康状态失败:', error);
+    }
+  };
+
+  const fetchAllSpeed = async () => {
+    try {
+      const res = await proxyChainApi.getAllSpeed();
+      setSpeedResults(res.data.data || {});
+    } catch (error: any) {
+      console.error('获取测速缓存失败:', error);
     }
   };
 
@@ -634,9 +644,11 @@ export default function ProxyChains() {
                         )}
                         {/* 速度测试结果 */}
                         {speed && (
-                          <Chip size="sm" color="secondary" variant="flat">
-                            {speed.speed_mbps.toFixed(2)} Mbps
-                          </Chip>
+                          <Tooltip content={`测试时间: ${new Date(speed.test_time).toLocaleString()}`}>
+                            <Chip size="sm" color="secondary" variant="flat">
+                              {speed.speed_mbps.toFixed(2)} Mbps
+                            </Chip>
+                          </Tooltip>
                         )}
                       </div>
                       {chain.description && (
