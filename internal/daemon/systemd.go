@@ -17,12 +17,14 @@ const systemdTemplate = `[Unit]
 Description=SingBox Manager
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=10
 
 [Service]
 Type=simple
 ExecStart={{.SbmPath}} -data {{.DataDir}} -port {{.Port}}
 WorkingDirectory={{.WorkingDir}}
-Restart=on-failure
+Restart={{if .KeepAlive}}always{{else}}no{{end}}
 RestartSec=5
 {{if .UseJournal}}StandardOutput=journal
 StandardError=journal{{else}}StandardOutput=append:{{.LogPath}}/sbm.log
@@ -39,12 +41,14 @@ WantedBy=multi-user.target
 const systemdUserTemplate = `[Unit]
 Description=SingBox Manager
 After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=10
 
 [Service]
 Type=simple
 ExecStart={{.SbmPath}} -data {{.DataDir}} -port {{.Port}}
 WorkingDirectory={{.WorkingDir}}
-Restart=on-failure
+Restart={{if .KeepAlive}}always{{else}}no{{end}}
 RestartSec=5
 StandardOutput=append:{{.LogPath}}/sbm.log
 StandardError=append:{{.LogPath}}/sbm.error.log
@@ -199,6 +203,12 @@ func (sm *SystemdManager) Install(config SystemdConfig) error {
 		if err := sm.runSystemctl("enable", sm.serviceName); err != nil {
 			return fmt.Errorf("启用服务失败: %w", err)
 		}
+		// 用户级服务需要 linger 才能在系统启动时（无用户登录）运行
+		if sm.userMode {
+			if err := enableLinger(); err != nil {
+				return fmt.Errorf("启用用户 linger 失败（开机自启需要 root 权限）: %w\n请使用 sudo 重新运行，或以 root 身份安装系统级服务", err)
+			}
+		}
 	}
 
 	return nil
@@ -214,6 +224,11 @@ func (sm *SystemdManager) Uninstall() error {
 	}
 
 	sm.runSystemctl("daemon-reload")
+
+	// 用户级模式：尽力取消 linger（失败不阻塞卸载）
+	if sm.userMode {
+		_ = disableLinger()
+	}
 	return nil
 }
 
@@ -269,6 +284,46 @@ func (sm *SystemdManager) runSystemctl(args ...string) error {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s: %s", err, string(output))
+	}
+	return nil
+}
+
+// currentUsername 获取当前进程的用户名（用于 loginctl linger）
+func currentUsername() string {
+	if u := os.Getenv("USER"); u != "" {
+		return u
+	}
+	if u := os.Getenv("LOGNAME"); u != "" {
+		return u
+	}
+	return ""
+}
+
+// enableLinger 为当前用户启用 linger，使得用户级 systemd 服务在系统启动时运行
+// （无需用户登录）。该操作需要 root 权限或 polkit 授权，否则失败。
+func enableLinger() error {
+	user := currentUsername()
+	if user == "" {
+		return fmt.Errorf("无法获取当前用户名（USER/LOGNAME 未设置）")
+	}
+	cmd := exec.Command("loginctl", "enable-linger", user)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// disableLinger 取消当前用户的 linger（卸载时调用，失败不影响主流程）
+func disableLinger() error {
+	user := currentUsername()
+	if user == "" {
+		return nil
+	}
+	cmd := exec.Command("loginctl", "disable-linger", user)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
 }
