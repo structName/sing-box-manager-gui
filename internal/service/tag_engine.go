@@ -22,6 +22,11 @@ func NewTagEngine(store *database.Store) *TagEngine {
 	return &TagEngine{store: store}
 }
 
+// Rebind 更新内部 store 引用（用于 Profile 切换）
+func (e *TagEngine) Rebind(store *database.Store) {
+	e.store = store
+}
+
 // SetTaskManager 设置任务管理器
 func (e *TagEngine) SetTaskManager(tm *TaskManager) {
 	e.taskManager = tm

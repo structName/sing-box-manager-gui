@@ -38,6 +38,11 @@ func NewSpeedTestHandler(store *database.Store, executor *speedtest.Executor) *S
 	}
 }
 
+// Rebind 更新内部引用（用于 Profile 切换）
+func (h *SpeedTestHandler) Rebind(store *database.Store) {
+	h.store = store
+}
+
 // SetUnifiedScheduler 设置统一调度器
 func (h *SpeedTestHandler) SetUnifiedScheduler(us *service.UnifiedScheduler) {
 	h.unifiedScheduler = us

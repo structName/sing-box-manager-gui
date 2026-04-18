@@ -24,6 +24,12 @@ func NewTagHandler(store *database.Store, tagEngine *service.TagEngine) *TagHand
 	}
 }
 
+// Rebind 更新内部引用（用于 Profile 切换）
+func (h *TagHandler) Rebind(store *database.Store, tagEngine *service.TagEngine) {
+	h.store = store
+	h.tagEngine = tagEngine
+}
+
 // ==================== 标签 API ====================
 
 // GetTags 获取所有标签

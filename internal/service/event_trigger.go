@@ -21,6 +21,11 @@ func NewEventTrigger(store *database.Store, taskManager *TaskManager) *EventTrig
 	}
 }
 
+// Rebind 更新内部 store 引用（用于 Profile 切换）
+func (e *EventTrigger) Rebind(store *database.Store) {
+	e.store = store
+}
+
 // SetConfigBuilder 设置配置生成器
 func (e *EventTrigger) SetConfigBuilder(builder func() error) {
 	e.configBuilder = builder

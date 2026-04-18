@@ -57,6 +57,11 @@ func NewExecutor(store *database.Store) *Executor {
 	}
 }
 
+// Rebind 更新内部 store 引用（用于 Profile 切换）
+func (e *Executor) Rebind(store *database.Store) {
+	e.store = store
+}
+
 // SetTaskManager 设置任务管理器
 func (e *Executor) SetTaskManager(tm TaskManagerInterface) {
 	e.taskManager = tm

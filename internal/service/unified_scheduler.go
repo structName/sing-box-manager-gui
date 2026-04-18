@@ -61,6 +61,16 @@ func NewUnifiedScheduler(store *database.Store, taskManager *TaskManager) *Unifi
 	}
 }
 
+// Rebind 更新内部 store 引用并重置 cron 实例（用于 Profile 切换）
+// 调用前必须先 Stop()，调用后需要 Start() + 重新注册调度条目
+func (s *UnifiedScheduler) Rebind(store *database.Store) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.store = store
+	s.cron = cron.New(cron.WithSeconds())
+	s.entries = make(map[string]*ScheduleEntry)
+}
+
 // SetCallbacks 设置回调函数
 func (s *UnifiedScheduler) SetCallbacks(
 	onSpeedTest func(profileID uint, trigger string) error,

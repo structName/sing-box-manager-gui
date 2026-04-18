@@ -39,6 +39,13 @@ func NewTaskManager(store *database.Store) *TaskManager {
 	}
 }
 
+// Rebind 更新内部 store 引用（用于 Profile 切换）
+func (tm *TaskManager) Rebind(store *database.Store) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	tm.store = store
+}
+
 // Subscribe 订阅任务更新
 func (tm *TaskManager) Subscribe(clientID string) <-chan *models.Task {
 	tm.subMu.Lock()

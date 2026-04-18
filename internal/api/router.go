@@ -1389,20 +1389,33 @@ func (s *Server) activateProfile(c *gin.Context) {
 	// 更新数据库 Store
 	s.dbStore = s.profileMgr.GetStore()
 
-	// 重新创建相关服务
+	// 重新创建 JSON 依赖的服务
 	s.chainSyncSvc = service.NewChainSyncService(s.store)
 	s.subService = service.NewSubscriptionService(s.store, s.chainSyncSvc)
 	s.healthCheckSvc = service.NewHealthCheckService(s.store)
 
-	// 更新测速模块
+	// Rebind 所有 DB 依赖的 service 和 handler（不替换对象，保持 Gin 路由引用有效）
 	if s.dbStore != nil {
-		s.speedTestExecutor = speedtest.NewExecutor(s.dbStore)
-		s.speedTestHandler = NewSpeedTestHandler(s.dbStore, s.speedTestExecutor)
-		s.speedTestHandler.SetUnifiedScheduler(s.unifiedScheduler)
-		s.speedTestExecutor.SetTaskManager(s.taskManager)
-		s.tagEngine = service.NewTagEngine(s.dbStore)
-		s.tagEngine.SetTaskManager(s.taskManager)
-		s.tagHandler = NewTagHandler(s.dbStore, s.tagEngine)
+		// 停止调度器
+		if s.unifiedScheduler != nil {
+			s.unifiedScheduler.Stop()
+		}
+
+		// Rebind service 层
+		s.taskManager.Rebind(s.dbStore)
+		s.tagEngine.Rebind(s.dbStore)
+		s.speedTestExecutor.Rebind(s.dbStore)
+		s.eventTrigger.Rebind(s.dbStore)
+		s.unifiedScheduler.Rebind(s.dbStore)
+
+		// Rebind handler 层
+		s.tagHandler.Rebind(s.dbStore, s.tagEngine)
+		s.taskHandler.Rebind(s.dbStore)
+		s.speedTestHandler.Rebind(s.dbStore)
+
+		// 重启调度器并重新注册调度条目
+		s.unifiedScheduler.Start()
+		s.initScheduleEntries()
 	}
 
 	// 更新进程管理器的配置路径

@@ -24,6 +24,11 @@ func NewTaskHandler(store *database.Store, taskManager *service.TaskManager) *Ta
 	}
 }
 
+// Rebind 更新内部引用（用于 Profile 切换）
+func (h *TaskHandler) Rebind(store *database.Store) {
+	h.store = store
+}
+
 // GetTasks 获取任务列表
 func (h *TaskHandler) GetTasks(c *gin.Context) {
 	limit := 50
