@@ -108,6 +108,7 @@ const nodeTypeOptions = [
   { value: 'tuic', label: 'TUIC' },
   { value: 'socks', label: 'SOCKS' },
   { value: 'shadowsocksr', label: 'ShadowsocksR' },
+  { value: 'anytls', label: 'AnyTLS' },
 ];
 
 const ssCipherOptions = [
@@ -1160,6 +1161,84 @@ export default function Subscriptions() {
                       </div>
                     )}
 
+                    {/* AnyTLS 参数 */}
+                    {nodeForm.type === 'anytls' && (
+                      <div className="space-y-4">
+                        <Input
+                          label="密码"
+                          placeholder="输入密码"
+                          value={nodeForm.extra?.password || ''}
+                          onChange={(e) => setNodeForm({ ...nodeForm, extra: { ...nodeForm.extra, password: e.target.value } })}
+                        />
+                        <Input
+                          label="uTLS 指纹"
+                          placeholder="chrome"
+                          value={nodeForm.extra?.tls?.utls?.fingerprint || ''}
+                          onChange={(e) => setNodeForm({
+                            ...nodeForm,
+                            extra: {
+                              ...nodeForm.extra,
+                              tls: {
+                                ...(nodeForm.extra?.tls || {}),
+                                utls: {
+                                  enabled: true,
+                                  fingerprint: e.target.value,
+                                },
+                              },
+                            },
+                          })}
+                        />
+                        <Accordion variant="bordered" selectionMode="multiple">
+                          <AccordionItem key="idle-session" aria-label="空闲会话" title="空闲会话参数 (可选)">
+                            <div className="grid grid-cols-3 gap-4 pb-2">
+                              <Input
+                                type="number"
+                                size="sm"
+                                label="检测间隔(s)"
+                                placeholder="30"
+                                value={nodeForm.extra?.idle_session_check_interval !== undefined ? String(nodeForm.extra.idle_session_check_interval) : ''}
+                                onChange={(e) => setNodeForm({
+                                  ...nodeForm,
+                                  extra: {
+                                    ...nodeForm.extra,
+                                    idle_session_check_interval: e.target.value ? parseInt(e.target.value) : undefined,
+                                  },
+                                })}
+                              />
+                              <Input
+                                type="number"
+                                size="sm"
+                                label="超时时间(s)"
+                                placeholder="30"
+                                value={nodeForm.extra?.idle_session_timeout !== undefined ? String(nodeForm.extra.idle_session_timeout) : ''}
+                                onChange={(e) => setNodeForm({
+                                  ...nodeForm,
+                                  extra: {
+                                    ...nodeForm.extra,
+                                    idle_session_timeout: e.target.value ? parseInt(e.target.value) : undefined,
+                                  },
+                                })}
+                              />
+                              <Input
+                                type="number"
+                                size="sm"
+                                label="最小空闲会话"
+                                placeholder="5"
+                                value={nodeForm.extra?.min_idle_session !== undefined ? String(nodeForm.extra.min_idle_session) : ''}
+                                onChange={(e) => setNodeForm({
+                                  ...nodeForm,
+                                  extra: {
+                                    ...nodeForm.extra,
+                                    min_idle_session: e.target.value ? parseInt(e.target.value) : undefined,
+                                  },
+                                })}
+                              />
+                            </div>
+                          </AccordionItem>
+                        </Accordion>
+                      </div>
+                    )}
+
                     {/* SOCKS 参数 */}
                     {nodeForm.type === 'socks' && (
                       <div className="grid grid-cols-2 gap-4">
@@ -1179,7 +1258,7 @@ export default function Subscriptions() {
                     )}
 
                     {/* TLS 设置 */}
-                    {['vmess', 'vless', 'trojan', 'hysteria2', 'tuic'].includes(nodeForm.type) && (
+                    {['vmess', 'vless', 'trojan', 'hysteria2', 'tuic', 'anytls'].includes(nodeForm.type) && (
                       <div className="space-y-3 p-3 bg-default-50 rounded-lg">
                         <div className="flex items-center justify-between">
                           <span className="text-sm font-medium">TLS</span>
