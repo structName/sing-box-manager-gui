@@ -414,6 +414,39 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 			proxy["obfs-param"] = obfsParam
 		}
 
+	case "anytls":
+		proxy["type"] = "anytls"
+		if password, ok := extra["password"].(string); ok {
+			proxy["password"] = password
+		}
+		// TLS: 从 sing-box 嵌套格式提取到 mihomo 扁平格式
+		if tls, ok := extra["tls"].(map[string]interface{}); ok {
+			if sni, ok := tls["server_name"].(string); ok {
+				proxy["sni"] = sni
+			}
+			if insecure, ok := tls["insecure"].(bool); ok {
+				proxy["skip-cert-verify"] = insecure
+			}
+			if alpn, ok := tls["alpn"].([]interface{}); ok {
+				proxy["alpn"] = alpn
+			}
+			if utls, ok := tls["utls"].(map[string]interface{}); ok {
+				if fp, ok := utls["fingerprint"].(string); ok {
+					proxy["client-fingerprint"] = fp
+				}
+			}
+		}
+		// 空闲会话参数（mihomo 预期 int 类型）
+		if v, ok := extra["idle_session_check_interval"]; ok {
+			proxy["idle-session-check-interval"] = v
+		}
+		if v, ok := extra["idle_session_timeout"]; ok {
+			proxy["idle-session-timeout"] = v
+		}
+		if v, ok := extra["min_idle_session"]; ok {
+			proxy["min-idle-session"] = v
+		}
+
 	default:
 		return nil, fmt.Errorf("不支持的协议类型: %s", node.Type)
 	}
