@@ -56,6 +56,10 @@ type ClashProxy struct {
 	SSRProtocol      string `yaml:"protocol,omitempty"`
 	SSRProtocolParam string `yaml:"protocol-param,omitempty"`
 	SSRObfsParam     string `yaml:"obfs-param,omitempty"`
+	// AnyTLS 特有
+	IdleSessionCheckInterval int `yaml:"idle-session-check-interval,omitempty"`
+	IdleSessionTimeout       int `yaml:"idle-session-timeout,omitempty"`
+	MinIdleSession           int `yaml:"min-idle-session,omitempty"`
 }
 
 // WSOpts WebSocket 选项
@@ -212,6 +216,53 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 		extra["version"] = "4"
 		if proxy.Username != "" {
 			extra["username"] = proxy.Username
+		}
+
+	case "anytls":
+		nodeType = "anytls"
+		extra["password"] = proxy.Password
+		
+		// TLS 配置
+		tls := map[string]interface{}{
+			"enabled": true,
+		}
+		if proxy.SNI != "" {
+			tls["server_name"] = proxy.SNI
+		} else if proxy.Servername != "" {
+			tls["server_name"] = proxy.Servername
+		} else {
+			tls["server_name"] = proxy.Server
+		}
+		if proxy.SkipCertVerify {
+			tls["insecure"] = true
+		}
+		if len(proxy.ALPN) > 0 {
+			tls["alpn"] = proxy.ALPN
+		}
+		
+		// uTLS fingerprint
+		fp := proxy.ClientFingerprint
+		if fp == "" {
+			fp = proxy.Fingerprint
+		}
+		if fp == "" {
+			fp = "chrome"
+		}
+		tls["utls"] = map[string]interface{}{
+			"enabled":     true,
+			"fingerprint": fp,
+		}
+		extra["tls"] = tls
+		
+		// 空闲会话管理
+		if proxy.IdleSessionCheckInterval > 0 {
+			extra["idle_session_check_interval"] = proxy.IdleSessionCheckInterval
+		}
+		if proxy.IdleSessionTimeout > 0 {
+			extra["idle_session_timeout"] = proxy.IdleSessionTimeout
+		}
+		if proxy.MinIdleSession > 0 {
+			extra["min_idle_session"] = proxy.MinIdleSession
 		}
 
 	default:

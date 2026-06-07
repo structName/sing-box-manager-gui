@@ -48,6 +48,8 @@ func ParseURL(rawURL string) (*storage.Node, error) {
 		parser = &SocksParser{}
 	case "ssr":
 		parser = &ShadowsocksRParser{}
+	case "anytls":
+		parser = &AnyTLSParser{}
 	default:
 		return nil, fmt.Errorf("不支持的协议: %s", protocol)
 	}
