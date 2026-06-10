@@ -1912,27 +1912,28 @@ function SubscriptionCard({ subscription: sub, onRefresh, onEdit, onDelete, onTo
   return (
     <Card>
       <CardHeader
-        className="flex justify-between items-start cursor-pointer"
+        className="flex flex-col gap-3 cursor-pointer lg:flex-row lg:justify-between lg:items-start"
         onClick={(e) => {
           // 如果点击的是按钮区域，不触发展开
           if ((e.target as HTMLElement).closest('button')) return;
           setIsExpanded(!isExpanded);
         }}
       >
-        <div className="flex items-center gap-3">
+        <div className="flex min-w-0 flex-1 items-center gap-3">
           <Chip
             color={sub.enabled ? 'success' : 'default'}
             variant="flat"
             size="sm"
+            className="shrink-0"
           >
             {sub.enabled ? '已启用' : '已禁用'}
           </Chip>
-          <div>
+          <div className="min-w-0">
             <h3 className="text-lg font-semibold">{sub.name}</h3>
             <p className="text-sm text-gray-500">
               {sub.node_count} 个节点 · 更新于 {new Date(sub.updated_at).toLocaleString()}
             </p>
-            <p className="text-xs text-gray-400">
+            <p className="text-xs text-gray-400 break-all">
               {sub.type === 'local' || sub.file_name
                 ? `本地文件：${sub.file_name || sub.url || '已保存内容'}`
                 : `远程地址：${sub.url}`}
@@ -1945,7 +1946,7 @@ function SubscriptionCard({ subscription: sub, onRefresh, onEdit, onDelete, onTo
             )}
           </div>
         </div>
-        <div className="flex gap-2 items-center">
+        <div className="flex shrink-0 flex-wrap items-center gap-2 self-start lg:justify-end">
           <Button
             size="sm"
             variant="flat"
