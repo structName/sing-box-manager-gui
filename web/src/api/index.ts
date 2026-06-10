@@ -36,7 +36,23 @@ export const subscriptionApi = {
   getAll: () => api.get('/subscriptions'),
   add: (name: string, url: string, auto_update?: boolean, update_interval?: number) =>
     api.post('/subscriptions', { name, url, auto_update, update_interval }),
+  addLocal: (name: string, file: File) => {
+    const formData = new FormData();
+    formData.append('name', name);
+    formData.append('file', file);
+    return api.post('/subscriptions', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
   update: (id: string, data: any) => api.put(`/subscriptions/${id}`, data),
+  updateLocal: (id: string, name: string, file?: File | null) => {
+    const formData = new FormData();
+    formData.append('name', name);
+    if (file) formData.append('file', file);
+    return api.put(`/subscriptions/${id}`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
   delete: (id: string) => api.delete(`/subscriptions/${id}`),
   refresh: (id: string) => api.post(`/subscriptions/${id}/refresh`),
   refreshAll: () => api.post('/subscriptions/refresh-all'),
@@ -162,9 +178,11 @@ export const manualNodeApi = {
 // 入站端口 API
 export const inboundPortApi = {
   getAll: () => api.get('/inbound-ports'),
+  testDraft: (data: any) => api.post('/inbound-ports/test', data),
   add: (data: any) => api.post('/inbound-ports', data),
   update: (id: string, data: any) => api.put(`/inbound-ports/${id}`, data),
   delete: (id: string) => api.delete(`/inbound-ports/${id}`),
+  test: (id: string) => api.post(`/inbound-ports/${id}/test`),
 };
 
 // 代理链路 API

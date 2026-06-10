@@ -56,3 +56,77 @@ func TestNewJSONStoreMigratesLegacyZashboardSettings(t *testing.T) {
 		t.Fatalf("ClashAPISecret = empty, want generated secret")
 	}
 }
+
+func TestGetSubscriptionsReturnsDeepCopy(t *testing.T) {
+	store, err := NewJSONStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewJSONStore() error = %v", err)
+	}
+
+	autoUpdate := false
+	sub := Subscription{
+		ID:         "sub-1",
+		Name:       "local",
+		Content:    "original",
+		AutoUpdate: &autoUpdate,
+		Nodes: []Node{
+			{
+				Tag:   "node-1",
+				Extra: map[string]interface{}{"tls": map[string]interface{}{"enabled": true}},
+			},
+		},
+	}
+	if err := store.AddSubscription(sub); err != nil {
+		t.Fatalf("AddSubscription() error = %v", err)
+	}
+
+	subs := store.GetSubscriptions()
+	subs[0].Content = ""
+	subs[0].Nodes[0].Extra["tls"].(map[string]interface{})["enabled"] = false
+	*subs[0].AutoUpdate = true
+
+	got := store.GetSubscription("sub-1")
+	if got == nil {
+		t.Fatal("GetSubscription() = nil")
+	}
+	if got.Content != "original" {
+		t.Fatalf("Content = %q, want original", got.Content)
+	}
+	if got.Nodes[0].Extra["tls"].(map[string]interface{})["enabled"] != true {
+		t.Fatalf("nested Extra was mutated through returned slice")
+	}
+	if *got.AutoUpdate {
+		t.Fatalf("AutoUpdate was mutated through returned pointer")
+	}
+}
+
+func TestGetSubscriptionReturnsDeepCopy(t *testing.T) {
+	store, err := NewJSONStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewJSONStore() error = %v", err)
+	}
+
+	sub := Subscription{
+		ID:      "sub-1",
+		Name:    "local",
+		Content: "original",
+		Nodes: []Node{
+			{Tag: "node-1", Extra: map[string]interface{}{"password": "secret"}},
+		},
+	}
+	if err := store.AddSubscription(sub); err != nil {
+		t.Fatalf("AddSubscription() error = %v", err)
+	}
+
+	got := store.GetSubscription("sub-1")
+	got.Content = ""
+	got.Nodes[0].Extra["password"] = "changed"
+
+	again := store.GetSubscription("sub-1")
+	if again.Content != "original" {
+		t.Fatalf("Content = %q, want original", again.Content)
+	}
+	if again.Nodes[0].Extra["password"] != "secret" {
+		t.Fatalf("password = %v, want secret", again.Nodes[0].Extra["password"])
+	}
+}

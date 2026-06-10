@@ -70,6 +70,39 @@ func (s *SubscriptionService) Add(name, url string, autoUpdate *bool, updateInte
 	return &sub, nil
 }
 
+// AddLocal 添加本地文件订阅
+func (s *SubscriptionService) AddLocal(name, fileName, content string) (*storage.Subscription, error) {
+	nodes, err := parser.ParseSubscriptionContent(content)
+	if err != nil {
+		return nil, fmt.Errorf("解析订阅失败: %w", err)
+	}
+	if len(nodes) == 0 {
+		return nil, fmt.Errorf("未解析到任何节点")
+	}
+
+	autoUpdate := false
+	sub := storage.Subscription{
+		ID:             uuid.New().String(),
+		Name:           name,
+		URL:            fileName,
+		Type:           "local",
+		Content:        content,
+		FileName:       fileName,
+		NodeCount:      len(nodes),
+		UpdatedAt:      time.Now(),
+		Nodes:          nodes,
+		Enabled:        true,
+		AutoUpdate:     &autoUpdate,
+		UpdateInterval: 0,
+	}
+
+	if err := s.store.AddSubscription(sub); err != nil {
+		return nil, fmt.Errorf("保存订阅失败: %w", err)
+	}
+
+	return &sub, nil
+}
+
 // Update 更新订阅
 func (s *SubscriptionService) Update(sub storage.Subscription) error {
 	return s.store.UpdateSubscription(sub)
@@ -128,6 +161,22 @@ func (s *SubscriptionService) RefreshAll() error {
 
 // refresh 内部刷新方法
 func (s *SubscriptionService) refresh(sub *storage.Subscription) error {
+	if sub.Type == "local" || sub.Content != "" {
+		nodes, err := parser.ParseSubscriptionContent(sub.Content)
+		if err != nil {
+			return fmt.Errorf("解析订阅失败: %w", err)
+		}
+		if len(nodes) == 0 {
+			return fmt.Errorf("未解析到任何节点")
+		}
+		sub.Nodes = nodes
+		sub.NodeCount = len(nodes)
+		sub.UpdatedAt = time.Now()
+		sub.Traffic = nil
+		sub.ExpireAt = nil
+		return nil
+	}
+
 	// 拉取订阅内容
 	content, info, err := utils.FetchSubscription(sub.URL)
 	if err != nil {

@@ -65,6 +65,25 @@ interface NodeGroup {
 
 type OutboundCategory = 'basic' | 'country' | 'filter' | 'chain' | 'node';
 
+interface DraftPortTestResult {
+  available: boolean;
+  message: string;
+}
+
+interface InboundPortTestResult {
+  listening?: {
+    success: boolean;
+    address: string;
+  };
+  proxy?: {
+    tested: boolean;
+    success: boolean;
+    delay_ms?: number;
+    status_code?: number;
+    error?: string;
+  };
+}
+
 function getClientAddressHint(listen: string): string {
   if (listen === '0.0.0.0' || listen === '::' || listen === '') {
     const currentHost = window.location.hostname;
@@ -143,6 +162,10 @@ export default function InboundPorts() {
   const { isOpen: isPortModalOpen, onOpen: onPortModalOpen, onClose: onPortModalClose } = useDisclosure();
   const [editingPort, setEditingPort] = useState<InboundPort | null>(null);
   const [portFormData, setPortFormData] = useState(createDefaultPortFormData);
+  const [testingDraftPort, setTestingDraftPort] = useState(false);
+  const [draftPortTest, setDraftPortTest] = useState<DraftPortTestResult | null>(null);
+  const [testingPorts, setTestingPorts] = useState<Record<string, boolean>>({});
+  const [portTestResults, setPortTestResults] = useState<Record<string, InboundPortTestResult>>({});
 
   // 出站选择筛选状态
   const [outboundType, setOutboundType] = useState<OutboundCategory>('basic');
@@ -235,6 +258,7 @@ export default function InboundPorts() {
   const handleAddPort = () => {
     setEditingPort(null);
     setPortFormData(createDefaultPortFormData());
+    setDraftPortTest(null);
     // 重置筛选状态
     setOutboundType('basic');
     setSelectedCountry('');
@@ -257,6 +281,7 @@ export default function InboundPorts() {
             : 'node';
 
     setEditingPort(port);
+    setDraftPortTest(null);
     setPortFormData({
       name: port.name,
       type: port.type,
@@ -296,16 +321,7 @@ export default function InboundPorts() {
     }
   };
 
-  const handleSubmitPort = async () => {
-    if (!portFormData.name.trim()) {
-      toast.error('请输入端口名称');
-      return;
-    }
-    if (portFormData.port < 1 || portFormData.port > 65535) {
-      toast.error('端口号必须在 1-65535 之间');
-      return;
-    }
-
+  const buildPortPayload = (): InboundPortPayload & { id?: string } => {
     const data: InboundPortPayload = {
       name: portFormData.name,
       type: portFormData.type,
@@ -322,6 +338,62 @@ export default function InboundPorts() {
         password: portFormData.password,
       };
     }
+
+    return editingPort ? { ...data, id: editingPort.id } : data;
+  };
+
+  const handleTestDraftPort = async () => {
+    if (portFormData.port < 1 || portFormData.port > 65535) {
+      toast.error('端口号必须在 1-65535 之间');
+      return;
+    }
+
+    setTestingDraftPort(true);
+    try {
+      const res = await inboundPortApi.testDraft(buildPortPayload());
+      const result = res.data.data?.port;
+      setDraftPortTest(result || null);
+      if (result?.available) {
+        toast.success(result.message || '端口可用');
+      } else {
+        toast.error(result?.message || '端口不可用');
+      }
+    } catch (error: unknown) {
+      toast.error(getApiErrorMessage(error, '端口测试失败'));
+    } finally {
+      setTestingDraftPort(false);
+    }
+  };
+
+  const handleTestSavedPort = async (port: InboundPort) => {
+    setTestingPorts((prev) => ({ ...prev, [port.id]: true }));
+    try {
+      const res = await inboundPortApi.test(port.id);
+      const result = res.data.data as InboundPortTestResult;
+      setPortTestResults((prev) => ({ ...prev, [port.id]: result }));
+      if (result?.proxy?.success) {
+        toast.success(`${port.name} 代理可用`);
+      } else {
+        toast.error(result?.proxy?.error || '代理测试失败');
+      }
+    } catch (error: unknown) {
+      toast.error(getApiErrorMessage(error, '代理测试失败'));
+    } finally {
+      setTestingPorts((prev) => ({ ...prev, [port.id]: false }));
+    }
+  };
+
+  const handleSubmitPort = async () => {
+    if (!portFormData.name.trim()) {
+      toast.error('请输入端口名称');
+      return;
+    }
+    if (portFormData.port < 1 || portFormData.port > 65535) {
+      toast.error('端口号必须在 1-65535 之间');
+      return;
+    }
+
+    const data = buildPortPayload();
 
     try {
       if (editingPort) {
@@ -568,6 +640,15 @@ export default function InboundPorts() {
                     </p>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
+                    <Button
+                      isIconOnly
+                      size="sm"
+                      variant="light"
+                      isLoading={testingPorts[port.id]}
+                      onPress={() => handleTestSavedPort(port)}
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                    </Button>
                     <Button isIconOnly size="sm" variant="light" onPress={() => handleEditPort(port)}>
                       <Pencil className="w-4 h-4" />
                     </Button>
@@ -587,6 +668,25 @@ export default function InboundPorts() {
                   <p className="mt-2 text-xs text-warning-600">
                     客户端请使用 {getClientAddressHint(port.listen)}:{port.port}
                   </p>
+                )}
+
+                {portTestResults[port.id] && (
+                  <div className="mt-3 grid gap-2 text-xs">
+                    <div className="flex items-center justify-between rounded-lg bg-default-50 px-2.5 py-2 dark:bg-default-100/70">
+                      <span className="text-default-500">监听</span>
+                      <Chip size="sm" color={portTestResults[port.id].listening?.success ? 'success' : 'danger'} variant="flat">
+                        {portTestResults[port.id].listening?.success ? '正常' : '失败'}
+                      </Chip>
+                    </div>
+                    <div className="flex items-center justify-between rounded-lg bg-default-50 px-2.5 py-2 dark:bg-default-100/70">
+                      <span className="text-default-500">代理</span>
+                      <Chip size="sm" color={portTestResults[port.id].proxy?.success ? 'success' : 'danger'} variant="flat">
+                        {portTestResults[port.id].proxy?.success
+                          ? `${portTestResults[port.id].proxy?.delay_ms || 0}ms · HTTP ${portTestResults[port.id].proxy?.status_code || '-'}`
+                          : portTestResults[port.id].proxy?.error || '失败'}
+                      </Chip>
+                    </div>
+                  </div>
                 )}
               </CardBody>
             </Card>
@@ -630,19 +730,41 @@ export default function InboundPorts() {
                       label="端口号"
                       placeholder="2081"
                       value={String(portFormData.port)}
-                      onChange={(e) => setPortFormData({ ...portFormData, port: parseInt(e.target.value) || 2081 })}
+                      onChange={(e) => {
+                        setDraftPortTest(null);
+                        setPortFormData({ ...portFormData, port: parseInt(e.target.value) || 2081 });
+                      }}
                     />
                     <Input
                       label="监听地址"
                       placeholder="0.0.0.0"
                       value={portFormData.listen}
-                      onChange={(e) => setPortFormData({ ...portFormData, listen: e.target.value })}
+                      onChange={(e) => {
+                        setDraftPortTest(null);
+                        setPortFormData({ ...portFormData, listen: e.target.value });
+                      }}
                       description={
                         portFormData.listen === '0.0.0.0' || portFormData.listen === '::' || portFormData.listen === ''
                           ? `客户端请使用 ${getClientAddressHint(portFormData.listen)}:${portFormData.port}，不要直接使用 0.0.0.0`
                           : `客户端连接地址：${getClientAddressHint(portFormData.listen)}:${portFormData.port}`
                       }
                     />
+                    <div className="flex items-center gap-3">
+                      <Button
+                        size="sm"
+                        variant="flat"
+                        startContent={<RefreshCw className="w-3.5 h-3.5" />}
+                        isLoading={testingDraftPort}
+                        onPress={handleTestDraftPort}
+                      >
+                        测试端口
+                      </Button>
+                      {draftPortTest && (
+                        <Chip size="sm" color={draftPortTest.available ? 'success' : 'danger'} variant="flat">
+                          {draftPortTest.message}
+                        </Chip>
+                      )}
+                    </div>
                   </div>
                 </div>
 

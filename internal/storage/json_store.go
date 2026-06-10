@@ -145,7 +145,12 @@ func (s *JSONStore) Save() error {
 func (s *JSONStore) GetSubscriptions() []Subscription {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.data.Subscriptions
+
+	subs := make([]Subscription, len(s.data.Subscriptions))
+	for i := range s.data.Subscriptions {
+		subs[i] = cloneSubscription(s.data.Subscriptions[i])
+	}
+	return subs
 }
 
 // GetSubscription 获取单个订阅
@@ -155,10 +160,74 @@ func (s *JSONStore) GetSubscription(id string) *Subscription {
 
 	for i := range s.data.Subscriptions {
 		if s.data.Subscriptions[i].ID == id {
-			return &s.data.Subscriptions[i]
+			sub := cloneSubscription(s.data.Subscriptions[i])
+			return &sub
 		}
 	}
 	return nil
+}
+
+func cloneSubscription(sub Subscription) Subscription {
+	if sub.ExpireAt != nil {
+		expireAt := *sub.ExpireAt
+		sub.ExpireAt = &expireAt
+	}
+	if sub.Traffic != nil {
+		traffic := *sub.Traffic
+		sub.Traffic = &traffic
+	}
+	if sub.AutoUpdate != nil {
+		autoUpdate := *sub.AutoUpdate
+		sub.AutoUpdate = &autoUpdate
+	}
+	if sub.Nodes != nil {
+		nodes := make([]Node, len(sub.Nodes))
+		for i := range sub.Nodes {
+			nodes[i] = cloneNode(sub.Nodes[i])
+		}
+		sub.Nodes = nodes
+	}
+	return sub
+}
+
+func cloneNode(node Node) Node {
+	if node.Extra != nil {
+		node.Extra = cloneStringInterfaceMap(node.Extra)
+	}
+	return node
+}
+
+func cloneStringInterfaceMap(src map[string]interface{}) map[string]interface{} {
+	dst := make(map[string]interface{}, len(src))
+	for key, value := range src {
+		dst[key] = cloneInterfaceValue(value)
+	}
+	return dst
+}
+
+func cloneInterfaceValue(value interface{}) interface{} {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		return cloneStringInterfaceMap(v)
+	case map[string]string:
+		dst := make(map[string]string, len(v))
+		for key, item := range v {
+			dst[key] = item
+		}
+		return dst
+	case []interface{}:
+		dst := make([]interface{}, len(v))
+		for i, item := range v {
+			dst[i] = cloneInterfaceValue(item)
+		}
+		return dst
+	case []string:
+		dst := make([]string, len(v))
+		copy(dst, v)
+		return dst
+	default:
+		return value
+	}
 }
 
 // AddSubscription 添加订阅

@@ -138,6 +138,9 @@ type Subscription struct {
 	ID             string     `json:"id"`
 	Name           string     `json:"name"`
 	URL            string     `json:"url"`
+	Type           string     `json:"type,omitempty"`      // local 或 remote；旧数据为空时按 remote 处理
+	Content        string     `json:"content,omitempty"`   // 本地订阅文件内容
+	FileName       string     `json:"file_name,omitempty"` // 上传的本地文件名
 	NodeCount      int        `json:"node_count"`
 	UpdatedAt      time.Time  `json:"updated_at"`
 	ExpireAt       *time.Time `json:"expire_at,omitempty"`
