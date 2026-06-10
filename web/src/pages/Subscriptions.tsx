@@ -163,6 +163,40 @@ const defaultNode: Node = {
   extra: {},
 };
 
+const withNodeTypeDefaults = (node: Node): Node => {
+  if (node.type !== 'anytls') return node;
+
+  return {
+    ...node,
+    extra: {
+      ...node.extra,
+      tls: {
+        ...(node.extra?.tls || {}),
+        enabled: true,
+        utls: {
+          ...(node.extra?.tls?.utls || {}),
+          enabled: true,
+          fingerprint: node.extra?.tls?.utls?.fingerprint || 'chrome',
+        },
+      },
+    },
+  };
+};
+
+const durationSecondsInputValue = (value: unknown): string => {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'number') return String(value);
+
+  const text = String(value).trim();
+  const match = text.match(/^(\d+)(?:s)?$/);
+  return match ? match[1] : '';
+};
+
+const toSingBoxSecondsDuration = (value: string): string | undefined => {
+  if (!value) return undefined;
+  return `${parseInt(value, 10) || 0}s`;
+};
+
 export default function Subscriptions() {
   const {
     subscriptions,
@@ -311,7 +345,7 @@ export default function Subscriptions() {
 
   const handleOpenEditNode = (mn: ManualNode) => {
     setEditingNode(mn);
-    setNodeForm(mn.node);
+    setNodeForm(withNodeTypeDefaults(mn.node));
     setNodeEnabled(mn.enabled);
     setNodeUrl('');
     setParseError('');
@@ -348,7 +382,7 @@ export default function Subscriptions() {
         server: nodeForm.server,
         server_port: nodeForm.server_port,
         tag: nodeForm.tag || 'test',
-        extra: nodeForm.extra,
+        extra: withNodeTypeDefaults(nodeForm).extra,
       });
       setUnsavedTestResult(response.data.data);
     } catch (error: any) {
@@ -365,7 +399,7 @@ export default function Subscriptions() {
     try {
       const country = countryOptions.find(c => c.code === nodeForm.country);
       const nodeData = {
-        ...nodeForm,
+        ...withNodeTypeDefaults(nodeForm),
         country_emoji: country?.emoji || '🌐',
       };
 
@@ -938,7 +972,7 @@ export default function Subscriptions() {
                     <p className="text-sm text-danger">{parseError}</p>
                   )}
                   <p className="text-xs text-gray-400">
-                    支持的协议: ss://, vmess://, vless://, trojan://, hysteria2://, tuic://, socks://
+                    支持的协议: ss://, vmess://, vless://, trojan://, hysteria2://, tuic://, socks://, anytls://
                   </p>
                 </div>
               )}
@@ -997,7 +1031,7 @@ export default function Subscriptions() {
                       <Select
                         label="节点类型"
                         selectedKeys={[nodeForm.type]}
-                        onChange={(e) => setNodeForm({ ...nodeForm, type: e.target.value })}
+                        onChange={(e) => setNodeForm(withNodeTypeDefaults({ ...nodeForm, type: e.target.value }))}
                       >
                         {nodeTypeOptions.map((opt) => (
                           <SelectItem key={opt.value} value={opt.value}>
@@ -1180,9 +1214,10 @@ export default function Subscriptions() {
                               ...nodeForm.extra,
                               tls: {
                                 ...(nodeForm.extra?.tls || {}),
+                                enabled: true,
                                 utls: {
                                   enabled: true,
-                                  fingerprint: e.target.value,
+                                  fingerprint: e.target.value || 'chrome',
                                 },
                               },
                             },
@@ -1196,12 +1231,12 @@ export default function Subscriptions() {
                                 size="sm"
                                 label="检测间隔(s)"
                                 placeholder="30"
-                                value={nodeForm.extra?.idle_session_check_interval !== undefined ? String(nodeForm.extra.idle_session_check_interval) : ''}
+                                value={durationSecondsInputValue(nodeForm.extra?.idle_session_check_interval)}
                                 onChange={(e) => setNodeForm({
                                   ...nodeForm,
                                   extra: {
                                     ...nodeForm.extra,
-                                    idle_session_check_interval: e.target.value ? parseInt(e.target.value) : undefined,
+                                    idle_session_check_interval: toSingBoxSecondsDuration(e.target.value),
                                   },
                                 })}
                               />
@@ -1210,12 +1245,12 @@ export default function Subscriptions() {
                                 size="sm"
                                 label="超时时间(s)"
                                 placeholder="30"
-                                value={nodeForm.extra?.idle_session_timeout !== undefined ? String(nodeForm.extra.idle_session_timeout) : ''}
+                                value={durationSecondsInputValue(nodeForm.extra?.idle_session_timeout)}
                                 onChange={(e) => setNodeForm({
                                   ...nodeForm,
                                   extra: {
                                     ...nodeForm.extra,
-                                    idle_session_timeout: e.target.value ? parseInt(e.target.value) : undefined,
+                                    idle_session_timeout: toSingBoxSecondsDuration(e.target.value),
                                   },
                                 })}
                               />
@@ -1264,17 +1299,18 @@ export default function Subscriptions() {
                           <span className="text-sm font-medium">TLS</span>
                           <Switch
                             size="sm"
-                            isSelected={!!nodeForm.extra?.tls?.enabled}
+                            isSelected={nodeForm.type === 'anytls' || !!nodeForm.extra?.tls?.enabled}
+                            isDisabled={nodeForm.type === 'anytls'}
                             onValueChange={(val) => setNodeForm({
                               ...nodeForm,
                               extra: {
                                 ...nodeForm.extra,
-                                tls: { ...(nodeForm.extra?.tls || {}), enabled: val },
+                                tls: { ...(nodeForm.extra?.tls || {}), enabled: nodeForm.type === 'anytls' || val },
                               },
                             })}
                           />
                         </div>
-                        {nodeForm.extra?.tls?.enabled && (
+                        {(nodeForm.type === 'anytls' || nodeForm.extra?.tls?.enabled) && (
                           <div className="grid grid-cols-2 gap-4">
                             <Input
                               size="sm"

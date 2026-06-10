@@ -84,10 +84,10 @@ func (p *AnyTLSParser) Parse(rawURL string) (*storage.Node, error) {
 
 	// 空闲会话管理
 	if v := params.Get("idle-check-interval"); v != "" {
-		extra["idle_session_check_interval"] = getParamInt(params, "idle-check-interval", 0)
+		extra["idle_session_check_interval"] = secondsDurationString(getParamInt(params, "idle-check-interval", 0))
 	}
 	if v := params.Get("idle-timeout"); v != "" {
-		extra["idle_session_timeout"] = getParamInt(params, "idle-timeout", 0)
+		extra["idle_session_timeout"] = secondsDurationString(getParamInt(params, "idle-timeout", 0))
 	}
 	if v := params.Get("min-idle-session"); v != "" {
 		extra["min_idle_session"] = getParamInt(params, "min-idle-session", 0)

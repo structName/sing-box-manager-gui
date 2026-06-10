@@ -59,6 +59,43 @@ func TestNodeToOutboundRejectsUnsupportedShadowsocksPlugin(t *testing.T) {
 	}
 }
 
+func TestNodeToOutboundNormalizesAnyTLSDurationAndTLS(t *testing.T) {
+	builder := &ConfigBuilder{}
+	node := storage.Node{
+		Tag:        "anytls-node",
+		Type:       "anytls",
+		Server:     "example.com",
+		ServerPort: 443,
+		Extra: map[string]interface{}{
+			"password":                    "secret",
+			"idle_session_check_interval": 30,
+			"idle_session_timeout":        float64(45),
+			"tls": map[string]interface{}{
+				"enabled": false,
+			},
+		},
+	}
+
+	outbound, err := builder.nodeToOutbound(node)
+	if err != nil {
+		t.Fatalf("nodeToOutbound returned error: %v", err)
+	}
+
+	if got := outbound["idle_session_check_interval"]; got != "30s" {
+		t.Fatalf("idle_session_check_interval = %v, want 30s", got)
+	}
+	if got := outbound["idle_session_timeout"]; got != "45s" {
+		t.Fatalf("idle_session_timeout = %v, want 45s", got)
+	}
+	tls, ok := outbound["tls"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("tls type = %T, want map[string]interface{}", outbound["tls"])
+	}
+	if got := tls["enabled"]; got != true {
+		t.Fatalf("tls.enabled = %v, want true", got)
+	}
+}
+
 func TestBuildRoutePrioritizesCustomInboundOutbound(t *testing.T) {
 	builder := &ConfigBuilder{
 		settings: &storage.Settings{},

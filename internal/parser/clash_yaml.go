@@ -16,32 +16,32 @@ type ClashConfig struct {
 
 // ClashProxy Clash 代理配置
 type ClashProxy struct {
-	Name           string                 `yaml:"name"`
-	Type           string                 `yaml:"type"`
-	Server         string                 `yaml:"server"`
-	Port           int                    `yaml:"port"`
-	Password       string                 `yaml:"password,omitempty"`
-	Username       string                 `yaml:"username,omitempty"` // SOCKS 用户名
-	UUID           string                 `yaml:"uuid,omitempty"`
-	Cipher         string                 `yaml:"cipher,omitempty"`
-	AlterId        int                    `yaml:"alterId,omitempty"`
-	Network        string                 `yaml:"network,omitempty"`
-	TLS            bool                   `yaml:"tls,omitempty"`
-	SkipCertVerify bool                   `yaml:"skip-cert-verify,omitempty"`
-	SNI            string                 `yaml:"sni,omitempty"`
-	Servername     string                 `yaml:"servername,omitempty"` // Clash 格式的 SNI 字段
-	ALPN           []string               `yaml:"alpn,omitempty"`
+	Name              string                 `yaml:"name"`
+	Type              string                 `yaml:"type"`
+	Server            string                 `yaml:"server"`
+	Port              int                    `yaml:"port"`
+	Password          string                 `yaml:"password,omitempty"`
+	Username          string                 `yaml:"username,omitempty"` // SOCKS 用户名
+	UUID              string                 `yaml:"uuid,omitempty"`
+	Cipher            string                 `yaml:"cipher,omitempty"`
+	AlterId           int                    `yaml:"alterId,omitempty"`
+	Network           string                 `yaml:"network,omitempty"`
+	TLS               bool                   `yaml:"tls,omitempty"`
+	SkipCertVerify    bool                   `yaml:"skip-cert-verify,omitempty"`
+	SNI               string                 `yaml:"sni,omitempty"`
+	Servername        string                 `yaml:"servername,omitempty"` // Clash 格式的 SNI 字段
+	ALPN              []string               `yaml:"alpn,omitempty"`
 	Fingerprint       string                 `yaml:"fingerprint,omitempty"`
 	ClientFingerprint string                 `yaml:"client-fingerprint,omitempty"`
 	Flow              string                 `yaml:"flow,omitempty"`
-	UDP            bool                   `yaml:"udp,omitempty"`
-	Plugin         string                 `yaml:"plugin,omitempty"`
-	PluginOpts     map[string]interface{} `yaml:"plugin-opts,omitempty"`
-	WSOpts         *WSOpts                `yaml:"ws-opts,omitempty"`
-	H2Opts         *H2Opts                `yaml:"h2-opts,omitempty"`
-	HTTPOpts       *HTTPOpts              `yaml:"http-opts,omitempty"`
-	GrpcOpts       *GrpcOpts              `yaml:"grpc-opts,omitempty"`
-	RealityOpts    *RealityOpts           `yaml:"reality-opts,omitempty"`
+	UDP               bool                   `yaml:"udp,omitempty"`
+	Plugin            string                 `yaml:"plugin,omitempty"`
+	PluginOpts        map[string]interface{} `yaml:"plugin-opts,omitempty"`
+	WSOpts            *WSOpts                `yaml:"ws-opts,omitempty"`
+	H2Opts            *H2Opts                `yaml:"h2-opts,omitempty"`
+	HTTPOpts          *HTTPOpts              `yaml:"http-opts,omitempty"`
+	GrpcOpts          *GrpcOpts              `yaml:"grpc-opts,omitempty"`
+	RealityOpts       *RealityOpts           `yaml:"reality-opts,omitempty"`
 	// Hysteria2 特有
 	Auth         string `yaml:"auth,omitempty"`
 	Obfs         string `yaml:"obfs,omitempty"`
@@ -221,7 +221,7 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 	case "anytls":
 		nodeType = "anytls"
 		extra["password"] = proxy.Password
-		
+
 		// TLS 配置
 		tls := map[string]interface{}{
 			"enabled": true,
@@ -239,7 +239,7 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 		if len(proxy.ALPN) > 0 {
 			tls["alpn"] = proxy.ALPN
 		}
-		
+
 		// uTLS fingerprint
 		fp := proxy.ClientFingerprint
 		if fp == "" {
@@ -253,13 +253,13 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 			"fingerprint": fp,
 		}
 		extra["tls"] = tls
-		
+
 		// 空闲会话管理
 		if proxy.IdleSessionCheckInterval > 0 {
-			extra["idle_session_check_interval"] = proxy.IdleSessionCheckInterval
+			extra["idle_session_check_interval"] = secondsDurationString(proxy.IdleSessionCheckInterval)
 		}
 		if proxy.IdleSessionTimeout > 0 {
-			extra["idle_session_timeout"] = proxy.IdleSessionTimeout
+			extra["idle_session_timeout"] = secondsDurationString(proxy.IdleSessionTimeout)
 		}
 		if proxy.MinIdleSession > 0 {
 			extra["min_idle_session"] = proxy.MinIdleSession

@@ -429,6 +429,8 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 			}
 			if alpn, ok := tls["alpn"].([]interface{}); ok {
 				proxy["alpn"] = alpn
+			} else if alpn, ok := tls["alpn"].([]string); ok {
+				proxy["alpn"] = alpn
 			}
 			if utls, ok := tls["utls"].(map[string]interface{}); ok {
 				if fp, ok := utls["fingerprint"].(string); ok {
@@ -437,13 +439,13 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 			}
 		}
 		// 空闲会话参数（mihomo 预期 int 类型）
-		if v, ok := extra["idle_session_check_interval"]; ok {
+		if v, ok := anyTLSDurationSeconds(extra["idle_session_check_interval"]); ok {
 			proxy["idle-session-check-interval"] = v
 		}
-		if v, ok := extra["idle_session_timeout"]; ok {
+		if v, ok := anyTLSDurationSeconds(extra["idle_session_timeout"]); ok {
 			proxy["idle-session-timeout"] = v
 		}
-		if v, ok := extra["min_idle_session"]; ok {
+		if v, ok := numberAsInt(extra["min_idle_session"]); ok {
 			proxy["min-idle-session"] = v
 		}
 
@@ -452,6 +454,59 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 	}
 
 	return proxy, nil
+}
+
+func anyTLSDurationSeconds(raw interface{}) (int, bool) {
+	switch value := raw.(type) {
+	case nil:
+		return 0, false
+	case string:
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return 0, false
+		}
+		if seconds, err := strconv.Atoi(value); err == nil {
+			return seconds, true
+		}
+		duration, err := time.ParseDuration(value)
+		if err != nil {
+			return 0, false
+		}
+		return int(duration / time.Second), true
+	default:
+		return numberAsInt(raw)
+	}
+}
+
+func numberAsInt(raw interface{}) (int, bool) {
+	switch value := raw.(type) {
+	case int:
+		return value, true
+	case int8:
+		return int(value), true
+	case int16:
+		return int(value), true
+	case int32:
+		return int(value), true
+	case int64:
+		return int(value), true
+	case uint:
+		return int(value), true
+	case uint8:
+		return int(value), true
+	case uint16:
+		return int(value), true
+	case uint32:
+		return int(value), true
+	case uint64:
+		return int(value), true
+	case float32:
+		return int(value), true
+	case float64:
+		return int(value), true
+	default:
+		return 0, false
+	}
 }
 
 func applyShadowsocksPluginToMihomo(proxy map[string]interface{}, extra map[string]interface{}) error {

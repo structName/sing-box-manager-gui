@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/xiaobei/singbox-manager/internal/storage"
@@ -70,15 +71,15 @@ type NTPConfig struct {
 // 注意: sniff/sniff_override_destination 已在 sing-box 1.11.0 中从 inbound 移除，
 // 改为通过 route rule_actions 配置（见 buildRoute 中的 sniff action）
 type Inbound struct {
-	Type       string        `json:"type"`
-	Tag        string        `json:"tag"`
-	Listen     string        `json:"listen,omitempty"`
-	ListenPort int           `json:"listen_port,omitempty"`
-	Address    []string      `json:"address,omitempty"`
-	AutoRoute  bool          `json:"auto_route,omitempty"`
-	StrictRoute bool         `json:"strict_route,omitempty"`
-	Stack      string        `json:"stack,omitempty"`
-	Users      []InboundUser `json:"users,omitempty"`
+	Type        string        `json:"type"`
+	Tag         string        `json:"tag"`
+	Listen      string        `json:"listen,omitempty"`
+	ListenPort  int           `json:"listen_port,omitempty"`
+	Address     []string      `json:"address,omitempty"`
+	AutoRoute   bool          `json:"auto_route,omitempty"`
+	StrictRoute bool          `json:"strict_route,omitempty"`
+	Stack       string        `json:"stack,omitempty"`
+	Users       []InboundUser `json:"users,omitempty"`
 }
 
 // InboundUser 入站用户认证
@@ -346,12 +347,12 @@ func (b *ConfigBuilder) buildInbounds() []Inbound {
 
 	if b.settings.TunEnabled {
 		inbounds = append(inbounds, Inbound{
-			Type:      "tun",
-			Tag:       "tun-in",
-			Address:   []string{"172.19.0.1/30", "fdfe:dcba:9876::1/126"},
-			AutoRoute: true,
+			Type:        "tun",
+			Tag:         "tun-in",
+			Address:     []string{"172.19.0.1/30", "fdfe:dcba:9876::1/126"},
+			AutoRoute:   true,
 			StrictRoute: true,
-			Stack:     "system",
+			Stack:       "system",
 		})
 	}
 
@@ -695,10 +696,18 @@ func (b *ConfigBuilder) nodeToOutbound(node storage.Node) (Outbound, error) {
 
 func normalizeOutbound(outbound Outbound) error {
 	outboundType, _ := outbound["type"].(string)
-	if outboundType != "shadowsocks" {
+	switch outboundType {
+	case "shadowsocks":
+		return normalizeShadowsocksOutbound(outbound)
+	case "anytls":
+		normalizeAnyTLSOutbound(outbound)
+		return nil
+	default:
 		return nil
 	}
+}
 
+func normalizeShadowsocksOutbound(outbound Outbound) error {
 	plugin, _ := outbound["plugin"].(string)
 	if plugin == "" {
 		return nil
@@ -716,6 +725,67 @@ func normalizeOutbound(outbound Outbound) error {
 	}
 
 	return nil
+}
+
+func normalizeAnyTLSOutbound(outbound Outbound) {
+	tls, ok := outbound["tls"].(map[string]interface{})
+	if !ok {
+		tls = map[string]interface{}{}
+		outbound["tls"] = tls
+	}
+	tls["enabled"] = true
+
+	for _, field := range []string{"idle_session_check_interval", "idle_session_timeout"} {
+		if value, ok := anyTLSDurationValue(outbound[field]); ok {
+			outbound[field] = value
+		} else {
+			delete(outbound, field)
+		}
+	}
+}
+
+func anyTLSDurationValue(raw interface{}) (string, bool) {
+	switch value := raw.(type) {
+	case nil:
+		return "", false
+	case string:
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return "", false
+		}
+		if _, err := strconv.ParseFloat(value, 64); err == nil {
+			return value + "s", true
+		}
+		return value, true
+	case int:
+		return fmt.Sprintf("%ds", value), true
+	case int8:
+		return fmt.Sprintf("%ds", value), true
+	case int16:
+		return fmt.Sprintf("%ds", value), true
+	case int32:
+		return fmt.Sprintf("%ds", value), true
+	case int64:
+		return fmt.Sprintf("%ds", value), true
+	case uint:
+		return fmt.Sprintf("%ds", value), true
+	case uint8:
+		return fmt.Sprintf("%ds", value), true
+	case uint16:
+		return fmt.Sprintf("%ds", value), true
+	case uint32:
+		return fmt.Sprintf("%ds", value), true
+	case uint64:
+		return fmt.Sprintf("%ds", value), true
+	case float32:
+		return strconv.FormatFloat(float64(value), 'f', -1, 32) + "s", true
+	case float64:
+		return strconv.FormatFloat(value, 'f', -1, 64) + "s", true
+	case json.Number:
+		return value.String() + "s", true
+	default:
+		return "", false
+	}
 }
 
 func normalizeShadowsocksPlugin(plugin string, rawOpts interface{}) (string, string, error) {

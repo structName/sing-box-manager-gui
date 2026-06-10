@@ -218,3 +218,7 @@ func getParamInt(params url.Values, key string, defaultValue int) int {
 	}
 	return defaultValue
 }
+
+func secondsDurationString(seconds int) string {
+	return fmt.Sprintf("%ds", seconds)
+}
