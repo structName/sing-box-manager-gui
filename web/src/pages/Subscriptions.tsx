@@ -27,7 +27,7 @@ import {
   DropdownItem,
   DropdownSection,
 } from '@nextui-org/react';
-import { Plus, RefreshCw, Trash2, Globe, Server, Pencil, Link, Filter as FilterIcon, ChevronDown, ChevronUp, Zap, Settings, Timer, Search } from 'lucide-react';
+import { Plus, RefreshCw, Trash2, Globe, Server, Pencil, Link, Filter as FilterIcon, ChevronDown, ChevronUp, Zap, Settings, Timer, Search, Upload } from 'lucide-react';
 import { useStore } from '../store';
 import { nodeApi, speedtestApi } from '../api';
 import { toast } from '../components/Toast';
@@ -209,7 +209,9 @@ export default function Subscriptions() {
     fetchCountryGroups,
     fetchFilters,
     addSubscription,
+    addLocalSubscription,
     updateSubscription,
+    updateLocalSubscription,
     deleteSubscription,
     refreshSubscription,
     toggleSubscription,
@@ -227,9 +229,11 @@ export default function Subscriptions() {
   const { isOpen: isFilterOpen, onOpen: onFilterOpen, onClose: onFilterClose } = useDisclosure();
   const { isOpen: isSpeedTestOpen, onOpen: onSpeedTestOpen, onClose: onSpeedTestClose } = useDisclosure();
   const [name, setName] = useState('');
+  const [subscriptionMode, setSubscriptionMode] = useState<'remote' | 'local'>('remote');
   const [url, setUrl] = useState('');
   const [autoUpdate, setAutoUpdate] = useState(true);
   const [updateInterval, setUpdateInterval] = useState(60);
+  const [subscriptionFile, setSubscriptionFile] = useState<File | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [editingSubscription, setEditingSubscription] = useState<Subscription | null>(null);
 
@@ -282,33 +286,48 @@ export default function Subscriptions() {
   const handleOpenAddSubscription = () => {
     setEditingSubscription(null);
     setName('');
+    setSubscriptionMode('remote');
     setUrl('');
     setAutoUpdate(true);
     setUpdateInterval(60);
+    setSubscriptionFile(null);
     onSubOpen();
   };
 
   const handleOpenEditSubscription = (sub: Subscription) => {
     setEditingSubscription(sub);
     setName(sub.name);
-    setUrl(sub.url);
+    setSubscriptionMode(sub.type === 'local' || sub.file_name ? 'local' : 'remote');
+    setUrl(sub.url || '');
     setAutoUpdate(sub.auto_update ?? true);
     setUpdateInterval(sub.update_interval ?? 60);
+    setSubscriptionFile(null);
     onSubOpen();
   };
 
   const handleSaveSubscription = async () => {
-    if (!name || !url) return;
+    if (!name) return;
+    if (subscriptionMode === 'remote' && !url) return;
+    if (subscriptionMode === 'local' && !editingSubscription && !subscriptionFile) return;
 
     setIsSubmitting(true);
     try {
-      if (editingSubscription) {
-        await updateSubscription(editingSubscription.id, name, url, autoUpdate, updateInterval);
+      if (subscriptionMode === 'local') {
+        if (editingSubscription) {
+          await updateLocalSubscription(editingSubscription.id, name, subscriptionFile);
+        } else {
+          await addLocalSubscription(name, subscriptionFile!);
+        }
       } else {
-        await addSubscription(name, url, autoUpdate, updateInterval);
+        if (editingSubscription) {
+          await updateSubscription(editingSubscription.id, name, url, autoUpdate, updateInterval);
+        } else {
+          await addSubscription(name, url, autoUpdate, updateInterval);
+        }
       }
       setName('');
       setUrl('');
+      setSubscriptionFile(null);
       setEditingSubscription(null);
       onSubClose();
     } catch (error) {
@@ -331,6 +350,11 @@ export default function Subscriptions() {
   const handleToggleSubscription = async (sub: Subscription) => {
     await toggleSubscription(sub.id, !sub.enabled);
   };
+
+  const isSubscriptionSaveDisabled =
+    !name ||
+    (subscriptionMode === 'remote' && !url) ||
+    (subscriptionMode === 'local' && !editingSubscription && !subscriptionFile);
 
   // 手动节点操作
   const handleOpenAddNode = () => {
@@ -889,38 +913,80 @@ export default function Subscriptions() {
               value={name}
               onChange={(e) => setName(e.target.value)}
             />
-            <Input
-              label="订阅地址"
-              placeholder="输入订阅 URL"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-            />
-            <Divider />
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Timer className="w-4 h-4 text-gray-500" />
-                <span className="text-sm">自动更新</span>
+            <Tabs
+              aria-label="订阅类型"
+              selectedKey={subscriptionMode}
+              onSelectionChange={(key) => {
+                if (!editingSubscription) setSubscriptionMode(key as 'remote' | 'local');
+              }}
+              variant="bordered"
+            >
+              <Tab key="remote" title="远程 URL" />
+              <Tab key="local" title="本地文件" />
+            </Tabs>
+
+            {subscriptionMode === 'remote' ? (
+              <div className="space-y-4">
+                <Input
+                  label="订阅地址"
+                  placeholder="输入订阅 URL"
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                />
+                <Divider />
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Timer className="w-4 h-4 text-gray-500" />
+                    <span className="text-sm">自动更新</span>
+                  </div>
+                  <Switch
+                    isSelected={autoUpdate}
+                    onValueChange={setAutoUpdate}
+                    size="sm"
+                  />
+                </div>
+                {autoUpdate && (
+                  <Select
+                    label="更新间隔"
+                    selectedKeys={[String(updateInterval)]}
+                    onChange={(e) => setUpdateInterval(Number(e.target.value))}
+                    size="sm"
+                  >
+                    <SelectItem key="30">每 30 分钟</SelectItem>
+                    <SelectItem key="60">每 1 小时</SelectItem>
+                    <SelectItem key="180">每 3 小时</SelectItem>
+                    <SelectItem key="360">每 6 小时</SelectItem>
+                    <SelectItem key="720">每 12 小时</SelectItem>
+                    <SelectItem key="1440">每天</SelectItem>
+                  </Select>
+                )}
               </div>
-              <Switch
-                isSelected={autoUpdate}
-                onValueChange={setAutoUpdate}
-                size="sm"
-              />
-            </div>
-            {autoUpdate && (
-              <Select
-                label="更新间隔"
-                selectedKeys={[String(updateInterval)]}
-                onChange={(e) => setUpdateInterval(Number(e.target.value))}
-                size="sm"
-              >
-                <SelectItem key="30">每 30 分钟</SelectItem>
-                <SelectItem key="60">每 1 小时</SelectItem>
-                <SelectItem key="180">每 3 小时</SelectItem>
-                <SelectItem key="360">每 6 小时</SelectItem>
-                <SelectItem key="720">每 12 小时</SelectItem>
-                <SelectItem key="1440">每天</SelectItem>
-              </Select>
+            ) : (
+              <div className="space-y-2">
+                <Input
+                  type="file"
+                  label={editingSubscription ? '替换订阅文件（可选）' : '订阅文件'}
+                  accept=".yaml,.yml,.txt"
+                  startContent={<Upload className="w-4 h-4 text-gray-400" />}
+                  onChange={(e) => setSubscriptionFile(e.target.files?.[0] || null)}
+                  description="支持 Clash/Mihomo YAML、逐行节点链接和 base64 订阅文本"
+                />
+                {editingSubscription?.file_name && !subscriptionFile && (
+                  <p className="text-xs text-default-500">当前文件：{editingSubscription.file_name}</p>
+                )}
+                {subscriptionFile && (
+                  <p className="text-xs text-success-600">已选择：{subscriptionFile.name}</p>
+                )}
+                <p className="text-xs text-default-500">
+                  本地文件会保存到当前配置中，刷新订阅时会重新解析已保存的内容。
+                </p>
+              </div>
+            )}
+
+            {editingSubscription && (
+              <p className="text-xs text-default-500">
+                编辑已有订阅时保持原订阅类型；如需切换类型，请新建一个订阅。
+              </p>
             )}
           </ModalBody>
           <ModalFooter>
@@ -931,7 +997,7 @@ export default function Subscriptions() {
               color="primary"
               onPress={handleSaveSubscription}
               isLoading={isSubmitting}
-              isDisabled={!name || !url}
+              isDisabled={isSubscriptionSaveDisabled}
             >
               {editingSubscription ? '保存' : '添加'}
             </Button>
@@ -1865,6 +1931,11 @@ function SubscriptionCard({ subscription: sub, onRefresh, onEdit, onDelete, onTo
             <h3 className="text-lg font-semibold">{sub.name}</h3>
             <p className="text-sm text-gray-500">
               {sub.node_count} 个节点 · 更新于 {new Date(sub.updated_at).toLocaleString()}
+            </p>
+            <p className="text-xs text-gray-400">
+              {sub.type === 'local' || sub.file_name
+                ? `本地文件：${sub.file_name || sub.url || '已保存内容'}`
+                : `远程地址：${sub.url}`}
             </p>
             {sub.traffic && (
               <p className="text-sm text-gray-500">

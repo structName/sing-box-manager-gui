@@ -7,6 +7,8 @@ export interface Subscription {
   id: string;
   name: string;
   url: string;
+  type?: string;
+  file_name?: string;
   node_count: number;
   updated_at: string;
   expire_at?: string;
@@ -136,7 +138,9 @@ interface AppState {
   fetchSystemInfo: () => Promise<void>;
 
   addSubscription: (name: string, url: string, autoUpdate?: boolean, updateInterval?: number) => Promise<void>;
+  addLocalSubscription: (name: string, file: File) => Promise<void>;
   updateSubscription: (id: string, name: string, url: string, autoUpdate?: boolean, updateInterval?: number) => Promise<void>;
+  updateLocalSubscription: (id: string, name: string, file?: File | null) => Promise<void>;
   deleteSubscription: (id: string) => Promise<void>;
   refreshSubscription: (id: string) => Promise<void>;
   toggleSubscription: (id: string, enabled: boolean) => Promise<void>;
@@ -242,10 +246,38 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
+  addLocalSubscription: async (name: string, file: File) => {
+    set({ loading: true });
+    try {
+      await subscriptionApi.addLocal(name, file);
+      await get().fetchSubscriptions();
+      toast.success('订阅添加成功');
+    } catch (error: any) {
+      toast.error(error.response?.data?.error || '添加订阅失败');
+      throw error;
+    } finally {
+      set({ loading: false });
+    }
+  },
+
   updateSubscription: async (id: string, name: string, url: string, autoUpdate?: boolean, updateInterval?: number) => {
     set({ loading: true });
     try {
       await subscriptionApi.update(id, { name, url, auto_update: autoUpdate, update_interval: updateInterval });
+      await get().fetchSubscriptions();
+      toast.success('订阅更新成功');
+    } catch (error: any) {
+      toast.error(error.response?.data?.error || '更新订阅失败');
+      throw error;
+    } finally {
+      set({ loading: false });
+    }
+  },
+
+  updateLocalSubscription: async (id: string, name: string, file?: File | null) => {
+    set({ loading: true });
+    try {
+      await subscriptionApi.updateLocal(id, name, file);
       await get().fetchSubscriptions();
       toast.success('订阅更新成功');
     } catch (error: any) {

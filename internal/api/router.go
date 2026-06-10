@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -33,6 +35,7 @@ import (
 	"github.com/xiaobei/singbox-manager/internal/storage"
 	"github.com/xiaobei/singbox-manager/internal/zashboard"
 	"github.com/xiaobei/singbox-manager/web"
+	"golang.org/x/net/proxy"
 )
 
 // Server API 服务器
@@ -70,6 +73,8 @@ type Server struct {
 	// SSE 事件
 	eventsHandler *EventsHandler
 }
+
+const maxLocalSubscriptionBytes = 10 << 20
 
 // NewServer 创建 API 服务器
 func NewServer(profileMgr *profile.Manager, processManager *daemon.ProcessManager, launchdManager *daemon.LaunchdManager, systemdManager *daemon.SystemdManager, sbmPath string, port int, version string, swaggerEnabled bool) (*Server, error) {
@@ -600,9 +605,11 @@ func (s *Server) setupRoutes() {
 
 		// 入站端口管理
 		api.GET("/inbound-ports", s.getInboundPorts)
+		api.POST("/inbound-ports/test", s.testInboundPortDraft)
 		api.POST("/inbound-ports", s.addInboundPort)
 		api.PUT("/inbound-ports/:id", s.updateInboundPort)
 		api.DELETE("/inbound-ports/:id", s.deleteInboundPort)
+		api.POST("/inbound-ports/:id/test", s.testInboundPort)
 
 		// 代理链路管理
 		api.GET("/proxy-chains", s.getProxyChains)
@@ -730,10 +737,103 @@ func (s *Server) Run(addr string) error {
 
 func (s *Server) getSubscriptions(c *gin.Context) {
 	subs := s.subService.GetAll()
-	c.JSON(http.StatusOK, gin.H{"data": subs})
+	c.JSON(http.StatusOK, gin.H{"data": sanitizeSubscriptionResponses(subs)})
+}
+
+func sanitizeSubscriptionResponse(sub storage.Subscription) storage.Subscription {
+	sub.Content = ""
+	return sub
+}
+
+func sanitizeSubscriptionResponses(subs []storage.Subscription) []storage.Subscription {
+	copied := make([]storage.Subscription, len(subs))
+	for i := range subs {
+		copied[i] = sanitizeSubscriptionResponse(subs[i])
+	}
+	return copied
+}
+
+func readLocalSubscriptionFile(c *gin.Context, required bool) (string, string, error) {
+	file, err := c.FormFile("file")
+	if err != nil {
+		if !required {
+			return "", "", nil
+		}
+		return "", "", fmt.Errorf("请上传订阅文件")
+	}
+
+	src, err := file.Open()
+	if err != nil {
+		return "", "", fmt.Errorf("打开订阅文件失败: %w", err)
+	}
+	defer src.Close()
+
+	data, err := io.ReadAll(io.LimitReader(src, maxLocalSubscriptionBytes+1))
+	if err != nil {
+		return "", "", fmt.Errorf("读取订阅文件失败: %w", err)
+	}
+	if len(data) > maxLocalSubscriptionBytes {
+		return "", "", fmt.Errorf("订阅文件不能超过 10MB")
+	}
+
+	content := strings.TrimSpace(string(data))
+	if content == "" {
+		return "", "", fmt.Errorf("订阅文件为空")
+	}
+
+	return filepath.Base(file.Filename), content, nil
 }
 
 func (s *Server) addSubscription(c *gin.Context) {
+	if strings.HasPrefix(c.GetHeader("Content-Type"), "multipart/") {
+		name := strings.TrimSpace(c.PostForm("name"))
+		if name == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "订阅名称不能为空"})
+			return
+		}
+
+		fileName, content, err := readLocalSubscriptionFile(c, true)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		var task *models.Task
+		if s.taskManager != nil {
+			task, _, _ = s.taskManager.CreateTask(models.TaskTypeSubUpdate, "添加本地订阅: "+name, models.TaskTriggerManual, 0)
+			s.taskManager.StartTask(task.ID)
+		}
+
+		sub, err := s.subService.AddLocal(name, fileName, content)
+		if err != nil {
+			if task != nil {
+				s.taskManager.FailTask(task.ID, err.Error())
+			}
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		s.ensureDefaultSpeedTestProfile()
+		nodeIDs := s.syncNodesToSQLiteAndGetIDs()
+		if s.eventTrigger != nil {
+			s.eventTrigger.OnSubscriptionUpdate(sub.ID, nodeIDs)
+		}
+		if task != nil {
+			s.taskManager.CompleteTask(task.ID, "本地订阅添加成功", map[string]interface{}{
+				"subscription_id": sub.ID,
+				"node_count":      sub.NodeCount,
+			})
+		}
+
+		if err := s.autoApplyConfig(); err != nil {
+			c.JSON(http.StatusOK, gin.H{"data": sanitizeSubscriptionResponse(*sub), "warning": "添加成功，但自动应用配置失败: " + err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"data": sanitizeSubscriptionResponse(*sub)})
+		return
+	}
+
 	var req struct {
 		Name           string `json:"name" binding:"required"`
 		URL            string `json:"url" binding:"required"`
@@ -746,10 +846,9 @@ func (s *Server) addSubscription(c *gin.Context) {
 		return
 	}
 
-	// 创建任务记录
 	var task *models.Task
 	if s.taskManager != nil {
-		task, _, _ = s.taskManager.CreateTask(models.TaskTypeSubUpdate, "添加订阅: "+req.Name, models.TaskTriggerManual, 0)
+		task, _, _ = s.taskManager.CreateTask(models.TaskTypeSubUpdate, "添加远程订阅: "+req.Name, models.TaskTriggerManual, 0)
 		s.taskManager.StartTask(task.ID)
 	}
 
@@ -762,35 +861,25 @@ func (s *Server) addSubscription(c *gin.Context) {
 		return
 	}
 
-	// 更新订阅调度
 	s.updateSubscriptionSchedule(*sub)
-
-	// 创建默认测速策略（如果是第一个订阅）
 	s.ensureDefaultSpeedTestProfile()
-
-	// 同步节点到 SQLite（用于测速模块）
 	nodeIDs := s.syncNodesToSQLiteAndGetIDs()
-
-	// 触发订阅更新事件
 	if s.eventTrigger != nil {
 		s.eventTrigger.OnSubscriptionUpdate(sub.ID, nodeIDs)
 	}
-
-	// 完成任务
 	if task != nil {
-		s.taskManager.CompleteTask(task.ID, "订阅添加成功", map[string]interface{}{
+		s.taskManager.CompleteTask(task.ID, "远程订阅添加成功", map[string]interface{}{
 			"subscription_id": sub.ID,
 			"node_count":      sub.NodeCount,
 		})
 	}
 
-	// 自动应用配置
 	if err := s.autoApplyConfig(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"data": sub, "warning": "添加成功，但自动应用配置失败: " + err.Error()})
+		c.JSON(http.StatusOK, gin.H{"data": sanitizeSubscriptionResponse(*sub), "warning": "添加成功，但自动应用配置失败: " + err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"data": sub})
+	c.JSON(http.StatusOK, gin.H{"data": sanitizeSubscriptionResponse(*sub)})
 }
 
 func (s *Server) updateSubscription(c *gin.Context) {
@@ -800,6 +889,78 @@ func (s *Server) updateSubscription(c *gin.Context) {
 	existing := s.subService.Get(id)
 	if existing == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "订阅不存在"})
+		return
+	}
+
+	next := *existing
+	nodesChanged := false
+	nameChanged := false
+	if strings.HasPrefix(c.GetHeader("Content-Type"), "multipart/") {
+		if name := strings.TrimSpace(c.PostForm("name")); name != "" {
+			nameChanged = name != existing.Name
+			next.Name = name
+		}
+
+		fileName, content, err := readLocalSubscriptionFile(c, false)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if content != "" {
+			nodes, err := parser.ParseSubscriptionContent(content)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "解析订阅失败: " + err.Error()})
+				return
+			}
+			if len(nodes) == 0 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "未解析到任何节点"})
+				return
+			}
+
+			autoUpdate := false
+			next.URL = fileName
+			next.Type = "local"
+			next.Content = content
+			next.FileName = fileName
+			next.Nodes = nodes
+			next.NodeCount = len(nodes)
+			next.UpdatedAt = time.Now()
+			next.Traffic = nil
+			next.ExpireAt = nil
+			next.AutoUpdate = &autoUpdate
+			next.UpdateInterval = 0
+			nodesChanged = true
+		}
+
+		if err := s.subService.Update(next); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		s.updateSubscriptionSchedule(next)
+		if nodesChanged {
+			if s.chainSyncSvc != nil {
+				if err := s.chainSyncSvc.SyncChainNodesForSubscription(id); err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "同步链路节点失败: " + err.Error()})
+					return
+				}
+			}
+			nodeIDs := s.syncNodesToSQLiteAndGetIDs()
+			if s.eventTrigger != nil {
+				s.eventTrigger.OnSubscriptionUpdate(id, nodeIDs)
+			}
+		} else if nameChanged {
+			if err := s.syncNodesToSQLite(); err != nil {
+				logger.Warn("订阅改名后同步节点到 SQLite 失败: %v", err)
+			}
+		}
+
+		if err := s.autoApplyConfig(); err != nil {
+			c.JSON(http.StatusOK, gin.H{"message": "更新成功，但自动应用配置失败: " + err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "更新成功"})
 		return
 	}
 
@@ -818,28 +979,34 @@ func (s *Server) updateSubscription(c *gin.Context) {
 
 	// 更新指定字段
 	if req.Name != "" {
-		existing.Name = req.Name
+		nameChanged = req.Name != existing.Name
+		next.Name = req.Name
 	}
 	if req.URL != "" {
-		existing.URL = req.URL
+		next.URL = req.URL
 	}
 	if req.AutoUpdate != nil {
-		existing.AutoUpdate = req.AutoUpdate
+		next.AutoUpdate = req.AutoUpdate
 	}
 	if req.UpdateInterval != nil {
-		existing.UpdateInterval = *req.UpdateInterval
+		next.UpdateInterval = *req.UpdateInterval
 	}
 	if req.Enabled != nil {
-		existing.Enabled = *req.Enabled
+		next.Enabled = *req.Enabled
 	}
 
-	if err := s.subService.Update(*existing); err != nil {
+	if err := s.subService.Update(next); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	// 更新订阅调度
-	s.updateSubscriptionSchedule(*existing)
+	s.updateSubscriptionSchedule(next)
+	if nameChanged {
+		if err := s.syncNodesToSQLite(); err != nil {
+			logger.Warn("订阅改名后同步节点到 SQLite 失败: %v", err)
+		}
+	}
 
 	// 自动应用配置
 	if err := s.autoApplyConfig(); err != nil {
@@ -2410,6 +2577,66 @@ func (s *Server) getInboundPorts(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": ports})
 }
 
+func (s *Server) testInboundPortDraft(c *gin.Context) {
+	var port storage.InboundPort
+	if err := c.ShouldBindJSON(&port); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	result := s.checkInboundPortAvailability(port)
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"port": result,
+	}})
+}
+
+func (s *Server) testInboundPort(c *gin.Context) {
+	id := c.Param("id")
+	port := s.store.GetInboundPort(id)
+	if port == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "入站端口不存在"})
+		return
+	}
+
+	host := inboundPortTestHost(port.Listen)
+	addr := net.JoinHostPort(host, strconv.Itoa(port.Port))
+	listening := false
+	if conn, err := net.DialTimeout("tcp", addr, 2*time.Second); err == nil {
+		listening = true
+		_ = conn.Close()
+	}
+
+	proxyResult := gin.H{
+		"tested":  false,
+		"success": false,
+	}
+	if !port.Enabled {
+		proxyResult["error"] = "端口未启用"
+	} else if !s.processManager.IsRunning() {
+		proxyResult["error"] = "sing-box 未运行"
+	} else if !listening {
+		proxyResult["error"] = "端口未监听"
+	} else {
+		delay, statusCode, err := testHTTPViaInboundPort(*port, "https://cp.cloudflare.com/generate_204", 7*time.Second)
+		proxyResult["tested"] = true
+		proxyResult["delay_ms"] = delay
+		proxyResult["status_code"] = statusCode
+		if err != nil {
+			proxyResult["error"] = err.Error()
+		} else {
+			proxyResult["success"] = true
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"listening": gin.H{
+			"success": listening,
+			"address": addr,
+		},
+		"proxy": proxyResult,
+	}})
+}
+
 func (s *Server) addInboundPort(c *gin.Context) {
 	var port storage.InboundPort
 	if err := c.ShouldBindJSON(&port); err != nil {
@@ -2938,4 +3165,101 @@ func checkPortAvailable(listen string, port int) error {
 	}
 	_ = ln.Close()
 	return nil
+}
+
+func (s *Server) checkInboundPortAvailability(port storage.InboundPort) gin.H {
+	if port.Port < 1 || port.Port > 65535 {
+		return gin.H{"available": false, "message": "端口号必须在 1-65535 之间"}
+	}
+
+	for _, existing := range s.store.GetInboundPorts() {
+		if existing.ID != "" && existing.ID == port.ID {
+			continue
+		}
+		if existing.Listen == port.Listen && existing.Port == port.Port {
+			return gin.H{
+				"available": false,
+				"message":   fmt.Sprintf("端口 %s:%d 已被「%s」占用", port.Listen, port.Port, existing.Name),
+			}
+		}
+	}
+
+	if existing := s.store.GetInboundPort(port.ID); existing != nil && existing.Listen == port.Listen && existing.Port == port.Port {
+		if s.processManager == nil || !s.processManager.IsRunning() {
+			if err := checkPortAvailable(port.Listen, port.Port); err != nil {
+				return gin.H{"available": false, "message": err.Error()}
+			}
+		}
+		return gin.H{"available": true, "message": "当前端口已由此入站配置使用"}
+	}
+
+	if err := checkPortAvailable(port.Listen, port.Port); err != nil {
+		return gin.H{"available": false, "message": err.Error()}
+	}
+
+	return gin.H{"available": true, "message": "端口可用"}
+}
+
+func inboundPortTestHost(listen string) string {
+	switch strings.TrimSpace(listen) {
+	case "", "0.0.0.0", "localhost":
+		return "127.0.0.1"
+	case "::":
+		return "::1"
+	default:
+		return listen
+	}
+}
+
+func testHTTPViaInboundPort(port storage.InboundPort, testURL string, timeout time.Duration) (int64, int, error) {
+	host := inboundPortTestHost(port.Listen)
+	addr := net.JoinHostPort(host, strconv.Itoa(port.Port))
+
+	transport := &http.Transport{}
+	switch port.Type {
+	case "socks":
+		var auth *proxy.Auth
+		if port.Auth != nil && port.Auth.Username != "" {
+			auth = &proxy.Auth{User: port.Auth.Username, Password: port.Auth.Password}
+		}
+		dialer, err := proxy.SOCKS5("tcp", addr, auth, proxy.Direct)
+		if err != nil {
+			return 0, 0, fmt.Errorf("创建 SOCKS5 代理失败: %w", err)
+		}
+		transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+			type contextDialer interface {
+				DialContext(context.Context, string, string) (net.Conn, error)
+			}
+			if d, ok := dialer.(contextDialer); ok {
+				return d.DialContext(ctx, network, address)
+			}
+			return dialer.Dial(network, address)
+		}
+	default:
+		proxyURL := &url.URL{Scheme: "http", Host: addr}
+		if port.Auth != nil && port.Auth.Username != "" {
+			proxyURL.User = url.UserPassword(port.Auth.Username, port.Auth.Password)
+		}
+		transport.Proxy = http.ProxyURL(proxyURL)
+	}
+
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   timeout,
+	}
+
+	start := time.Now()
+	resp, err := client.Get(testURL)
+	if err != nil {
+		return time.Since(start).Milliseconds(), 0, fmt.Errorf("代理请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	delay := time.Since(start).Milliseconds()
+	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+		return delay, resp.StatusCode, fmt.Errorf("测试地址返回 HTTP %d", resp.StatusCode)
+	}
+
+	return delay, resp.StatusCode, nil
 }
