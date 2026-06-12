@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/xiaobei/singbox-manager/internal/builder"
-	"github.com/xiaobei/singbox-manager/internal/storage"
+	"github.com/structName/sing-box-manager-gui/internal/builder"
+	"github.com/structName/sing-box-manager-gui/internal/storage"
 )
 
 // TestSSRFullPipeline_ClashYAMLParsing_to_SingboxConfig verifies the complete
@@ -131,10 +131,10 @@ proxies:
 
 		// Ensure no unexpected field name variants that would be ignored by sing-box
 		unexpectedKeys := map[string]string{
-			"cipher":        "should be 'method'",
-			"obfsParam":     "should be 'obfs_param' (snake_case)",
-			"protocolParam": "should be 'protocol_param' (snake_case)",
-			"obfs-param":    "should be 'obfs_param' (underscore, not hyphen)",
+			"cipher":         "should be 'method'",
+			"obfsParam":      "should be 'obfs_param' (snake_case)",
+			"protocolParam":  "should be 'protocol_param' (snake_case)",
+			"obfs-param":     "should be 'obfs_param' (underscore, not hyphen)",
 			"protocol-param": "should be 'protocol_param' (underscore, not hyphen)",
 		}
 		for badKey, reason := range unexpectedKeys {

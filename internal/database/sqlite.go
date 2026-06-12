@@ -7,8 +7,8 @@ import (
 	"sync"
 
 	"github.com/glebarez/sqlite"
-	"github.com/xiaobei/singbox-manager/internal/database/models"
-	"github.com/xiaobei/singbox-manager/internal/logger"
+	"github.com/structName/sing-box-manager-gui/internal/database/models"
+	"github.com/structName/sing-box-manager-gui/internal/logger"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 )

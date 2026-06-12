@@ -6,10 +6,10 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	"github.com/xiaobei/singbox-manager/internal/database"
-	"github.com/xiaobei/singbox-manager/internal/database/models"
-	"github.com/xiaobei/singbox-manager/internal/service"
-	"github.com/xiaobei/singbox-manager/internal/speedtest"
+	"github.com/structName/sing-box-manager-gui/internal/database"
+	"github.com/structName/sing-box-manager-gui/internal/database/models"
+	"github.com/structName/sing-box-manager-gui/internal/service"
+	"github.com/structName/sing-box-manager-gui/internal/speedtest"
 )
 
 // parseUintParam 解析 URL 参数中的 uint ID

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xiaobei/singbox-manager/internal/storage"
+	"github.com/structName/sing-box-manager-gui/internal/storage"
 )
 
 func TestFindProxyPort(t *testing.T) {

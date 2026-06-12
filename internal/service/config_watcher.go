@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xiaobei/singbox-manager/internal/logger"
+	"github.com/structName/sing-box-manager-gui/internal/logger"
 )
 
 // ConfigWatcher 配置文件监控器

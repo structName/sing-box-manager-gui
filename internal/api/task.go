@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/xiaobei/singbox-manager/internal/database"
-	"github.com/xiaobei/singbox-manager/internal/service"
+	"github.com/structName/sing-box-manager-gui/internal/database"
+	"github.com/structName/sing-box-manager-gui/internal/service"
 )
 
 // TaskHandler 任务 API 处理器

@@ -1,7 +1,7 @@
 package service
 
 import (
-	"github.com/xiaobei/singbox-manager/internal/storage"
+	"github.com/structName/sing-box-manager-gui/internal/storage"
 )
 
 // ChainSyncService 链路节点同步服务

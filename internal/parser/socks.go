@@ -7,7 +7,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/xiaobei/singbox-manager/internal/storage"
+	"github.com/structName/sing-box-manager-gui/internal/storage"
 )
 
 // SocksParser SOCKS 解析器

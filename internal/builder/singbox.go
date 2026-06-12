@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/xiaobei/singbox-manager/internal/storage"
-	"github.com/xiaobei/singbox-manager/internal/zashboard"
+	"github.com/structName/sing-box-manager-gui/internal/storage"
+	"github.com/structName/sing-box-manager-gui/internal/zashboard"
 )
 
 // SingBoxConfig sing-box 配置结构

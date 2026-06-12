@@ -3,7 +3,7 @@ package service
 import (
 	"testing"
 
-	"github.com/xiaobei/singbox-manager/internal/storage"
+	"github.com/structName/sing-box-manager-gui/internal/storage"
 )
 
 func TestSyncChainNodesPreservesTorAndPrunesMissingOrdinaryNodes(t *testing.T) {

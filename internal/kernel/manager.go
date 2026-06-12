@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/xiaobei/singbox-manager/internal/storage"
+	"github.com/structName/sing-box-manager-gui/internal/storage"
 )
 
 // KernelInfo 内核信息

@@ -6,9 +6,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/xiaobei/singbox-manager/internal/database"
-	"github.com/xiaobei/singbox-manager/internal/database/models"
-	"github.com/xiaobei/singbox-manager/internal/logger"
+	"github.com/structName/sing-box-manager-gui/internal/database"
+	"github.com/structName/sing-box-manager-gui/internal/database/models"
+	"github.com/structName/sing-box-manager-gui/internal/logger"
 )
 
 // TagEngine 标签规则引擎

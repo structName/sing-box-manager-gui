@@ -6,11 +6,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/xiaobei/singbox-manager/internal/api"
-	"github.com/xiaobei/singbox-manager/internal/daemon"
-	"github.com/xiaobei/singbox-manager/internal/kernel"
-	"github.com/xiaobei/singbox-manager/internal/logger"
-	"github.com/xiaobei/singbox-manager/internal/profile"
+	"github.com/structName/sing-box-manager-gui/internal/api"
+	"github.com/structName/sing-box-manager-gui/internal/daemon"
+	"github.com/structName/sing-box-manager-gui/internal/kernel"
+	"github.com/structName/sing-box-manager-gui/internal/logger"
+	"github.com/structName/sing-box-manager-gui/internal/profile"
 )
 
 var (

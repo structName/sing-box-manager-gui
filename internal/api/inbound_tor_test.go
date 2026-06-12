@@ -10,8 +10,8 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/xiaobei/singbox-manager/internal/daemon"
-	"github.com/xiaobei/singbox-manager/internal/storage"
+	"github.com/structName/sing-box-manager-gui/internal/daemon"
+	"github.com/structName/sing-box-manager-gui/internal/storage"
 )
 
 func TestAddInboundPortRejectsMoreThanThreeActiveTorChains(t *testing.T) {

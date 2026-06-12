@@ -5,9 +5,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/xiaobei/singbox-manager/internal/parser"
-	"github.com/xiaobei/singbox-manager/internal/storage"
-	"github.com/xiaobei/singbox-manager/pkg/utils"
+	"github.com/structName/sing-box-manager-gui/internal/parser"
+	"github.com/structName/sing-box-manager-gui/internal/storage"
+	"github.com/structName/sing-box-manager-gui/pkg/utils"
 )
 
 // SubscriptionService 订阅服务

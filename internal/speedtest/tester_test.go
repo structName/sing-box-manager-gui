@@ -3,7 +3,7 @@ package speedtest
 import (
 	"testing"
 
-	"github.com/xiaobei/singbox-manager/internal/database/models"
+	"github.com/structName/sing-box-manager-gui/internal/database/models"
 )
 
 func TestNodeToMihomoProxyIncludesClashStyleObfsPlugin(t *testing.T) {

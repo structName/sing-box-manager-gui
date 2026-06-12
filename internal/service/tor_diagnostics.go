@@ -16,8 +16,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xiaobei/singbox-manager/internal/builder"
-	"github.com/xiaobei/singbox-manager/internal/storage"
+	"github.com/structName/sing-box-manager-gui/internal/builder"
+	"github.com/structName/sing-box-manager-gui/internal/storage"
 	"golang.org/x/net/proxy"
 )
 

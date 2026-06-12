@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/xiaobei/singbox-manager/internal/service"
-	"github.com/xiaobei/singbox-manager/internal/storage"
+	"github.com/structName/sing-box-manager-gui/internal/service"
+	"github.com/structName/sing-box-manager-gui/internal/storage"
 )
 
 func TestCheckTorDiagnosticsReturnsSeparatedSegmentAndFullChain(t *testing.T) {
