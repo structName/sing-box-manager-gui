@@ -1,7 +1,7 @@
 package service
 
 import (
-	"github.com/xiaobei/singbox-manager/internal/storage"
+	"github.com/structName/sing-box-manager-gui/internal/storage"
 )
 
 // ChainSyncService 链路节点同步服务
@@ -33,10 +33,9 @@ func (s *ChainSyncService) SyncChainNodes() error {
 
 		// 检查每个链路节点是否仍然有效
 		for _, chainNode := range chain.ChainNodes {
-			if storage.IsChainCountryNodeTag(chainNode.OriginalTag) {
-				chainNode.Source = storage.GetChainCountryNodeSource(storage.ParseChainCountryNodeCode(chainNode.OriginalTag))
-				validChainNodes = append(validChainNodes, chainNode)
-				validNodes = append(validNodes, chainNode.OriginalTag)
+			if specialNode, ok := storage.ChainSpecialNodeMetadata(chain.Name, chainNode.OriginalTag); ok {
+				validChainNodes = append(validChainNodes, specialNode)
+				validNodes = append(validNodes, specialNode.OriginalTag)
 			} else if node, exists := validNodeTags[chainNode.OriginalTag]; exists {
 				// 节点仍然存在，保留并更新来源信息
 				chainNode.Source = node.Source
@@ -87,10 +86,9 @@ func (s *ChainSyncService) SyncChainNodesForSubscription(subID string) error {
 		validNodes := make([]string, 0, len(chain.Nodes))
 
 		for _, chainNode := range chain.ChainNodes {
-			if storage.IsChainCountryNodeTag(chainNode.OriginalTag) {
-				chainNode.Source = storage.GetChainCountryNodeSource(storage.ParseChainCountryNodeCode(chainNode.OriginalTag))
-				validChainNodes = append(validChainNodes, chainNode)
-				validNodes = append(validNodes, chainNode.OriginalTag)
+			if specialNode, ok := storage.ChainSpecialNodeMetadata(chain.Name, chainNode.OriginalTag); ok {
+				validChainNodes = append(validChainNodes, specialNode)
+				validNodes = append(validNodes, specialNode.OriginalTag)
 				continue
 			}
 
@@ -139,12 +137,13 @@ func (s *ChainSyncService) RegenerateChainNodes(chainID string) error {
 
 	newChainNodes := make([]storage.ChainNode, 0, len(chain.Nodes))
 	for _, tag := range chain.Nodes {
-		source := ""
-		if storage.IsChainCountryNodeTag(tag) {
-			source = storage.GetChainCountryNodeSource(storage.ParseChainCountryNodeCode(tag))
-		} else {
-			source = nodeMap[tag].Source
+		if specialNode, ok := storage.ChainSpecialNodeMetadata(chain.Name, tag); ok {
+			newChainNodes = append(newChainNodes, specialNode)
+			continue
 		}
+
+		source := ""
+		source = nodeMap[tag].Source
 		newChainNodes = append(newChainNodes, storage.ChainNode{
 			OriginalTag: tag,
 			CopyTag:     storage.GenerateChainNodeCopyTag(chain.Name, tag),

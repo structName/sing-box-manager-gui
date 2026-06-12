@@ -4,7 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/xiaobei/singbox-manager/internal/service"
+	"github.com/structName/sing-box-manager-gui/internal/service"
 )
 
 // SchedulerHandler 调度器 API 处理器

@@ -1,4 +1,4 @@
-module github.com/xiaobei/singbox-manager
+module github.com/structName/sing-box-manager-gui
 
 go 1.23.0
 

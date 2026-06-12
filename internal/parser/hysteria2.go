@@ -5,7 +5,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/xiaobei/singbox-manager/internal/storage"
+	"github.com/structName/sing-box-manager-gui/internal/storage"
 )
 
 // Hysteria2Parser Hysteria2 解析器

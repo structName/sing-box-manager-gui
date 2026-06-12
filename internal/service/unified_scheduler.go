@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/robfig/cron/v3"
-	"github.com/xiaobei/singbox-manager/internal/database"
-	"github.com/xiaobei/singbox-manager/internal/logger"
+	"github.com/structName/sing-box-manager-gui/internal/database"
+	"github.com/structName/sing-box-manager-gui/internal/logger"
 )
 
 // ScheduleType 调度类型
@@ -45,10 +45,10 @@ type UnifiedScheduler struct {
 	started bool
 
 	// 回调函数
-	onSpeedTest   func(profileID uint, trigger string) error
-	onSubRefresh  func(subID string) error
-	onChainCheck  func() error
-	onTagApply    func(triggerType string) error
+	onSpeedTest  func(profileID uint, trigger string) error
+	onSubRefresh func(subID string) error
+	onChainCheck func() error
+	onTagApply   func(triggerType string) error
 }
 
 // NewUnifiedScheduler 创建统一调度器

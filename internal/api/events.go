@@ -7,7 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/xiaobei/singbox-manager/internal/service"
+	"github.com/structName/sing-box-manager-gui/internal/service"
 )
 
 // EventsHandler SSE 事件处理器

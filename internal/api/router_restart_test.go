@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xiaobei/singbox-manager/internal/storage"
+	"github.com/structName/sing-box-manager-gui/internal/storage"
 )
 
 func TestRebuildConfigAndRestartStopsOnBuildError(t *testing.T) {

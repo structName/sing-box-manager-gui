@@ -5,7 +5,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/xiaobei/singbox-manager/internal/storage"
+	"github.com/structName/sing-box-manager-gui/internal/storage"
 )
 
 // TrojanParser Trojan 解析器

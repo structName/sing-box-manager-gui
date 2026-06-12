@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/xiaobei/singbox-manager/internal/database/models"
+	"github.com/structName/sing-box-manager-gui/internal/database/models"
 	"gorm.io/gorm"
 )
 

@@ -1,8 +1,8 @@
 package service
 
 import (
-	"github.com/xiaobei/singbox-manager/internal/database"
-	"github.com/xiaobei/singbox-manager/internal/logger"
+	"github.com/structName/sing-box-manager-gui/internal/database"
+	"github.com/structName/sing-box-manager-gui/internal/logger"
 )
 
 // EventTrigger 事件触发器

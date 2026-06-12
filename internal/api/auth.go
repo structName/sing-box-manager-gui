@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	authcore "github.com/xiaobei/singbox-manager/internal/auth"
-	"github.com/xiaobei/singbox-manager/internal/storage"
+	authcore "github.com/structName/sing-box-manager-gui/internal/auth"
+	"github.com/structName/sing-box-manager-gui/internal/storage"
 )
 
 type authStatus struct {

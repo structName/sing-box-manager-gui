@@ -76,6 +76,10 @@ export interface HostEntry {
 export interface Settings {
   singbox_path: string;
   config_path: string;
+  tor_enabled?: boolean;
+  tor_executable_path?: string;
+  tor_extra_args?: string[];
+  torrc_values?: Record<string, string>;
   mixed_port: number;
   tun_enabled: boolean;
   lan_proxy_enabled?: boolean;

@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/xiaobei/singbox-manager/internal/database/models"
-	"github.com/xiaobei/singbox-manager/internal/logger"
+	"github.com/structName/sing-box-manager-gui/internal/database/models"
+	"github.com/structName/sing-box-manager-gui/internal/logger"
 	"gorm.io/gorm"
 )
 

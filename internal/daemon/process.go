@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/shirou/gopsutil/v3/process"
-	"github.com/xiaobei/singbox-manager/internal/logger"
+	"github.com/structName/sing-box-manager-gui/internal/logger"
 )
 
 // ProcessManager 进程管理器

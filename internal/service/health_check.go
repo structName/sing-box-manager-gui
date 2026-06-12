@@ -14,9 +14,9 @@ import (
 	"time"
 
 	mihomoConstant "github.com/metacubex/mihomo/constant"
-	"github.com/xiaobei/singbox-manager/internal/database/models"
-	"github.com/xiaobei/singbox-manager/internal/speedtest"
-	"github.com/xiaobei/singbox-manager/internal/storage"
+	"github.com/structName/sing-box-manager-gui/internal/database/models"
+	"github.com/structName/sing-box-manager-gui/internal/speedtest"
+	"github.com/structName/sing-box-manager-gui/internal/storage"
 	"golang.org/x/net/proxy"
 )
 

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xiaobei/singbox-manager/internal/storage"
+	"github.com/structName/sing-box-manager-gui/internal/storage"
 )
 
 // TestTestNodeViaMihomo_SSR 测试通过 mihomo adapter 直接测试 SSR 节点延迟

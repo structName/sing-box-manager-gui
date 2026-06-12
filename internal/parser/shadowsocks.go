@@ -5,8 +5,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/xiaobei/singbox-manager/internal/storage"
-	"github.com/xiaobei/singbox-manager/pkg/utils"
+	"github.com/structName/sing-box-manager-gui/internal/storage"
+	"github.com/structName/sing-box-manager-gui/pkg/utils"
 )
 
 // ShadowsocksParser Shadowsocks 解析器
