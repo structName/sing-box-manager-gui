@@ -70,6 +70,8 @@ export const filterApi = {
 export const settingsApi = {
   get: () => api.get('/settings'),
   update: (data: any) => api.put('/settings', data),
+  validateTor: (path: string) => api.post('/tor/validate', { path }),
+  detectTor: () => api.post('/tor/detect'),
   getSystemHosts: () => api.get('/system-hosts'),
 };
 
@@ -198,6 +200,7 @@ export const proxyChainApi = {
   // 速度测试
   getAllSpeed: () => api.get('/proxy-chains/speed'),
   checkSpeed: (id: string) => api.post(`/proxy-chains/${id}/speed`),
+  diagnoseTor: (id: string) => api.post(`/proxy-chains/${id}/tor-diagnostics`),
 };
 
 // 内核管理 API

@@ -8,6 +8,14 @@ import (
 const (
 	ChainCountryNodePrefix = "country:"
 	ChainCountryNodeSource = "country"
+	ChainAutoNodePrefix    = "auto:"
+	ChainAutoNodeTag       = ChainAutoNodePrefix + "all"
+	ChainAutoNodeSource    = "auto"
+	ChainAutoDisplayName   = "Auto 自动选择"
+	ChainSpecialNodePrefix = "special:"
+	ChainTorNodeTag        = ChainSpecialNodePrefix + "tor"
+	ChainTorNodeSource     = "special"
+	ChainTorDisplayName    = "Tor 网络"
 )
 
 // Profile 配置方案
@@ -22,14 +30,16 @@ type Profile struct {
 
 // InboundPort 入站端口配置
 type InboundPort struct {
-	ID       string       `json:"id"`
-	Name     string       `json:"name"`   // 端口名称，如 "家人专用"
-	Type     string       `json:"type"`   // mixed/http/socks
-	Listen   string       `json:"listen"` // 监听地址，默认 127.0.0.1
-	Port     int          `json:"port"`   // 端口号
-	Auth     *InboundAuth `json:"auth,omitempty"`
-	Outbound string       `json:"outbound"` // 关联的出站 tag
-	Enabled  bool         `json:"enabled"`
+	ID         string       `json:"id"`
+	Name       string       `json:"name"`   // 端口名称，如 "家人专用"
+	Type       string       `json:"type"`   // mixed/http/socks
+	Listen     string       `json:"listen"` // 监听地址，默认 127.0.0.1
+	Port       int          `json:"port"`   // 端口号
+	Auth       *InboundAuth `json:"auth,omitempty"`
+	Outbound   string       `json:"outbound"` // 关联的出站 tag
+	UseTorExit bool         `json:"use_tor_exit,omitempty"`
+	TorChainID string       `json:"tor_chain_id,omitempty"`
+	Enabled    bool         `json:"enabled"`
 }
 
 // InboundAuth 入站认证
@@ -102,6 +112,11 @@ func GenerateChainCountryCandidateCopyTag(chainName, countryTag, originalTag str
 	return GenerateChainNodeCopyTag(chainName, countryTag+"-"+originalTag)
 }
 
+// GenerateChainAutoCandidateCopyTag 生成链路中全局自动选择候选节点的副本 Tag
+func GenerateChainAutoCandidateCopyTag(chainName, originalTag string) string {
+	return GenerateChainNodeCopyTag(chainName, ChainAutoNodeTag+"-"+originalTag)
+}
+
 // MakeChainCountryNodeTag 生成链路中的地区自动选择节点 Tag
 func MakeChainCountryNodeTag(countryCode string) string {
 	code := strings.ToUpper(strings.TrimSpace(countryCode))
@@ -124,6 +139,11 @@ func IsChainCountryNodeTag(tag string) bool {
 	return ParseChainCountryNodeCode(tag) != ""
 }
 
+// IsChainAutoNodeTag 判断是否为链路中的全局自动选择节点 Tag
+func IsChainAutoNodeTag(tag string) bool {
+	return strings.TrimSpace(tag) == ChainAutoNodeTag
+}
+
 // GetChainCountryNodeSource 获取地区自动选择节点的来源标识
 func GetChainCountryNodeSource(countryCode string) string {
 	code := strings.ToUpper(strings.TrimSpace(countryCode))
@@ -131,6 +151,68 @@ func GetChainCountryNodeSource(countryCode string) string {
 		return ChainCountryNodeSource
 	}
 	return ChainCountryNodeSource + ":" + code
+}
+
+// IsChainTorNodeTag 判断是否为链路中的 Tor 特殊节点 Tag
+func IsChainTorNodeTag(tag string) bool {
+	return strings.TrimSpace(tag) == ChainTorNodeTag
+}
+
+// IsSpecialChainNodeTag 判断是否为链路特殊节点 Tag
+func IsSpecialChainNodeTag(tag string) bool {
+	return IsChainTorNodeTag(tag) || IsChainAutoNodeTag(tag)
+}
+
+// ChainContainsTor 判断链路节点列表是否包含 Tor 特殊节点
+func ChainContainsTor(nodes []string) bool {
+	for _, tag := range nodes {
+		if IsChainTorNodeTag(tag) {
+			return true
+		}
+	}
+	return false
+}
+
+// GetSpecialChainNodeDisplayName 获取特殊链路节点显示名称
+func GetSpecialChainNodeDisplayName(tag string) string {
+	if IsChainAutoNodeTag(tag) {
+		return ChainAutoDisplayName
+	}
+	if IsChainTorNodeTag(tag) {
+		return ChainTorDisplayName
+	}
+	return tag
+}
+
+// ChainSpecialNodeMetadata 返回链路特殊节点的稳定副本元数据
+func ChainSpecialNodeMetadata(chainName, tag string) (ChainNode, bool) {
+	if IsChainAutoNodeTag(tag) {
+		return ChainNode{
+			OriginalTag: tag,
+			CopyTag:     ChainAutoDisplayName,
+			Source:      ChainAutoNodeSource,
+		}, true
+	}
+	if IsChainTorNodeTag(tag) {
+		return ChainNode{
+			OriginalTag: tag,
+			CopyTag:     ChainTorDisplayName,
+			Source:      ChainTorNodeSource,
+		}, true
+	}
+	if IsChainCountryNodeTag(tag) {
+		return ChainNode{
+			OriginalTag: tag,
+			CopyTag:     GenerateChainNodeCopyTag(chainName, tag),
+			Source:      GetChainCountryNodeSource(ParseChainCountryNodeCode(tag)),
+		}, true
+	}
+	return ChainNode{}, false
+}
+
+// GenerateChainTorOutboundTag 生成链路专用 Tor outbound Tag
+func GenerateChainTorOutboundTag(chainID string) string {
+	return "tor-chain-" + strings.TrimSpace(chainID)
 }
 
 // Subscription 订阅
@@ -286,6 +368,12 @@ type Settings struct {
 	// GitHub 代理设置
 	GithubProxy string `json:"github_proxy"` // GitHub 代理地址，如 https://ghproxy.com/
 
+	// Tor 链路设置
+	TorEnabled        bool              `json:"tor_enabled"`
+	TorExecutablePath string            `json:"tor_executable_path"`
+	TorExtraArgs      []string          `json:"tor_extra_args"`
+	TorrcValues       map[string]string `json:"torrc_values"`
+
 	// 链路健康检测配置
 	ChainHealthConfig *ChainHealthConfig `json:"chain_health_config,omitempty"`
 }
@@ -313,6 +401,10 @@ func DefaultSettings() *Settings {
 		AutoApply:            true, // 默认开启自动应用
 		SubscriptionInterval: 60,   // 默认 60 分钟更新一次
 		GithubProxy:          "",   // 默认不使用代理
+		TorEnabled:           false,
+		TorExecutablePath:    "",
+		TorExtraArgs:         []string{},
+		TorrcValues:          map[string]string{},
 		ChainHealthConfig: &ChainHealthConfig{
 			Enabled:      false,
 			Interval:     300,

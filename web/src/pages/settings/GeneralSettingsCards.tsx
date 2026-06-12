@@ -1,5 +1,8 @@
 import { Button, Card, CardBody, CardHeader, Chip, Input, Switch } from '@nextui-org/react';
-import { AlertCircle, CheckCircle, Download, LockKeyhole, RadioTower, Terminal } from 'lucide-react';
+import { AlertCircle, CheckCircle, Download, LockKeyhole, RadioTower, Search, ShieldCheck, Terminal } from 'lucide-react';
+import { useState } from 'react';
+import { settingsApi } from '../../api';
+import { toast } from '../../components/Toast';
 import type { Settings as SettingsType } from '../../store';
 import type { KernelInfo } from './types';
 
@@ -13,6 +16,11 @@ interface CoreSettingsCardProps {
   kernelInfo: KernelInfo | null;
   onValueChange: <K extends keyof SettingsType>(field: K, value: SettingsType[K]) => void;
   onDownloadKernel: () => void;
+}
+
+interface TorRuntimeCardProps {
+  formData: SettingsType;
+  onValueChange: <K extends keyof SettingsType>(field: K, value: SettingsType[K]) => void;
 }
 
 interface ControlPanelCardProps extends FieldHandlers {
@@ -62,6 +70,151 @@ function KernelStatusBanner({ kernelInfo, onDownloadKernel }: Pick<CoreSettingsC
         </Button>
       </div>
     </div>
+  );
+}
+
+interface TorDetectionData {
+  state: 'single' | 'multiple' | 'manual';
+  paths: string[];
+  persisted: boolean;
+}
+
+function apiErrorMessage(error: unknown, fallback: string) {
+  const response = (error as { response?: { data?: { error?: string } } })?.response;
+  return response?.data?.error || fallback;
+}
+
+export function TorRuntimeCard({ formData, onValueChange }: TorRuntimeCardProps) {
+  const [isDetecting, setIsDetecting] = useState(false);
+  const [isValidating, setIsValidating] = useState(false);
+  const [detectedPaths, setDetectedPaths] = useState<string[]>([]);
+  const [statusText, setStatusText] = useState('');
+  const torEnabled = Boolean(formData.tor_enabled);
+  const torPath = formData.tor_executable_path || '';
+
+  const handleDetect = async () => {
+    setIsDetecting(true);
+    setStatusText('');
+    try {
+      const response = await settingsApi.detectTor();
+      const data = response.data.data as TorDetectionData;
+      setDetectedPaths(data.paths || []);
+
+      if (data.state === 'single' && data.paths[0]) {
+        onValueChange('tor_executable_path', data.paths[0]);
+        setStatusText('已检测到 Tor 可执行文件');
+        toast.success(data.persisted ? '已检测并保存 Tor 路径' : '已检测到 Tor 路径');
+      } else if (data.state === 'multiple') {
+        setStatusText('检测到多个 Tor 路径，请选择一个');
+      } else {
+        setStatusText('未检测到 Tor，请手动填写路径');
+      }
+    } catch (error: unknown) {
+      const message = apiErrorMessage(error, 'Tor 检测失败');
+      setStatusText(message);
+      toast.error(message);
+    } finally {
+      setIsDetecting(false);
+    }
+  };
+
+  const handleValidate = async () => {
+    setIsValidating(true);
+    setStatusText('');
+    try {
+      const response = await settingsApi.validateTor(torPath);
+      const data = response.data.data as { valid: boolean; error?: string };
+      if (data.valid) {
+        setStatusText('Tor 路径可用');
+        toast.success('Tor 路径可用');
+      } else {
+        const message = data.error || 'Tor 路径不可用';
+        setStatusText(message);
+        toast.error(message);
+      }
+    } catch (error: unknown) {
+      const message = apiErrorMessage(error, 'Tor 校验失败');
+      setStatusText(message);
+      toast.error(message);
+    } finally {
+      setIsValidating(false);
+    }
+  };
+
+  return (
+    <Card className="border border-slate-200/60 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+      <CardHeader className="flex items-start gap-3">
+        <div className="rounded-xl bg-violet-50 p-2.5 text-violet-600 dark:bg-violet-950/30 dark:text-violet-400">
+          <ShieldCheck className="h-5 w-5" />
+        </div>
+        <div className="space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-lg font-semibold text-slate-900 dark:text-white">Tor 运行时</h2>
+            <Chip size="sm" variant="flat" color={torEnabled ? 'success' : 'default'}>
+              {torEnabled ? '已启用' : '未启用'}
+            </Chip>
+          </div>
+          <p className="text-sm text-slate-500 dark:text-slate-400">配置代理链路使用的 Tor 可执行文件。</p>
+        </div>
+      </CardHeader>
+      <CardBody className="space-y-4">
+        <div className="flex items-center justify-between rounded-xl bg-slate-50 p-4 dark:bg-slate-800/50">
+          <div>
+            <p className="font-medium text-slate-900 dark:text-white">启用 Tor 链路</p>
+            <p className="text-sm text-slate-500 dark:text-slate-400">关闭后保留路径设置，但链路保存会按未启用处理。</p>
+          </div>
+          <Switch isSelected={torEnabled} onValueChange={(enabled) => onValueChange('tor_enabled', enabled)} />
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto_auto] md:items-end">
+          <Input
+            label="Tor 可执行文件"
+            value={torPath}
+            placeholder="/usr/bin/tor"
+            onChange={(event) => onValueChange('tor_executable_path', event.target.value)}
+          />
+          <Button
+            variant="flat"
+            startContent={<Search className="h-4 w-4" />}
+            isLoading={isDetecting}
+            onPress={handleDetect}
+          >
+            检测
+          </Button>
+          <Button
+            color="primary"
+            variant="flat"
+            startContent={<ShieldCheck className="h-4 w-4" />}
+            isLoading={isValidating}
+            onPress={handleValidate}
+          >
+            校验
+          </Button>
+        </div>
+
+        {detectedPaths.length > 1 && (
+          <div className="flex flex-wrap gap-2">
+            {detectedPaths.map((path) => (
+              <Button
+                key={path}
+                size="sm"
+                className="h-auto max-w-full whitespace-normal py-2"
+                variant={path === torPath ? 'solid' : 'flat'}
+                onPress={() => onValueChange('tor_executable_path', path)}
+              >
+                <span className="break-all text-left">{path}</span>
+              </Button>
+            ))}
+          </div>
+        )}
+
+        {statusText && (
+          <div className="break-words rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-950/40 dark:text-slate-300">
+            {statusText}
+          </div>
+        )}
+      </CardBody>
+    </Card>
   );
 }
 

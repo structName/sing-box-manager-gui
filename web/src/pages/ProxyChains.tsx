@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactElement } from 'react';
 import { Card, CardBody, CardHeader, Button, Chip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Input, Textarea, useDisclosure, Switch, Select, SelectItem, Accordion, AccordionItem, Tooltip } from '@nextui-org/react';
-import { Plus, Link2, Trash2, Pencil, ArrowRight, ChevronUp, ChevronDown, Activity, RefreshCw, Download, Zap } from 'lucide-react';
+import { Plus, Link2, Trash2, Pencil, ArrowRight, ChevronUp, ChevronDown, Activity, RefreshCw, Download, Zap, ShieldCheck } from 'lucide-react';
 import { proxyChainApi, nodeApi } from '../api';
 import { toast } from '../components/Toast';
 
@@ -24,6 +24,24 @@ const countryOptions = [
 ];
 
 const CHAIN_COUNTRY_PREFIX = 'country:';
+const CHAIN_AUTO_TAG = 'auto:all';
+const CHAIN_AUTO_LABEL = 'Auto 自动选择';
+const CHAIN_TOR_TAG = 'special:tor';
+const CHAIN_TOR_LABEL = 'Tor 网络';
+
+function getTorPlacementError(nodes: string[]): string {
+  const torIndexes = nodes
+    .map((nodeTag, index) => nodeTag === CHAIN_TOR_TAG ? index : -1)
+    .filter(index => index >= 0);
+
+  if (torIndexes[0] === 0) {
+    return 'Tor 网络不能作为第一个链路节点';
+  }
+  if (torIndexes.length > 1) {
+    return '代理链路只能包含一个 Tor 网络节点';
+  }
+  return '';
+}
 
 // ChainNode 类型
 interface ChainNode {
@@ -90,6 +108,20 @@ interface ChainSpeedResult {
   duration: number;
 }
 
+interface TorDiagnosticCheck {
+  status: 'healthy' | 'unhealthy' | 'skipped';
+  method?: string;
+  latency?: number;
+  error?: string;
+}
+
+interface TorDiagnosticResult {
+  chain_id: string;
+  checked_at: string;
+  tor_segment: TorDiagnosticCheck;
+  full_chain: TorDiagnosticCheck;
+}
+
 export default function ProxyChains() {
   const [chains, setChains] = useState<ProxyChain[]>([]);
   const [nodes, setNodes] = useState<Node[]>([]);
@@ -97,9 +129,11 @@ export default function ProxyChains() {
   const [countryGroups, setCountryGroups] = useState<CountryGroup[]>([]);
   const [healthStatuses, setHealthStatuses] = useState<Record<string, ChainHealthStatus>>({});
   const [speedResults, setSpeedResults] = useState<Record<string, ChainSpeedResult>>({});
+  const [torDiagnostics, setTorDiagnostics] = useState<Record<string, TorDiagnosticResult>>({});
   const [loading, setLoading] = useState(true);
   const [testingChain, setTestingChain] = useState<string | null>(null);
   const [speedTestingChain, setSpeedTestingChain] = useState<string | null>(null);
+  const [torDiagnosingChain, setTorDiagnosingChain] = useState<string | null>(null);
 
   // 创建/编辑 Modal
   const { isOpen, onOpen, onClose } = useDisclosure();
@@ -230,6 +264,30 @@ export default function ProxyChains() {
     }
   };
 
+  const diagnoseTorChain = async (chainId: string) => {
+    setTorDiagnosingChain(chainId);
+    try {
+      const res = await proxyChainApi.diagnoseTor(chainId);
+      const data: TorDiagnosticResult = res.data.data;
+      setTorDiagnostics(prev => ({
+        ...prev,
+        [chainId]: data,
+      }));
+
+      if (data.tor_segment.status === 'healthy' && data.full_chain.status === 'healthy') {
+        toast.success('Tor 诊断完成');
+      } else if (data.tor_segment.status !== 'healthy') {
+        toast.error(`Tor 段诊断失败: ${data.tor_segment.error || '未知错误'}`);
+      } else {
+        toast.error(`完整链路诊断失败: ${data.full_chain.error || '未知错误'}`);
+      }
+    } catch (error: any) {
+      toast.error('Tor 诊断失败: ' + (error.response?.data?.error || error.message));
+    } finally {
+      setTorDiagnosingChain(null);
+    }
+  };
+
   const testNodeConnectivity = async (tag: string) => {
     setTestingNodeTag(tag);
     try {
@@ -280,6 +338,12 @@ export default function ProxyChains() {
 
     if (formData.nodes.length < 2) {
       toast.error('链路至少需要2个节点');
+      return;
+    }
+
+    const torPlacementError = getTorPlacementError(formData.nodes);
+    if (torPlacementError) {
+      toast.error(torPlacementError);
       return;
     }
 
@@ -384,6 +448,10 @@ export default function ProxyChains() {
 
   const isCountryChainTag = (tag: string) => parseCountryChainTag(tag) !== '';
 
+  const isAutoChainTag = (tag: string) => tag === CHAIN_AUTO_TAG;
+
+  const isTorChainTag = (tag: string) => tag === CHAIN_TOR_TAG;
+
   const getCountryInfo = (tagOrCode: string) => {
     const code = tagOrCode.startsWith(CHAIN_COUNTRY_PREFIX)
       ? parseCountryChainTag(tagOrCode)
@@ -402,12 +470,33 @@ export default function ProxyChains() {
       && !formData.nodes.includes(makeCountryChainTag(group.code));
   });
 
+  const autoEntryAvailable = !formData.nodes.includes(CHAIN_AUTO_TAG) && formData.nodes.some(isTorChainTag);
+  const torNodeAvailable = !formData.nodes.includes(CHAIN_TOR_TAG);
+
   // 获取节点信息
   const getNodeInfo = (tag: string): Node | undefined => {
     return nodes.find(n => n.tag === tag);
   };
 
   const getChainNodeDisplay = (tag: string) => {
+    if (isAutoChainTag(tag)) {
+      return {
+        label: CHAIN_AUTO_LABEL,
+        emoji: undefined,
+        sourceName: '自动入口 · 全部节点',
+        copyTag: `${formData.name}-${tag}`,
+      };
+    }
+
+    if (isTorChainTag(tag)) {
+      return {
+        label: CHAIN_TOR_LABEL,
+        emoji: undefined,
+        sourceName: '特殊链路节点',
+        copyTag: CHAIN_TOR_LABEL,
+      };
+    }
+
     if (isCountryChainTag(tag)) {
       const country = getCountryInfo(tag);
       const code = parseCountryChainTag(tag);
@@ -448,6 +537,14 @@ export default function ProxyChains() {
     }
   };
 
+  const getTorDiagnosticLabel = (check?: TorDiagnosticCheck) => {
+    if (!check) {
+      return '未检测';
+    }
+    const latency = check.latency && check.latency > 0 ? ` ${check.latency}ms` : '';
+    return `${getHealthText(check.status)}${latency}`;
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -458,6 +555,7 @@ export default function ProxyChains() {
 
   const filteredGroups = getFilteredNodesByGroup();
   const accordionItems: ReactElement[] = [];
+  const torPlacementError = getTorPlacementError(formData.nodes);
 
   if (availableCountryChainGroups.length > 0) {
     accordionItems.push(
@@ -497,6 +595,76 @@ export default function ProxyChains() {
               </div>
             </div>
           ))}
+        </div>
+      </AccordionItem>
+    );
+  }
+
+  if (autoEntryAvailable) {
+    accordionItems.push(
+      <AccordionItem
+        key="automatic-entry"
+        title={
+          <div className="flex items-center gap-2">
+            <Chip size="sm" color="success" variant="flat">
+              自动入口
+            </Chip>
+            <span className="text-xs text-gray-500">全部节点自动选择</span>
+          </div>
+        }
+        classNames={{
+          content: "p-0",
+        }}
+      >
+        <div className="space-y-1">
+          <div
+            className="flex items-center justify-between p-2 hover:bg-default-100 rounded-lg cursor-pointer"
+            onClick={() => addNodeToChain(CHAIN_AUTO_TAG)}
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <Zap className="w-4 h-4 text-success" />
+              <div className="flex flex-col min-w-0">
+                <span className="text-sm truncate">{CHAIN_AUTO_LABEL}</span>
+                <span className="text-xs text-gray-400 truncate">auto:all</span>
+              </div>
+            </div>
+            <Chip size="sm" variant="flat" color="success">urltest</Chip>
+          </div>
+        </div>
+      </AccordionItem>
+    );
+  }
+
+  if (torNodeAvailable) {
+    accordionItems.push(
+      <AccordionItem
+        key="special-nodes"
+        title={
+          <div className="flex items-center gap-2">
+            <Chip size="sm" color="warning" variant="flat">
+              特殊节点
+            </Chip>
+            <span className="text-xs text-gray-500">Tor 网络</span>
+          </div>
+        }
+        classNames={{
+          content: "p-0",
+        }}
+      >
+        <div className="space-y-1">
+          <div
+            className="flex items-center justify-between p-2 hover:bg-default-100 rounded-lg cursor-pointer"
+            onClick={() => addNodeToChain(CHAIN_TOR_TAG)}
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <ShieldCheck className="w-4 h-4 text-warning" />
+              <div className="flex flex-col min-w-0">
+                <span className="text-sm truncate">{CHAIN_TOR_LABEL}</span>
+                <span className="text-xs text-gray-400 truncate">special:tor</span>
+              </div>
+            </div>
+            <Chip size="sm" variant="flat" color="warning">special</Chip>
+          </div>
         </div>
       </AccordionItem>
     );
@@ -624,6 +792,8 @@ export default function ProxyChains() {
           {chains.map((chain) => {
             const health = healthStatuses[chain.id];
             const speed = speedResults[chain.id];
+            const torDiagnostic = torDiagnostics[chain.id];
+            const hasTor = chain.nodes.some(isTorChainTag);
             return (
               <Card key={chain.id}>
                 <CardBody className="p-4">
@@ -634,6 +804,9 @@ export default function ProxyChains() {
                         <h3 className="font-semibold text-lg">{chain.name}</h3>
                         {!chain.enabled && (
                           <Chip size="sm" variant="flat">已禁用</Chip>
+                        )}
+                        {hasTor && (
+                          <Chip size="sm" color="warning" variant="flat">独立 Tor 实例</Chip>
                         )}
                         {/* 健康状态指示器 */}
                         {health && (
@@ -685,9 +858,47 @@ export default function ProxyChains() {
                           );
                         })}
                       </div>
+                      {hasTor && torDiagnostic && (
+                        <div className="mt-3 flex flex-col gap-2 rounded-md bg-default-50 p-3">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <Chip size="sm" color={getHealthColor(torDiagnostic.tor_segment.status)} variant="flat">
+                              Tor 段 {getTorDiagnosticLabel(torDiagnostic.tor_segment)}
+                            </Chip>
+                            <Chip size="sm" color={getHealthColor(torDiagnostic.full_chain.status)} variant="flat">
+                              完整链路 {getTorDiagnosticLabel(torDiagnostic.full_chain)}
+                            </Chip>
+                            <span className="text-xs text-gray-400">
+                              {new Date(torDiagnostic.checked_at).toLocaleString()}
+                            </span>
+                          </div>
+                          {(torDiagnostic.tor_segment.error || torDiagnostic.full_chain.error) && (
+                            <div className="space-y-1 text-xs text-danger">
+                              {torDiagnostic.tor_segment.error && (
+                                <p>Tor 段: {torDiagnostic.tor_segment.error}</p>
+                              )}
+                              {torDiagnostic.full_chain.error && (
+                                <p>完整链路: {torDiagnostic.full_chain.error}</p>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
 
                     <div className="flex items-center gap-1">
+                      {hasTor && (
+                        <Button
+                          isIconOnly
+                          size="sm"
+                          variant="light"
+                          color="warning"
+                          onPress={() => diagnoseTorChain(chain.id)}
+                          isLoading={torDiagnosingChain === chain.id}
+                          title="Tor 诊断"
+                        >
+                          <ShieldCheck className="w-4 h-4" />
+                        </Button>
+                      )}
                       <Button
                         isIconOnly
                         size="sm"
@@ -816,8 +1027,13 @@ export default function ProxyChains() {
                       })}
                     </div>
                   )}
+                  {torPlacementError && (
+                    <div className="mt-3 rounded-md border border-danger-200 bg-danger-50 px-3 py-2 text-xs text-danger">
+                      {torPlacementError}
+                    </div>
+                  )}
 
-                  {/* 链路预览 - 显示副本 Tag */}
+	                  {/* 链路预览 - 显示副本 Tag */}
                   {formData.nodes.length >= 2 && formData.name && (
                     <div className="mt-4 pt-3 border-t border-divider">
                       <p className="text-xs text-gray-500 mb-2">生成的副本节点：</p>
@@ -897,7 +1113,7 @@ export default function ProxyChains() {
 
                   {/* 按来源分组显示节点 */}
                   <div className="max-h-72 overflow-y-auto">
-                    {filteredGroups.length === 0 && availableCountryChainGroups.length === 0 ? (
+                    {filteredGroups.length === 0 && availableCountryChainGroups.length === 0 && !autoEntryAvailable && !torNodeAvailable ? (
                       <p className="text-gray-500 text-center py-4">
                         没有可用节点
                       </p>
@@ -905,6 +1121,8 @@ export default function ProxyChains() {
                       <Accordion
                         selectionMode="multiple"
                         defaultExpandedKeys={[
+                          ...(autoEntryAvailable ? ['automatic-entry'] : []),
+                          ...(torNodeAvailable ? ['special-nodes'] : []),
                           ...(availableCountryChainGroups.length > 0 ? ['country-auto'] : []),
                           ...filteredGroups.map(g => g.source),
                         ]}

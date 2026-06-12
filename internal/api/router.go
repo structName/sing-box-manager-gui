@@ -10,9 +10,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -40,22 +42,23 @@ import (
 
 // Server API 服务器
 type Server struct {
-	profileMgr     *profile.Manager
-	store          *storage.JSONStore
-	subService     *service.SubscriptionService
-	processManager *daemon.ProcessManager
-	launchdManager *daemon.LaunchdManager
-	systemdManager *daemon.SystemdManager
-	kernelManager  *kernel.Manager
-	chainSyncSvc   *service.ChainSyncService
-	healthCheckSvc *service.HealthCheckService
-	authManager    *auth.Manager
-	router         *gin.Engine
-	sbmPath        string // sbm 可执行文件路径
-	port           int    // Web 服务端口
-	version        string // sbm 版本号
-	swaggerEnabled bool   // 是否启用 Swagger
-	baseDir        string // 基础数据目录
+	profileMgr        *profile.Manager
+	store             *storage.JSONStore
+	subService        *service.SubscriptionService
+	processManager    *daemon.ProcessManager
+	launchdManager    *daemon.LaunchdManager
+	systemdManager    *daemon.SystemdManager
+	kernelManager     *kernel.Manager
+	chainSyncSvc      *service.ChainSyncService
+	healthCheckSvc    *service.HealthCheckService
+	torDiagnosticsSvc *service.TorDiagnosticsService
+	authManager       *auth.Manager
+	router            *gin.Engine
+	sbmPath           string // sbm 可执行文件路径
+	port              int    // Web 服务端口
+	version           string // sbm 版本号
+	swaggerEnabled    bool   // 是否启用 Swagger
+	baseDir           string // 基础数据目录
 	// SQLite 存储和测速模块
 	dbStore           *database.Store
 	speedTestExecutor *speedtest.Executor
@@ -72,6 +75,8 @@ type Server struct {
 	schedulerHandler *SchedulerHandler
 	// SSE 事件
 	eventsHandler *EventsHandler
+	// Test hook for Tor detection candidates. Nil means use platform defaults.
+	torDetectionPaths []string
 }
 
 const maxLocalSubscriptionBytes = 10 << 20
@@ -106,6 +111,7 @@ func NewServer(profileMgr *profile.Manager, processManager *daemon.ProcessManage
 
 	// 创建健康检测服务
 	healthCheckSvc := service.NewHealthCheckService(store)
+	torDiagnosticsSvc := service.NewTorDiagnosticsService(store)
 
 	// 从 Profile 管理器获取数据库连接
 	dbStore := profileMgr.GetStore()
@@ -152,6 +158,7 @@ func NewServer(profileMgr *profile.Manager, processManager *daemon.ProcessManage
 		kernelManager:     kernelManager,
 		chainSyncSvc:      chainSyncSvc,
 		healthCheckSvc:    healthCheckSvc,
+		torDiagnosticsSvc: torDiagnosticsSvc,
 		authManager:       authManager,
 		router:            gin.Default(),
 		sbmPath:           sbmPath,
@@ -530,6 +537,8 @@ func (s *Server) setupRoutes() {
 		// 设置
 		api.GET("/settings", s.getSettings)
 		api.PUT("/settings", s.updateSettings)
+		api.POST("/tor/validate", s.validateTorExecutable)
+		api.POST("/tor/detect", s.detectTorExecutable)
 
 		// 系统 hosts
 		api.GET("/system-hosts", s.getSystemHosts)
@@ -623,6 +632,7 @@ func (s *Server) setupRoutes() {
 		api.GET("/proxy-chains/:id/health", s.getChainHealth)
 		api.POST("/proxy-chains/:id/health/check", s.checkChainHealth)
 		api.POST("/proxy-chains/:id/speed", s.checkChainSpeed)
+		api.POST("/proxy-chains/:id/tor-diagnostics", s.checkTorDiagnostics)
 
 		// 内核管理
 		api.GET("/kernel/info", s.getKernelInfo)
@@ -1231,6 +1241,11 @@ func (s *Server) updateSettings(c *gin.Context) {
 		}
 	}
 
+	if err := s.validateTorRuntimeSettings(settings); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	if err := s.store.UpdateSettings(&settings); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1246,6 +1261,151 @@ func (s *Server) updateSettings(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "更新成功"})
+}
+
+func (s *Server) validateTorRuntimeSettings(settings storage.Settings) error {
+	if !settings.TorEnabled {
+		return nil
+	}
+
+	_, err := s.validateTorExecutablePath(settings.TorExecutablePath)
+	return err
+}
+
+func (s *Server) validateTorExecutable(c *gin.Context) {
+	var request struct {
+		Path string `json:"path"`
+	}
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	resolvedPath, err := s.validateTorExecutablePath(request.Path)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{
+			"valid": false,
+			"path":  strings.TrimSpace(request.Path),
+			"error": err.Error(),
+		}})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"valid": true,
+		"path":  resolvedPath,
+	}})
+}
+
+func (s *Server) detectTorExecutable(c *gin.Context) {
+	paths := s.detectTorExecutablePaths()
+	response := gin.H{
+		"paths":     paths,
+		"persisted": false,
+	}
+
+	switch len(paths) {
+	case 0:
+		response["state"] = "manual"
+	case 1:
+		response["state"] = "single"
+		settings := s.cloneSettings()
+		settings.TorExecutablePath = paths[0]
+		if err := s.store.UpdateSettings(&settings); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		response["persisted"] = true
+	default:
+		response["state"] = "multiple"
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": response})
+}
+
+func (s *Server) validateTorExecutablePath(torPath string) (string, error) {
+	trimmedPath := strings.TrimSpace(torPath)
+	if trimmedPath == "" {
+		return "", fmt.Errorf("Tor 可执行文件路径不能为空")
+	}
+
+	resolvedPath := trimmedPath
+	if !filepath.IsAbs(resolvedPath) {
+		resolvedPath = s.resolvePath(resolvedPath)
+	}
+
+	info, err := os.Stat(resolvedPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("Tor 可执行文件不存在: %s", trimmedPath)
+		}
+		return "", fmt.Errorf("无法检查 Tor 可执行文件: %w", err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("Tor 可执行文件路径指向目录: %s", trimmedPath)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0111 == 0 {
+		return "", fmt.Errorf("Tor 可执行文件不可执行: %s", trimmedPath)
+	}
+
+	return resolvedPath, nil
+}
+
+func (s *Server) detectTorExecutablePaths() []string {
+	candidates := s.torDetectionCandidates()
+	seen := make(map[string]struct{}, len(candidates))
+	paths := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		resolvedPath, err := s.validateTorExecutablePath(candidate)
+		if err != nil {
+			continue
+		}
+		if _, ok := seen[resolvedPath]; ok {
+			continue
+		}
+		seen[resolvedPath] = struct{}{}
+		paths = append(paths, resolvedPath)
+	}
+	return paths
+}
+
+func (s *Server) torDetectionCandidates() []string {
+	if s.torDetectionPaths != nil {
+		return s.torDetectionPaths
+	}
+
+	candidates := []string{}
+	if path, err := exec.LookPath("tor"); err == nil {
+		candidates = append(candidates, path)
+	}
+
+	switch runtime.GOOS {
+	case "darwin":
+		candidates = append(candidates,
+			"/opt/homebrew/bin/tor",
+			"/usr/local/bin/tor",
+			"/Applications/Tor Browser.app/Contents/MacOS/Tor/tor.real",
+		)
+	case "windows":
+		candidates = append(candidates,
+			filepath.Join(os.Getenv("ProgramFiles"), "Tor Browser", "Browser", "TorBrowser", "Tor", "tor.exe"),
+			filepath.Join(os.Getenv("ProgramFiles(x86)"), "Tor Browser", "Browser", "TorBrowser", "Tor", "tor.exe"),
+			filepath.Join(os.Getenv("LOCALAPPDATA"), "Tor Browser", "Browser", "TorBrowser", "Tor", "tor.exe"),
+		)
+	default:
+		candidates = append(candidates,
+			"/usr/bin/tor",
+			"/usr/local/bin/tor",
+			"/snap/bin/tor",
+			"/opt/tor/bin/tor",
+		)
+	}
+
+	return candidates
 }
 
 // ==================== 系统 hosts API ====================
@@ -1560,6 +1720,7 @@ func (s *Server) activateProfile(c *gin.Context) {
 	s.chainSyncSvc = service.NewChainSyncService(s.store)
 	s.subService = service.NewSubscriptionService(s.store, s.chainSyncSvc)
 	s.healthCheckSvc = service.NewHealthCheckService(s.store)
+	s.torDiagnosticsSvc = service.NewTorDiagnosticsService(s.store)
 
 	// Rebind 所有 DB 依赖的 service 和 handler（不替换对象，保持 Gin 路由引用有效）
 	if s.dbStore != nil {
@@ -2647,6 +2808,11 @@ func (s *Server) addInboundPort(c *gin.Context) {
 	// 生成 ID
 	port.ID = uuid.New().String()
 
+	if err := s.validateInboundPortForSave(port); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	// 检测端口冲突
 	for _, existing := range s.store.GetInboundPorts() {
 		if existing.Listen == port.Listen && existing.Port == port.Port {
@@ -2686,6 +2852,11 @@ func (s *Server) updateInboundPort(c *gin.Context) {
 
 	port.ID = id
 
+	if err := s.validateInboundPortForSave(port); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	// 检测端口冲突（排除自身）
 	oldPort := s.store.GetInboundPort(id)
 	for _, existing := range s.store.GetInboundPorts() {
@@ -2716,6 +2887,55 @@ func (s *Server) updateInboundPort(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "更新成功"})
+}
+
+func (s *Server) validateInboundPortForSave(candidate storage.InboundPort) error {
+	if !candidate.UseTorExit {
+		return nil
+	}
+	if strings.TrimSpace(candidate.TorChainID) == "" {
+		return fmt.Errorf("请选择 Tor 链路")
+	}
+
+	chainNames := make(map[string]string)
+	for _, chain := range s.store.GetProxyChains() {
+		if chain.ID == candidate.TorChainID {
+			if !chain.Enabled || !storage.ChainContainsTor(chain.Nodes) {
+				return fmt.Errorf("请选择已启用的 Tor 链路")
+			}
+		}
+		if chain.Enabled && storage.ChainContainsTor(chain.Nodes) {
+			chainNames[chain.ID] = chain.Name
+		}
+	}
+	if _, exists := chainNames[candidate.TorChainID]; !exists {
+		return fmt.Errorf("请选择已启用的 Tor 链路")
+	}
+
+	activeChainIDs := make(map[string]struct{})
+	for _, port := range s.store.GetInboundPorts() {
+		if port.ID == candidate.ID {
+			continue
+		}
+		if port.Enabled && port.UseTorExit && strings.TrimSpace(port.TorChainID) != "" {
+			activeChainIDs[port.TorChainID] = struct{}{}
+		}
+	}
+	if candidate.Enabled {
+		activeChainIDs[candidate.TorChainID] = struct{}{}
+	}
+	if len(activeChainIDs) <= 3 {
+		return nil
+	}
+
+	activeNames := make([]string, 0, len(activeChainIDs))
+	for chainID := range activeChainIDs {
+		if name := chainNames[chainID]; name != "" {
+			activeNames = append(activeNames, name)
+		}
+	}
+	sort.Strings(activeNames)
+	return fmt.Errorf("最多启用 3 条 Tor 链路；当前活跃 Tor 链路: %s。请复用已有链路或先停用一条", strings.Join(activeNames, "、"))
 }
 
 func (s *Server) deleteInboundPort(c *gin.Context) {
@@ -2752,6 +2972,11 @@ func (s *Server) addProxyChain(c *gin.Context) {
 	// 生成 ID
 	chain.ID = uuid.New().String()
 
+	if err := s.validateProxyChainForSave(chain); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	// 自动生成 ChainNodes（从 Nodes 生成副本信息）
 	chain.ChainNodes = s.generateChainNodes(chain.Name, chain.Nodes)
 
@@ -2786,6 +3011,11 @@ func (s *Server) updateProxyChain(c *gin.Context) {
 	}
 
 	chain.ID = id
+
+	if err := s.validateProxyChainForSave(chain); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	// 自动生成 ChainNodes（从 Nodes 生成副本信息）
 	chain.ChainNodes = s.generateChainNodes(chain.Name, chain.Nodes)
@@ -2910,6 +3140,47 @@ func (s *Server) disableInboundPortsForOutbound(outbound string) ([]storage.Inbo
 	return disabled, nil
 }
 
+func (s *Server) validateProxyChainForSave(chain storage.ProxyChain) error {
+	torCount := 0
+	hasAuto := false
+	for index, nodeTag := range chain.Nodes {
+		if storage.IsChainAutoNodeTag(nodeTag) {
+			hasAuto = true
+		}
+		if !storage.IsChainTorNodeTag(nodeTag) {
+			continue
+		}
+
+		torCount++
+		if index == 0 {
+			return fmt.Errorf("Tor 网络不能作为第一个链路节点")
+		}
+	}
+
+	if torCount == 0 {
+		if hasAuto {
+			return fmt.Errorf("Auto 自动选择只能用于 Tor 链路")
+		}
+		return nil
+	}
+	if torCount > 1 {
+		return fmt.Errorf("代理链路只能包含一个 Tor 网络节点")
+	}
+
+	settings := s.store.GetSettings()
+	if settings == nil {
+		return fmt.Errorf("Tor 可执行文件未配置，请前往设置启用 Tor 链路并配置 Tor 可执行文件")
+	}
+	if !settings.TorEnabled {
+		return fmt.Errorf("Tor 可执行文件未配置，请前往设置启用 Tor 链路并配置 Tor 可执行文件")
+	}
+	if _, err := s.validateTorExecutablePath(settings.TorExecutablePath); err != nil {
+		return fmt.Errorf("%w，请前往设置修正 Tor 可执行文件路径", err)
+	}
+
+	return nil
+}
+
 // generateChainNodes 根据节点 Tag 列表生成 ChainNode 列表
 func (s *Server) generateChainNodes(chainName string, nodeTags []string) []storage.ChainNode {
 	allNodes := s.store.GetAllNodes()
@@ -2922,14 +3193,21 @@ func (s *Server) generateChainNodes(chainName string, nodeTags []string) []stora
 	for _, tag := range nodeTags {
 		node, exists := nodeMap[tag]
 		source := ""
-		if storage.IsChainCountryNodeTag(tag) {
+		copyTag := storage.GenerateChainNodeCopyTag(chainName, tag)
+		if storage.IsChainAutoNodeTag(tag) {
+			source = storage.ChainAutoNodeSource
+			copyTag = storage.ChainAutoDisplayName
+		} else if storage.IsChainTorNodeTag(tag) {
+			source = storage.ChainTorNodeSource
+			copyTag = storage.ChainTorDisplayName
+		} else if storage.IsChainCountryNodeTag(tag) {
 			source = storage.GetChainCountryNodeSource(storage.ParseChainCountryNodeCode(tag))
 		} else if exists {
 			source = node.Source
 		}
 		result = append(result, storage.ChainNode{
 			OriginalTag: tag,
-			CopyTag:     storage.GenerateChainNodeCopyTag(chainName, tag),
+			CopyTag:     copyTag,
 			Source:      source,
 		})
 	}
@@ -2969,6 +3247,20 @@ func (s *Server) checkChainSpeed(c *gin.Context) {
 	result, err := s.healthCheckSvc.CheckChainSpeed(id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
+func (s *Server) checkTorDiagnostics(c *gin.Context) {
+	id := c.Param("id")
+	result, err := s.torDiagnosticsSvc.CheckTorChain(c.Request.Context(), id)
+	if err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": result})

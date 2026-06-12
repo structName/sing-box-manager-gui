@@ -5,6 +5,7 @@ import {
   AutomationCard,
   ControlPanelCard,
   CoreSettingsCard,
+  TorRuntimeCard,
 } from './settings/GeneralSettingsCards';
 import {
   BackupCard,
@@ -105,6 +106,7 @@ export default function Settings() {
             onValueChange={handleValueChange}
             onDownloadKernel={openDownloadModal}
           />
+          <TorRuntimeCard formData={formData} onValueChange={handleValueChange} />
           <DnsSettingsCard formData={formData} onValueChange={handleValueChange} />
           <HostsCard
             customHosts={customHosts}

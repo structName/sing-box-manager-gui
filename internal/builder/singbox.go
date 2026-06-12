@@ -420,8 +420,19 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 
 	// 生成链路节点副本（独立的副本，不影响原始节点）
 	chainCopyTags := make(map[string]bool) // 已创建的副本 Tag
+	activeTorChainIDs := b.activeTorChainIDs()
 	for _, chain := range b.proxyChains {
 		if !chain.Enabled || len(chain.Nodes) < 2 {
+			continue
+		}
+		if storage.ChainContainsTor(chain.Nodes) {
+			if activeTorChainIDs[chain.ID] {
+				generated, err := b.appendTorChainOutbounds(outbounds, chainCopyTags, chain, nodeMap, countryNodes)
+				if err != nil {
+					return nil, err
+				}
+				outbounds = generated
+			}
 			continue
 		}
 
@@ -611,6 +622,9 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 		if !chain.Enabled || len(chain.Nodes) == 0 {
 			continue
 		}
+		if storage.ChainContainsTor(chain.Nodes) {
+			continue
+		}
 
 		// 验证链路中的所有节点是否存在
 		allNodesExist := true
@@ -671,6 +685,226 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 	})
 
 	return outbounds, nil
+}
+
+func (b *ConfigBuilder) activeTorChainIDs() map[string]bool {
+	active := make(map[string]bool)
+	for _, port := range b.inboundPorts {
+		if !port.Enabled || !port.UseTorExit || strings.TrimSpace(port.TorChainID) == "" {
+			continue
+		}
+		active[port.TorChainID] = true
+	}
+	return active
+}
+
+func (b *ConfigBuilder) appendTorChainOutbounds(
+	outbounds []Outbound,
+	chainCopyTags map[string]bool,
+	chain storage.ProxyChain,
+	nodeMap map[string]storage.Node,
+	countryNodes map[string][]string,
+) ([]Outbound, error) {
+	torIndex := -1
+	for index, nodeTag := range chain.Nodes {
+		if storage.IsChainTorNodeTag(nodeTag) {
+			torIndex = index
+			break
+		}
+	}
+	if torIndex <= 0 {
+		return outbounds, nil
+	}
+
+	var prevCopyTag string
+	for _, nodeTag := range chain.Nodes[:torIndex] {
+		generated, copyTag, ok, err := b.appendTorChainHopOutbounds(outbounds, chainCopyTags, chain, nodeTag, prevCopyTag, nodeMap, countryNodes)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return generated, nil
+		}
+		outbounds = generated
+		prevCopyTag = copyTag
+	}
+	if prevCopyTag == "" {
+		return outbounds, nil
+	}
+
+	torTag := storage.GenerateChainTorOutboundTag(chain.ID)
+	if !chainCopyTags[torTag] {
+		outbounds = append(outbounds, b.buildTorOutbound(torTag, chain.ID, prevCopyTag))
+		chainCopyTags[torTag] = true
+	}
+	exitTag := torTag
+	for _, nodeTag := range chain.Nodes[torIndex+1:] {
+		generated, copyTag, ok, err := b.appendTorChainHopOutbounds(outbounds, chainCopyTags, chain, nodeTag, exitTag, nodeMap, countryNodes)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return generated, nil
+		}
+		outbounds = generated
+		exitTag = copyTag
+	}
+	if !chainCopyTags[chain.Name] {
+		outbounds = append(outbounds, Outbound{
+			"tag":       chain.Name,
+			"type":      "selector",
+			"outbounds": []string{exitTag},
+			"default":   exitTag,
+		})
+		chainCopyTags[chain.Name] = true
+	}
+
+	return outbounds, nil
+}
+
+func (b *ConfigBuilder) appendTorChainHopOutbounds(
+	outbounds []Outbound,
+	chainCopyTags map[string]bool,
+	chain storage.ProxyChain,
+	nodeTag string,
+	prevCopyTag string,
+	nodeMap map[string]storage.Node,
+	countryNodes map[string][]string,
+) ([]Outbound, string, bool, error) {
+	if storage.IsChainAutoNodeTag(nodeTag) {
+		candidateTags := make([]string, 0, len(nodeMap))
+		for candidateTag := range nodeMap {
+			candidateTags = append(candidateTags, candidateTag)
+		}
+		sort.Strings(candidateTags)
+		if len(candidateTags) == 0 {
+			return outbounds, "", false, nil
+		}
+
+		groupCopyTag := storage.GenerateChainNodeCopyTag(chain.Name, nodeTag)
+		virtualOutbounds := make([]string, 0, len(candidateTags))
+		for _, candidateTag := range candidateTags {
+			candidateCopyTag := storage.GenerateChainAutoCandidateCopyTag(chain.Name, candidateTag)
+			virtualOutbounds = append(virtualOutbounds, candidateCopyTag)
+			if chainCopyTags[candidateCopyTag] {
+				continue
+			}
+
+			copyOutbound, err := b.nodeToOutbound(nodeMap[candidateTag])
+			if err != nil {
+				return nil, "", false, err
+			}
+			copyOutbound["tag"] = candidateCopyTag
+			if prevCopyTag != "" {
+				copyOutbound["detour"] = prevCopyTag
+			}
+			outbounds = append(outbounds, copyOutbound)
+			chainCopyTags[candidateCopyTag] = true
+		}
+
+		if !chainCopyTags[groupCopyTag] {
+			outbounds = append(outbounds, Outbound{
+				"tag":       groupCopyTag,
+				"type":      "urltest",
+				"outbounds": virtualOutbounds,
+				"url":       "https://www.gstatic.com/generate_204",
+				"interval":  "30m",
+				"tolerance": 50,
+			})
+			chainCopyTags[groupCopyTag] = true
+		}
+		return outbounds, groupCopyTag, true, nil
+	}
+
+	if storage.IsChainCountryNodeTag(nodeTag) {
+		countryCode := storage.ParseChainCountryNodeCode(nodeTag)
+		candidateTags := countryNodes[countryCode]
+		if len(candidateTags) == 0 {
+			return outbounds, "", false, nil
+		}
+
+		groupCopyTag := storage.GenerateChainNodeCopyTag(chain.Name, nodeTag)
+		virtualOutbounds := make([]string, 0, len(candidateTags))
+		for _, candidateTag := range candidateTags {
+			candidateCopyTag := storage.GenerateChainCountryCandidateCopyTag(chain.Name, nodeTag, candidateTag)
+			virtualOutbounds = append(virtualOutbounds, candidateCopyTag)
+			if chainCopyTags[candidateCopyTag] {
+				continue
+			}
+
+			copyOutbound, err := b.nodeToOutbound(nodeMap[candidateTag])
+			if err != nil {
+				return nil, "", false, err
+			}
+			copyOutbound["tag"] = candidateCopyTag
+			if prevCopyTag != "" {
+				copyOutbound["detour"] = prevCopyTag
+			}
+			outbounds = append(outbounds, copyOutbound)
+			chainCopyTags[candidateCopyTag] = true
+		}
+
+		if !chainCopyTags[groupCopyTag] {
+			outbounds = append(outbounds, Outbound{
+				"tag":       groupCopyTag,
+				"type":      "urltest",
+				"outbounds": virtualOutbounds,
+				"url":       "https://www.gstatic.com/generate_204",
+				"interval":  "30m",
+				"tolerance": 50,
+			})
+			chainCopyTags[groupCopyTag] = true
+		}
+		return outbounds, groupCopyTag, true, nil
+	}
+
+	node, exists := nodeMap[nodeTag]
+	if !exists {
+		return outbounds, "", false, nil
+	}
+	copyTag := storage.GenerateChainNodeCopyTag(chain.Name, nodeTag)
+	if !chainCopyTags[copyTag] {
+		copyOutbound, err := b.nodeToOutbound(node)
+		if err != nil {
+			return nil, "", false, err
+		}
+		copyOutbound["tag"] = copyTag
+		if prevCopyTag != "" {
+			copyOutbound["detour"] = prevCopyTag
+		}
+
+		outbounds = append(outbounds, copyOutbound)
+		chainCopyTags[copyTag] = true
+	}
+	return outbounds, copyTag, true, nil
+}
+
+func (b *ConfigBuilder) buildTorOutbound(tag, chainID, detour string) Outbound {
+	torrc := make(map[string]interface{})
+	if b.settings != nil {
+		for key, value := range b.settings.TorrcValues {
+			torrc[key] = value
+		}
+	}
+	torrc["ClientOnly"] = 1
+
+	dataDirectory := filepath.Join("tor", chainID)
+	if b.dataDir != "" {
+		dataDirectory = filepath.Join(b.dataDir, "tor", chainID)
+	}
+
+	outbound := Outbound{
+		"tag":            tag,
+		"type":           "tor",
+		"data_directory": dataDirectory,
+		"torrc":          torrc,
+		"detour":         detour,
+	}
+	if b.settings != nil {
+		outbound["executable_path"] = b.settings.TorExecutablePath
+		outbound["extra_args"] = b.settings.TorExtraArgs
+	}
+	return outbound
 }
 
 // nodeToOutbound 将节点转换为出站配置
@@ -1009,14 +1243,25 @@ func (b *ConfigBuilder) buildRoute() *RouteConfig {
 	// 自定义入站端口绑定的出站应优先于普通分流规则，
 	// 否则会被域名/IP 规则提前命中，导致指定链路或节点失效。
 	for _, port := range b.inboundPorts {
-		if !port.Enabled || port.Outbound == "" {
+		if !port.Enabled {
 			continue
 		}
 
-		outbound := port.Outbound
-		// 国家代码（如 "JP"）需要映射为 outbound tag（如 "🇯🇵 日本"）
-		if _, isCountry := storage.CountryEmojis[outbound]; isCountry {
-			outbound = fmt.Sprintf("%s %s", storage.GetCountryEmoji(outbound), storage.GetCountryName(outbound))
+		outbound := ""
+		if port.UseTorExit {
+			outbound = b.torChainRouteOutbound(port.TorChainID)
+			if outbound == "" {
+				outbound = "REJECT"
+			}
+		} else {
+			outbound = port.Outbound
+			// 国家代码（如 "JP"）需要映射为 outbound tag（如 "🇯🇵 日本"）
+			if _, isCountry := storage.CountryEmojis[outbound]; isCountry {
+				outbound = fmt.Sprintf("%s %s", storage.GetCountryEmoji(outbound), storage.GetCountryName(outbound))
+			}
+		}
+		if outbound == "" {
+			continue
 		}
 
 		rules = append(rules, RouteRule{
@@ -1028,6 +1273,15 @@ func (b *ConfigBuilder) buildRoute() *RouteConfig {
 	route.Rules = rules
 
 	return route
+}
+
+func (b *ConfigBuilder) torChainRouteOutbound(chainID string) string {
+	for _, chain := range b.proxyChains {
+		if chain.ID == chainID && chain.Enabled && storage.ChainContainsTor(chain.Nodes) {
+			return chain.Name
+		}
+	}
+	return ""
 }
 
 // buildExperimental 构建实验性配置

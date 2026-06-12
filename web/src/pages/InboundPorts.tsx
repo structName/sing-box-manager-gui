@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Card, CardBody, Input, Button, Switch, Chip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Select, SelectItem, Pagination, useDisclosure } from '@nextui-org/react';
 import { Plus, Pencil, Trash2, Network, RefreshCw } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { useStore } from '../store';
 import type { Settings as SettingsType } from '../store';
 import { inboundPortApi, filterApi, proxyChainApi, nodeApi } from '../api';
@@ -18,6 +19,8 @@ interface InboundPort {
     password: string;
   };
   outbound: string;
+  use_tor_exit?: boolean;
+  tor_chain_id?: string;
   enabled: boolean;
 }
 
@@ -35,6 +38,7 @@ interface ProxyChain {
   id: string;
   name: string;
   enabled: boolean;
+  nodes?: string[];
 }
 
 // 地区分组类型
@@ -64,6 +68,7 @@ interface NodeGroup {
 }
 
 type OutboundCategory = 'basic' | 'country' | 'filter' | 'chain' | 'node';
+const CHAIN_TOR_TAG = 'special:tor';
 
 interface DraftPortTestResult {
   available: boolean;
@@ -130,6 +135,8 @@ function createDefaultPortFormData() {
     username: '',
     password: '',
     outbound: 'Proxy',
+    use_tor_exit: false,
+    tor_chain_id: '',
     enabled: true,
   };
 }
@@ -149,6 +156,7 @@ function getSelectableItemClasses(isSelected: boolean): string {
 }
 
 export default function InboundPorts() {
+  const navigate = useNavigate();
   const { settings, fetchSettings, updateSettings } = useStore();
   const [formData, setFormData] = useState<SettingsType | null>(null);
 
@@ -270,7 +278,9 @@ export default function InboundPorts() {
 
   const handleEditPort = (port: InboundPort) => {
     const matchedNode = nodes.find((node) => node.tag === port.outbound);
-    const matchedCategory: OutboundCategory = ['Proxy', 'DIRECT', 'Auto'].includes(port.outbound)
+    const matchedCategory: OutboundCategory = port.use_tor_exit
+      ? 'chain'
+      : ['Proxy', 'DIRECT', 'Auto'].includes(port.outbound)
       ? 'basic'
       : countryGroups.some((country) => country.code === port.outbound)
         ? 'country'
@@ -290,6 +300,8 @@ export default function InboundPorts() {
       username: port.auth?.username || '',
       password: port.auth?.password || '',
       outbound: port.outbound,
+      use_tor_exit: Boolean(port.use_tor_exit),
+      tor_chain_id: port.tor_chain_id || '',
       enabled: port.enabled,
     });
     // 重置筛选状态
@@ -327,7 +339,9 @@ export default function InboundPorts() {
       type: portFormData.type,
       listen: portFormData.listen,
       port: portFormData.port,
-      outbound: portFormData.outbound,
+      outbound: portFormData.use_tor_exit ? '' : portFormData.outbound,
+      use_tor_exit: portFormData.use_tor_exit,
+      tor_chain_id: portFormData.use_tor_exit ? portFormData.tor_chain_id : '',
       enabled: portFormData.enabled,
     };
 
@@ -392,6 +406,10 @@ export default function InboundPorts() {
       toast.error('端口号必须在 1-65535 之间');
       return;
     }
+    if (portFormData.use_tor_exit && !portFormData.tor_chain_id) {
+      toast.error('请选择 Tor 链路');
+      return;
+    }
 
     const data = buildPortPayload();
 
@@ -426,13 +444,19 @@ export default function InboundPorts() {
     setPortFormData({ ...portFormData, outbound });
   };
 
+  const selectTorChain = (chainID: string) => {
+    setPortFormData({ ...portFormData, tor_chain_id: chainID, outbound: '' });
+  };
+
   if (!formData) {
     return <div>加载中...</div>;
   }
 
   // 构建出站选项
   const enabledFilters = filters.filter(f => f.enabled);
-  const enabledChains = proxyChains.filter(c => c.enabled);
+  const isTorChain = (chain: ProxyChain) => Boolean(chain.nodes?.includes(CHAIN_TOR_TAG));
+  const enabledChains = proxyChains.filter(c => c.enabled && !isTorChain(c));
+  const enabledTorChains = proxyChains.filter(c => c.enabled && isTorChain(c));
 
   // 获取当前节点中存在的国家列表
   const availableCountries = countryOptions.filter(
@@ -491,11 +515,19 @@ export default function InboundPorts() {
     filter => !searchText || filter.name.toLowerCase().includes(searchText.toLowerCase())
   );
 
-  const filteredChains = enabledChains.filter(
+  const filteredChains = (portFormData.use_tor_exit ? enabledTorChains : enabledChains).filter(
     chain => !searchText || chain.name.toLowerCase().includes(searchText.toLowerCase())
   );
 
-  const outboundNavItems = [
+  const outboundNavItems = (portFormData.use_tor_exit ? [
+    {
+      key: 'chain' as const,
+      title: 'Tor 链路',
+      description: '仅显示包含 Tor 网络的链路',
+      count: enabledTorChains.length,
+      visible: true,
+    },
+  ] : [
     {
       key: 'basic' as const,
       title: '基础出站',
@@ -531,7 +563,7 @@ export default function InboundPorts() {
       count: nodes.length,
       visible: nodes.length > 0,
     },
-  ].filter(item => item.visible);
+  ]).filter(item => item.visible);
   const activeOutboundMeta = outboundNavItems.find(item => item.key === outboundType);
   const hasOutboundResults = outboundType === 'basic'
     ? basicOutboundOptions.length > 0
@@ -544,6 +576,22 @@ export default function InboundPorts() {
           : filteredNodeGroups.length > 0;
 
   // 获取出站类型对应的显示名称
+  const getPortOutboundDisplayName = (port: InboundPort) => {
+    if (port.use_tor_exit) {
+      const chain = proxyChains.find(c => c.id === port.tor_chain_id);
+      return chain ? `Tor 网络：${chain.name}` : 'Tor 网络（未选择链路）';
+    }
+    return getOutboundDisplayName(port.outbound);
+  };
+
+  const getCurrentOutboundDisplayName = () => {
+    if (portFormData.use_tor_exit) {
+      const chain = proxyChains.find(c => c.id === portFormData.tor_chain_id);
+      return chain ? `Tor 网络：${chain.name}` : '请选择 Tor 链路';
+    }
+    return getOutboundDisplayName(portFormData.outbound);
+  };
+
   const getOutboundDisplayName = (outbound: string) => {
     // 基础出站
     if (outbound === 'Proxy') return 'Proxy（主代理）';
@@ -661,7 +709,7 @@ export default function InboundPorts() {
 
                 <div className="mt-3 rounded-lg bg-default-50 p-2.5 dark:bg-default-100/70">
                   <p className="text-xs text-default-500">出口线路</p>
-                  <p className="mt-0.5 text-sm font-medium">{getOutboundDisplayName(port.outbound)}</p>
+                  <p className="mt-0.5 text-sm font-medium">{getPortOutboundDisplayName(port)}</p>
                 </div>
 
                 {(port.listen === '0.0.0.0' || port.listen === '::' || port.listen === '') && (
@@ -771,11 +819,33 @@ export default function InboundPorts() {
                 <div className="rounded-2xl border border-default-200 bg-default-50/60 p-4">
                   <p className="text-xs font-medium uppercase tracking-wide text-default-500">当前出口</p>
                   <p className="mt-2 text-base font-semibold text-default-900">
-                    {getOutboundDisplayName(portFormData.outbound)}
+                    {getCurrentOutboundDisplayName()}
                   </p>
                   <p className="mt-1 text-sm text-default-500">
                     右侧选择后会立即更新这里的结果。
                   </p>
+                </div>
+
+                <div className="flex items-center justify-between rounded-2xl border border-default-200 bg-default-50/60 p-4">
+                  <div>
+                    <p className="font-medium text-default-900">使用 Tor 流量出口</p>
+                    <p className="text-sm text-default-500">
+                      开启后只可选择包含 Tor 网络的代理链路。每条不同的活跃 Tor 链路会运行一个 Tor 实例，多个入站端口可以复用同一条链路。
+                    </p>
+                  </div>
+                  <Switch
+                    isSelected={Boolean(portFormData.use_tor_exit)}
+                    onValueChange={(enabled) => {
+                      setPortFormData({
+                        ...portFormData,
+                        use_tor_exit: enabled,
+                        tor_chain_id: enabled ? portFormData.tor_chain_id : '',
+                        outbound: enabled ? '' : (portFormData.outbound || 'Proxy'),
+                      });
+                      setOutboundType(enabled ? 'chain' : 'basic');
+                      setSearchText('');
+                    }}
+                  />
                 </div>
 
                 <div className="border-t border-divider pt-5">
@@ -904,9 +974,27 @@ export default function InboundPorts() {
 
                 {/* Results */}
                 {!hasOutboundResults ? (
-                  <div className="rounded-xl border border-dashed border-default-300 bg-default-50/60 px-4 py-10 text-center text-sm text-default-500">
-                    当前筛选条件下没有可选线路。
-                  </div>
+                  portFormData.use_tor_exit && enabledTorChains.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-warning-300 bg-warning-50/60 px-4 py-10 text-center text-sm text-warning-700">
+                      <p className="font-medium">还没有可用的 Tor 链路</p>
+                      <p className="mx-auto mt-2 max-w-md">
+                        先在代理链路中创建一条包含 Tor 网络的启用链路，然后回到这里复用它。
+                      </p>
+                      <Button
+                        className="mt-4"
+                        color="warning"
+                        variant="flat"
+                        size="sm"
+                        onPress={() => navigate('/proxy-chains')}
+                      >
+                        去创建 Tor 链路
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="rounded-xl border border-dashed border-default-300 bg-default-50/60 px-4 py-10 text-center text-sm text-default-500">
+                      当前筛选条件下没有可选线路。
+                    </div>
+                  )
                 ) : (
                   <div className="max-h-[420px] space-y-3 overflow-y-auto pr-1">
                     {outboundType === 'basic' && (
@@ -964,11 +1052,13 @@ export default function InboundPorts() {
                         {filteredChains.map((chain) => (
                           <div
                             key={chain.name}
-                            className={getSelectableItemClasses(portFormData.outbound === chain.name)}
-                            onClick={() => selectOutbound(chain.name)}
+                            className={getSelectableItemClasses(portFormData.use_tor_exit ? portFormData.tor_chain_id === chain.id : portFormData.outbound === chain.name)}
+                            onClick={() => portFormData.use_tor_exit ? selectTorChain(chain.id) : selectOutbound(chain.name)}
                           >
                             <p className="font-medium text-default-900">{chain.name}</p>
-                            <p className="mt-1 text-xs text-default-500">复用预先编排好的代理链路。</p>
+                            <p className="mt-1 text-xs text-default-500">
+                              {portFormData.use_tor_exit ? '复用包含 Tor 网络的链路。' : '复用预先编排好的代理链路。'}
+                            </p>
                           </div>
                         ))}
                       </div>

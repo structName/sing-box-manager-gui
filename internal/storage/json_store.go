@@ -79,6 +79,7 @@ func (s *JSONStore) load() error {
 		s.data.Settings = DefaultSettings()
 	} else {
 		migrateLegacyZashboardSettings(data, s.data.Settings, &needSave)
+		normalizeTorSettings(s.data.Settings)
 	}
 
 	// 确保 RuleGroups 不为空
@@ -416,9 +417,19 @@ func (s *JSONStore) UpdateSettings(settings *Settings) error {
 	if merged.SessionTTLMinutes <= 0 {
 		merged.SessionTTLMinutes = DefaultSettings().SessionTTLMinutes
 	}
+	normalizeTorSettings(&merged)
 
 	s.data.Settings = &merged
 	return s.saveInternal()
+}
+
+func normalizeTorSettings(settings *Settings) {
+	if settings.TorExtraArgs == nil {
+		settings.TorExtraArgs = []string{}
+	}
+	if settings.TorrcValues == nil {
+		settings.TorrcValues = map[string]string{}
+	}
 }
 
 func preserveAuthenticationSettings(current *Settings, next *Settings) {
