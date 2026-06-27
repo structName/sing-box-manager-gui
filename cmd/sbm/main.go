@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/structName/sing-box-manager-gui/internal/api"
 	"github.com/structName/sing-box-manager-gui/internal/daemon"
@@ -115,6 +116,13 @@ func main() {
 		}
 		logger.Printf("Swagger OpenAPI 已生成: %s", swaggerOut)
 	}
+
+	if restored, err := processManager.RestoreDesiredState(); err != nil {
+		logger.Printf("恢复 sing-box 运行状态失败: %v", err)
+	} else if restored {
+		logger.Printf("已按上次运行状态自动启动 sing-box")
+	}
+	processManager.StartDesiredStateMonitor(30 * time.Second)
 
 	// 启动统一调度器（包含订阅更新、测速、链路检测等）
 	server.StartUnifiedScheduler()
