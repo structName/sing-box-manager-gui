@@ -16,6 +16,8 @@ import (
 	"github.com/structName/sing-box-manager-gui/internal/logger"
 )
 
+const desiredStateFileName = "singbox.desired"
+
 // ProcessManager 进程管理器
 type ProcessManager struct {
 	singboxPath string
@@ -29,6 +31,7 @@ type ProcessManager struct {
 	pid         int // 保存 PID（支持恢复的进程，即使 cmd 为空）
 	logs        []string
 	maxLogs     int
+	monitorOnce sync.Once
 }
 
 // NewProcessManager 创建进程管理器
@@ -295,6 +298,9 @@ func (pm *ProcessManager) Start() error {
 	if err := os.WriteFile(pm.pidFile, []byte(strconv.Itoa(pm.pid)), 0644); err != nil {
 		logger.Printf("写入 PID 文件失败: %v", err)
 	}
+	if err := pm.setDesiredRunning(true); err != nil {
+		logger.Printf("记录 sing-box 运行状态失败: %v", err)
+	}
 
 	logger.Printf("sing-box 已启动, PID: %d", pm.pid)
 
@@ -352,9 +358,18 @@ func (pm *ProcessManager) Start() error {
 
 // Stop 停止 sing-box
 func (pm *ProcessManager) Stop() error {
+	return pm.stop(true)
+}
+
+func (pm *ProcessManager) stop(clearDesired bool) error {
 	pm.mu.RLock()
 	if !pm.running {
 		pm.mu.RUnlock()
+		if clearDesired {
+			if err := pm.setDesiredRunning(false); err != nil {
+				logger.Printf("清除 sing-box 运行状态失败: %v", err)
+			}
+		}
 		return nil
 	}
 
@@ -393,16 +408,85 @@ func (pm *ProcessManager) Stop() error {
 	pm.exitCh = nil
 	pm.mu.Unlock()
 	os.Remove(pm.pidFile)
+	if clearDesired {
+		if err := pm.setDesiredRunning(false); err != nil {
+			logger.Printf("清除 sing-box 运行状态失败: %v", err)
+		}
+	}
 	logger.Printf("sing-box 已停止, PID: %d", pid)
 	return nil
 }
 
 // Restart 重启 sing-box
 func (pm *ProcessManager) Restart() error {
-	if err := pm.Stop(); err != nil {
+	if err := pm.setDesiredRunning(true); err != nil {
+		logger.Printf("记录 sing-box 运行状态失败: %v", err)
+	}
+	if err := pm.stop(false); err != nil {
 		return err
 	}
 	return pm.Start()
+}
+
+// ShouldBeRunning 返回上次用户意图是否为运行 sing-box。
+func (pm *ProcessManager) ShouldBeRunning() bool {
+	_, err := os.Stat(pm.desiredStatePath())
+	return err == nil
+}
+
+// RestoreDesiredState 在管理程序重启后按上次运行意图恢复 sing-box。
+func (pm *ProcessManager) RestoreDesiredState() (bool, error) {
+	if !pm.ShouldBeRunning() || pm.IsRunning() {
+		return false, nil
+	}
+	if err := pm.Start(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// StartDesiredStateMonitor 持续守护上次运行意图，处理 sing-box 异常退出后的自动恢复。
+func (pm *ProcessManager) StartDesiredStateMonitor(interval time.Duration) {
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+
+	pm.monitorOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+
+			for range ticker.C {
+				if !pm.ShouldBeRunning() || pm.IsRunning() {
+					continue
+				}
+
+				logger.Printf("检测到 sing-box 应保持运行但当前未运行，尝试自动启动")
+				if err := pm.Start(); err != nil {
+					logger.Printf("自动启动 sing-box 失败: %v", err)
+				}
+			}
+		}()
+	})
+}
+
+func (pm *ProcessManager) desiredStatePath() string {
+	return filepath.Join(pm.dataDir, desiredStateFileName)
+}
+
+func (pm *ProcessManager) setDesiredRunning(running bool) error {
+	path := pm.desiredStatePath()
+	if !running {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+
+	if err := os.MkdirAll(pm.dataDir, 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte("running\n"), 0644)
 }
 
 // Reload 热重载配置
