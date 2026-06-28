@@ -75,9 +75,6 @@ func (pm *ProcessManager) recoverProcess() {
 
 	// 更新 PID 文件（确保一致性）
 	os.WriteFile(pm.pidFile, []byte(strconv.Itoa(pid)), 0644)
-	if err := pm.setDesiredRunning(true); err != nil {
-		logger.Printf("记录 sing-box 运行状态失败: %v", err)
-	}
 
 	logger.Printf("已恢复 sing-box 进程跟踪, PID: %d", pid)
 
@@ -197,9 +194,6 @@ func (pm *ProcessManager) recoverState(pid int) {
 		pm.pid = pid
 		// 更新 PID 文件
 		os.WriteFile(pm.pidFile, []byte(strconv.Itoa(pid)), 0644)
-		if err := pm.setDesiredRunning(true); err != nil {
-			logger.Printf("记录 sing-box 运行状态失败: %v", err)
-		}
 		logger.Printf("检测到 sing-box 进程仍在运行，已恢复状态, PID: %d", pid)
 
 		// 重新启动监控

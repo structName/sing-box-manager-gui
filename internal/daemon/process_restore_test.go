@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -105,6 +106,26 @@ func TestProcessManagerRestoreDesiredStateSkipsWhenNotDesired(t *testing.T) {
 	}
 	if pm.IsRunning() {
 		t.Fatal("sing-box should not be running")
+	}
+}
+
+func TestProcessManagerRecoverStateDoesNotPersistDesiredRunning(t *testing.T) {
+	pm := newTestProcessManager(t)
+
+	cmd := exec.Command(pm.singboxPath)
+	cmd.Dir = pm.dataDir
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start external sing-box: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	pm.recoverState(cmd.Process.Pid)
+
+	if pm.ShouldBeRunning() {
+		t.Fatal("recovering an already-running process should not persist desired running state")
 	}
 }
 
