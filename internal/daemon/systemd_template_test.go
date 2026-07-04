@@ -28,10 +28,10 @@ func TestSystemdTemplate_KeepAliveControlsRestart(t *testing.T) {
 	}
 
 	cases := []struct {
-		name     string
-		tmpl     string
-		keep     bool
-		restart  string
+		name    string
+		tmpl    string
+		keep    bool
+		restart string
 	}{
 		{"system/keepalive", systemdTemplate, true, "Restart=always"},
 		{"system/no-keepalive", systemdTemplate, false, "Restart=no"},
@@ -62,7 +62,7 @@ func TestSystemdTemplate_StartLimitTuning(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			out := renderSystemd(t, tmpl, cfg)
-			for _, want := range []string{"StartLimitIntervalSec=60", "StartLimitBurst=10", "RestartSec=5"} {
+			for _, want := range []string{"StartLimitIntervalSec=60", "StartLimitBurst=10", "RestartSec=5", "RestartPreventExitStatus=98"} {
 				if !strings.Contains(out, want) {
 					t.Errorf("want %q in rendered unit, got:\n%s", want, out)
 				}

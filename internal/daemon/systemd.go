@@ -26,6 +26,7 @@ ExecStart={{.SbmPath}} -data {{.DataDir}} -port {{.Port}}
 WorkingDirectory={{.WorkingDir}}
 Restart={{if .KeepAlive}}always{{else}}no{{end}}
 RestartSec=5
+RestartPreventExitStatus=98
 {{if .UseJournal}}StandardOutput=journal
 StandardError=journal{{else}}StandardOutput=append:{{.LogPath}}/sbm.log
 StandardError=append:{{.LogPath}}/sbm.error.log{{end}}
@@ -50,6 +51,7 @@ ExecStart={{.SbmPath}} -data {{.DataDir}} -port {{.Port}}
 WorkingDirectory={{.WorkingDir}}
 Restart={{if .KeepAlive}}always{{else}}no{{end}}
 RestartSec=5
+RestartPreventExitStatus=98
 StandardOutput=append:{{.LogPath}}/sbm.log
 StandardError=append:{{.LogPath}}/sbm.error.log
 Environment="HOME={{.HomeDir}}"
