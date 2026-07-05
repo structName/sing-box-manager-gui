@@ -133,6 +133,6 @@ func main() {
 
 	if err := server.Run(addr); err != nil {
 		logger.Printf("启动服务失败: %v", err)
-		os.Exit(1)
+		os.Exit(daemon.ExitCodeForRunError(err))
 	}
 }
