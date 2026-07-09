@@ -1,6 +1,9 @@
 package builder
 
 import (
+	"encoding/json"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -93,6 +96,250 @@ func TestNodeToOutboundNormalizesAnyTLSDurationAndTLS(t *testing.T) {
 	}
 	if got := tls["enabled"]; got != true {
 		t.Fatalf("tls.enabled = %v, want true", got)
+	}
+}
+
+func TestNodeToOutboundPreservesVLESSRealityFields(t *testing.T) {
+	builder := &ConfigBuilder{}
+	node := storage.Node{
+		Tag:        "edge-a-imported",
+		Type:       "vless",
+		Server:     "vpn.example.com",
+		ServerPort: 443,
+		Extra: map[string]interface{}{
+			"uuid": "generated-uuid",
+			"flow": "xtls-rprx-vision",
+			"tls": map[string]interface{}{
+				"enabled":     true,
+				"server_name": "www.microsoft.com",
+				"reality": map[string]interface{}{
+					"enabled":    true,
+					"public_key": "generated-public",
+					"short_id":   "0123456789abcdef",
+				},
+			},
+			"node_origin":       "deployed_self_hosted",
+			"entry_method":      "deployment_import",
+			"deployment_run_id": "run-1",
+		},
+	}
+
+	outbound, err := builder.nodeToOutbound(node)
+	if err != nil {
+		t.Fatalf("nodeToOutbound returned error: %v", err)
+	}
+
+	if outbound["type"] != "vless" || outbound["server"] != "vpn.example.com" || outbound["server_port"] != 443 {
+		t.Fatalf("unexpected VLESS outbound base fields: %#v", outbound)
+	}
+	if outbound["uuid"] != "generated-uuid" || outbound["flow"] != "xtls-rprx-vision" {
+		t.Fatalf("VLESS auth fields not preserved: %#v", outbound)
+	}
+	tls, ok := outbound["tls"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("tls type = %T, want map[string]interface{}", outbound["tls"])
+	}
+	if tls["enabled"] != true || tls["server_name"] != "www.microsoft.com" {
+		t.Fatalf("VLESS TLS fields not preserved: %#v", tls)
+	}
+	reality, ok := tls["reality"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("reality type = %T, want map[string]interface{}", tls["reality"])
+	}
+	if reality["enabled"] != true || reality["public_key"] != "generated-public" || reality["short_id"] != "0123456789abcdef" {
+		t.Fatalf("Reality fields not preserved: %#v", reality)
+	}
+	utls, ok := tls["utls"].(map[string]interface{})
+	if !ok || utls["enabled"] != true || utls["fingerprint"] != "chrome" {
+		t.Fatalf("Reality uTLS default not added: %#v", tls["utls"])
+	}
+}
+
+func TestBuildJSONWithDeploymentImportedVLESSRealityNodePassesSingBoxCheckWhenAvailable(t *testing.T) {
+	singBoxPath := os.Getenv("SBM_SING_BOX_CHECK_BIN")
+	if singBoxPath == "" {
+		t.Skip("set SBM_SING_BOX_CHECK_BIN to run sing-box config validation")
+	}
+
+	settings := storage.DefaultSettings()
+	builder := NewConfigBuilder(settings, []storage.Node{
+		{
+			Tag:        "edge-a-imported",
+			Type:       "vless",
+			Server:     "vpn.example.com",
+			ServerPort: 443,
+			Extra: map[string]interface{}{
+				"uuid": "11111111-1111-4111-8111-111111111111",
+				"flow": "xtls-rprx-vision",
+				"tls": map[string]interface{}{
+					"enabled":     true,
+					"server_name": "www.microsoft.com",
+					"reality": map[string]interface{}{
+						"enabled":    true,
+						"public_key": "gUL70jxK5gzi-stwsJKexC8HLM9zK3UI8mHgK24iVFo",
+						"short_id":   "0123456789abcdef",
+					},
+				},
+				"node_origin":       "deployed_self_hosted",
+				"entry_method":      "deployment_import",
+				"deployment_run_id": "run-1",
+			},
+		},
+	}, nil, nil, nil)
+	builder.SetDataDir(t.TempDir())
+
+	configJSON, err := builder.BuildJSON()
+	if err != nil {
+		t.Fatalf("BuildJSON() error = %v", err)
+	}
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(configPath, []byte(configJSON), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	output, err := exec.Command(singBoxPath, "check", "-c", configPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("sing-box check failed: %v\n%s\nconfig:\n%s", err, output, configJSON)
+	}
+}
+
+func TestDeploymentImportedVLESSRealityNodeCanBeUsedInProxyChain(t *testing.T) {
+	settings := storage.DefaultSettings()
+	imported := storage.Node{
+		Tag:        "edge-a-imported",
+		Type:       "vless",
+		Server:     "vpn.example.com",
+		ServerPort: 443,
+		Extra: map[string]interface{}{
+			"uuid": "11111111-1111-4111-8111-111111111111",
+			"flow": "xtls-rprx-vision",
+			"tls": map[string]interface{}{
+				"enabled":     true,
+				"server_name": "www.microsoft.com",
+				"reality": map[string]interface{}{
+					"enabled":    true,
+					"public_key": "gUL70jxK5gzi-stwsJKexC8HLM9zK3UI8mHgK24iVFo",
+					"short_id":   "0123456789abcdef",
+				},
+			},
+			"node_origin":       "deployed_self_hosted",
+			"entry_method":      "deployment_import",
+			"deployment_run_id": "run-1",
+		},
+	}
+	builder := NewConfigBuilder(settings, []storage.Node{
+		{
+			Tag:        "relay-a",
+			Type:       "socks",
+			Server:     "127.0.0.1",
+			ServerPort: 1080,
+		},
+		imported,
+	}, nil, nil, []storage.ProxyChain{
+		{
+			ID:      "chain-1",
+			Name:    "self-hosted-chain",
+			Nodes:   []string{"relay-a", "edge-a-imported"},
+			Enabled: true,
+		},
+	})
+	builder.SetDataDir(t.TempDir())
+
+	configJSON, err := builder.BuildJSON()
+	if err != nil {
+		t.Fatalf("BuildJSON() error = %v", err)
+	}
+	var config SingBoxConfig
+	if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
+		t.Fatalf("decode config: %v\n%s", err, configJSON)
+	}
+
+	relayCopyTag := storage.GenerateChainNodeCopyTag("self-hosted-chain", "relay-a")
+	importedCopyTag := storage.GenerateChainNodeCopyTag("self-hosted-chain", "edge-a-imported")
+	chainOutbound := outboundByTag(config.Outbounds, importedCopyTag)
+	if chainOutbound == nil {
+		t.Fatalf("chain copy outbound %q missing from %#v", importedCopyTag, outboundTags(config.Outbounds))
+	}
+	if chainOutbound["type"] != "vless" || chainOutbound["server"] != "vpn.example.com" || chainOutbound["detour"] != relayCopyTag {
+		t.Fatalf("imported chain outbound lost base fields or detour: %#v", chainOutbound)
+	}
+	if chainOutbound["uuid"] != "11111111-1111-4111-8111-111111111111" || chainOutbound["flow"] != "xtls-rprx-vision" {
+		t.Fatalf("imported chain outbound lost VLESS auth fields: %#v", chainOutbound)
+	}
+	tls, ok := chainOutbound["tls"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("chain outbound tls type = %T", chainOutbound["tls"])
+	}
+	reality, ok := tls["reality"].(map[string]interface{})
+	if !ok || reality["public_key"] != "gUL70jxK5gzi-stwsJKexC8HLM9zK3UI8mHgK24iVFo" || reality["short_id"] != "0123456789abcdef" {
+		t.Fatalf("chain outbound lost Reality fields: %#v", tls)
+	}
+}
+
+func outboundByTag(outbounds []Outbound, tag string) Outbound {
+	for _, outbound := range outbounds {
+		if outbound["tag"] == tag {
+			return outbound
+		}
+	}
+	return nil
+}
+
+func outboundTags(outbounds []Outbound) []interface{} {
+	tags := make([]interface{}, 0, len(outbounds))
+	for _, outbound := range outbounds {
+		tags = append(tags, outbound["tag"])
+	}
+	return tags
+}
+
+func TestNodeToOutboundNormalizesLegacyVLESSRealityShape(t *testing.T) {
+	builder := &ConfigBuilder{}
+	node := storage.Node{
+		Tag:        "legacy-reality",
+		Type:       "vless",
+		Server:     "vpn.example.com",
+		ServerPort: 443,
+		Extra: map[string]interface{}{
+			"uuid":        "legacy-uuid",
+			"flow":        "xtls-rprx-vision",
+			"tls":         true,
+			"server_name": "www.microsoft.com",
+			"security":    "reality",
+			"reality": map[string]interface{}{
+				"public_key": "legacy-public",
+				"short_id":   "0123456789abcdef",
+			},
+		},
+	}
+
+	outbound, err := builder.nodeToOutbound(node)
+	if err != nil {
+		t.Fatalf("nodeToOutbound returned error: %v", err)
+	}
+
+	tls, ok := outbound["tls"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("tls type = %T, want map[string]interface{}", outbound["tls"])
+	}
+	if tls["enabled"] != true || tls["server_name"] != "www.microsoft.com" {
+		t.Fatalf("legacy TLS fields not normalized: %#v", tls)
+	}
+	reality, ok := tls["reality"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("reality type = %T, want map[string]interface{}", tls["reality"])
+	}
+	if reality["enabled"] != true || reality["public_key"] != "legacy-public" || reality["short_id"] != "0123456789abcdef" {
+		t.Fatalf("legacy Reality fields not normalized: %#v", reality)
+	}
+	utls, ok := tls["utls"].(map[string]interface{})
+	if !ok || utls["enabled"] != true || utls["fingerprint"] != "chrome" {
+		t.Fatalf("legacy Reality uTLS default not added: %#v", tls["utls"])
+	}
+	if _, exists := outbound["server_name"]; exists {
+		t.Fatalf("legacy server_name should move under tls: %#v", outbound)
+	}
+	if _, exists := outbound["reality"]; exists {
+		t.Fatalf("legacy reality should move under tls: %#v", outbound)
 	}
 }
 

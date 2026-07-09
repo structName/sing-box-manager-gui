@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 )
 
@@ -539,7 +540,9 @@ func (s *JSONStore) GetAllNodes() []Node {
 		if mn.Enabled {
 			// 填充来源信息
 			mn.Node.Source = "manual"
-			mn.Node.SourceName = "手动添加"
+			if mn.Node.SourceName == "" {
+				mn.Node.SourceName = "手动添加"
+			}
 			nodes = append(nodes, mn.Node)
 		}
 	}
@@ -553,21 +556,28 @@ func (s *JSONStore) GetNodesGrouped() []NodeGroup {
 
 	var groups []NodeGroup
 
-	// 手动节点分组
-	var manualNodes []Node
+	// 手动节点按 SourceName 分组。节点自身 Source 仍保持 manual，分组 Source 仅作为 UI 筛选 key。
+	manualGroups := make(map[string][]Node)
 	for _, mn := range s.data.ManualNodes {
 		if mn.Enabled {
 			node := mn.Node
 			node.Source = "manual"
-			node.SourceName = "手动添加"
-			manualNodes = append(manualNodes, node)
+			if node.SourceName == "" {
+				node.SourceName = "手动添加"
+			}
+			manualGroups[node.SourceName] = append(manualGroups[node.SourceName], node)
 		}
 	}
-	if len(manualNodes) > 0 {
+	manualSourceNames := make([]string, 0, len(manualGroups))
+	for sourceName := range manualGroups {
+		manualSourceNames = append(manualSourceNames, sourceName)
+	}
+	sort.Strings(manualSourceNames)
+	for _, sourceName := range manualSourceNames {
 		groups = append(groups, NodeGroup{
-			Source:     "manual",
-			SourceName: "手动添加",
-			Nodes:      manualNodes,
+			Source:     manualGroupSource(sourceName),
+			SourceName: sourceName,
+			Nodes:      manualGroups[sourceName],
 		})
 	}
 
@@ -590,6 +600,13 @@ func (s *JSONStore) GetNodesGrouped() []NodeGroup {
 	}
 
 	return groups
+}
+
+func manualGroupSource(sourceName string) string {
+	if sourceName == "" || sourceName == "手动添加" {
+		return "manual"
+	}
+	return "manual:" + sourceName
 }
 
 // GetNodesByCountry 按国家获取节点，支持分页（limit<=0 表示不分页）

@@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard';
 import Subscriptions from './pages/Subscriptions';
 import Profiles from './pages/Profiles';
 import ProxyChains from './pages/ProxyChains';
+import Deployments from './pages/Deployments';
 import InboundPorts from './pages/InboundPorts';
 import Tasks from './pages/Tasks';
 import Tags from './pages/Tags';
@@ -55,6 +56,7 @@ function App() {
           <Route path="/inbound-ports" element={<InboundPorts />} />
           <Route path="/profiles" element={<Profiles />} />
           <Route path="/proxy-chains" element={<ProxyChains />} />
+          <Route path="/deployments" element={<Deployments />} />
           <Route path="/tasks" element={<Tasks />} />
           <Route path="/tags" element={<Tags />} />
           <Route path="/logs" element={<Logs />} />

@@ -177,6 +177,34 @@ export const manualNodeApi = {
   delete: (id: string) => api.delete(`/manual-nodes/${id}`),
 };
 
+// Deployment API
+export const deploymentApi = {
+  getTemplates: () => api.get('/deployments/templates'),
+  getConnectionCandidates: () => api.get('/deployments/connection-candidates'),
+  getRuntimeCache: (params: { runtime_name?: string; version?: string }) =>
+    api.get('/deployments/runtime-cache', { params }),
+  uploadRuntimeCache: (data: { runtime_name: string; version: string; os: string; arch: string; file: File }) => {
+    const formData = new FormData();
+    formData.append('runtime_name', data.runtime_name);
+    formData.append('version', data.version);
+    formData.append('os', data.os);
+    formData.append('arch', data.arch);
+    formData.append('file', data.file);
+    return api.post('/deployments/runtime-cache', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+  testConnection: (data: Record<string, unknown>) => api.post('/deployments/connection-test', data),
+  getRuns: (params?: { limit?: number; offset?: number; status?: string }) =>
+    api.get('/deployments/runs', { params }),
+  getRun: (id: string) => api.get(`/deployments/runs/${id}`),
+  getGeneratedNode: (id: string) => api.get(`/deployments/runs/${id}/generated-node`),
+  createRun: (data: Record<string, unknown>) => api.post('/deployments/runs', data),
+  cancelRun: (id: string) => api.post(`/deployments/runs/${id}/cancel`),
+  importNode: (id: string, data: { tag: string; source_name?: string; enabled: boolean; advanced_protocol_edit?: boolean; generated_node_overrides?: Record<string, unknown> }) =>
+    api.post(`/deployments/runs/${id}/import-node`, data),
+};
+
 // 入站端口 API
 export const inboundPortApi = {
   getAll: () => api.get('/inbound-ports'),

@@ -33,11 +33,10 @@ type LogConfig struct {
 
 // DNSConfig DNS 配置
 type DNSConfig struct {
-	Strategy         string      `json:"strategy,omitempty"`
-	Servers          []DNSServer `json:"servers,omitempty"`
-	Rules            []DNSRule   `json:"rules,omitempty"`
-	Final            string      `json:"final,omitempty"`
-	IndependentCache bool        `json:"independent_cache,omitempty"`
+	Strategy string      `json:"strategy,omitempty"`
+	Servers  []DNSServer `json:"servers,omitempty"`
+	Rules    []DNSRule   `json:"rules,omitempty"`
+	Final    string      `json:"final,omitempty"`
 }
 
 // DNSServer DNS 服务器 (新格式，支持 FakeIP 和 hosts)
@@ -328,11 +327,10 @@ func (b *ConfigBuilder) buildDNS() *DNSConfig {
 	}
 
 	return &DNSConfig{
-		Strategy:         "prefer_ipv4",
-		Servers:          servers,
-		Rules:            rules,
-		Final:            "dns_proxy",
-		IndependentCache: true,
+		Strategy: "prefer_ipv4",
+		Servers:  servers,
+		Rules:    rules,
+		Final:    "dns_proxy",
 	}
 }
 
@@ -918,6 +916,9 @@ func (b *ConfigBuilder) nodeToOutbound(node storage.Node) (Outbound, error) {
 
 	// 复制 Extra 字段
 	for k, v := range node.Extra {
+		if isNodeMetadataField(k) {
+			continue
+		}
 		outbound[k] = v
 	}
 
@@ -928,11 +929,23 @@ func (b *ConfigBuilder) nodeToOutbound(node storage.Node) (Outbound, error) {
 	return outbound, nil
 }
 
+func isNodeMetadataField(key string) bool {
+	switch key {
+	case "node_origin", "entry_method", "deployment_run_id":
+		return true
+	default:
+		return false
+	}
+}
+
 func normalizeOutbound(outbound Outbound) error {
 	outboundType, _ := outbound["type"].(string)
 	switch outboundType {
 	case "shadowsocks":
 		return normalizeShadowsocksOutbound(outbound)
+	case "vless":
+		normalizeVLESSOutbound(outbound)
+		return nil
 	case "anytls":
 		normalizeAnyTLSOutbound(outbound)
 		return nil
@@ -961,6 +974,64 @@ func normalizeShadowsocksOutbound(outbound Outbound) error {
 	return nil
 }
 
+func normalizeVLESSOutbound(outbound Outbound) {
+	tlsEnabled := false
+	switch value := outbound["tls"].(type) {
+	case bool:
+		tlsEnabled = value
+	case map[string]interface{}:
+		if enabled, ok := value["enabled"].(bool); ok {
+			tlsEnabled = enabled
+		}
+	case nil:
+	default:
+		return
+	}
+
+	reality, hasReality := mapValue(outbound["reality"])
+	if !hasReality {
+		if tlsMap, ok := outbound["tls"].(map[string]interface{}); ok {
+			reality, hasReality = mapValue(tlsMap["reality"])
+		}
+	}
+	if security, _ := outbound["security"].(string); strings.EqualFold(strings.TrimSpace(security), "reality") {
+		hasReality = true
+	}
+	if !tlsEnabled && !hasReality {
+		return
+	}
+
+	tls, ok := outbound["tls"].(map[string]interface{})
+	if !ok {
+		tls = map[string]interface{}{}
+		outbound["tls"] = tls
+	}
+	tls["enabled"] = true
+
+	if serverName, ok := outbound["server_name"].(string); ok && strings.TrimSpace(serverName) != "" {
+		tls["server_name"] = strings.TrimSpace(serverName)
+		delete(outbound, "server_name")
+	}
+	if hasReality {
+		if reality == nil {
+			reality = map[string]interface{}{}
+		}
+		reality["enabled"] = true
+		tls["reality"] = reality
+		utls, ok := tls["utls"].(map[string]interface{})
+		if !ok {
+			utls = map[string]interface{}{}
+			tls["utls"] = utls
+		}
+		utls["enabled"] = true
+		if _, ok := utls["fingerprint"].(string); !ok {
+			utls["fingerprint"] = "chrome"
+		}
+		delete(outbound, "reality")
+	}
+	delete(outbound, "security")
+}
+
 func normalizeAnyTLSOutbound(outbound Outbound) {
 	tls, ok := outbound["tls"].(map[string]interface{})
 	if !ok {
@@ -975,6 +1046,21 @@ func normalizeAnyTLSOutbound(outbound Outbound) {
 		} else {
 			delete(outbound, field)
 		}
+	}
+}
+
+func mapValue(raw interface{}) (map[string]interface{}, bool) {
+	switch value := raw.(type) {
+	case map[string]interface{}:
+		return value, true
+	case map[string]string:
+		result := make(map[string]interface{}, len(value))
+		for key, item := range value {
+			result[key] = item
+		}
+		return result, true
+	default:
+		return nil, false
 	}
 }
 

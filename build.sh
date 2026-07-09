@@ -93,7 +93,7 @@ build_target() {
 
     info "构建 ${os}/${arch}..."
 
-    CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build \
+    CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -buildvcs=false \
         -ldflags "-s -w -X main.Version=${VERSION} -X 'main.BuildTime=${BUILD_TIME}' -X main.GitCommit=${GIT_COMMIT}" \
         -o "${OUTPUT_DIR}/${output_name}" \
         ./cmd/sbm/
@@ -104,6 +104,11 @@ build_target() {
     else
         error "构建 ${os}/${arch} 失败"
     fi
+}
+
+package_deployment_assets() {
+    info "打包部署脚本资产..."
+    bash scripts/package-deployment-assets.sh --output "${OUTPUT_DIR}/sbm-deployment-assets.tar.gz"
 }
 
 # 清理构建目录
@@ -122,6 +127,7 @@ show_help() {
     echo "  linux        仅构建 Linux 版本"
     echo "  darwin       仅构建 macOS 版本"
     echo "  current      仅构建当前平台"
+    echo "  deployment-assets  仅打包部署脚本资产"
     echo "  frontend     仅构建前端"
     echo "  clean        清理构建目录"
     echo "  help         显示帮助"
@@ -158,6 +164,8 @@ build_all() {
     # Windows (仅 amd64，modernc.org/sqlite 不支持 windows/386 和 windows/arm64)
     build_target windows amd64
 
+    package_deployment_assets
+
     info "所有构建完成!"
     echo ""
     info "构建产物:"
@@ -172,6 +180,7 @@ build_linux() {
     clean
     build_target linux amd64
     build_target linux arm64
+    package_deployment_assets
     info "Linux 构建完成!"
 }
 
@@ -183,6 +192,7 @@ build_darwin() {
     clean
     build_target darwin amd64
     build_target darwin arm64
+    package_deployment_assets
     info "macOS 构建完成!"
 }
 
@@ -198,6 +208,7 @@ build_current() {
 
     # 创建软链接方便使用
     ln -sf "${BINARY_NAME}-${os}-${arch}" "${OUTPUT_DIR}/${BINARY_NAME}"
+    package_deployment_assets
     info "当前平台构建完成!"
 }
 
@@ -222,6 +233,10 @@ main() {
             ;;
         current)
             build_current
+            ;;
+        deployment-assets)
+            clean
+            package_deployment_assets
             ;;
         frontend|web)
             build_frontend
