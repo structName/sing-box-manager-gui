@@ -699,13 +699,16 @@ func (s *Server) cancelDeploymentRun(c *gin.Context) {
 		return
 	}
 	completedAt := time.Now()
-	run.Status = models.DeploymentRunStatusCancelled
-	run.CompletedAt = &completedAt
-	if err := s.dbStore.UpdateDeploymentRun(run); err != nil {
+	if err := s.dbStore.CancelDeploymentRun(run.ID, completedAt); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": deploymentRunHistoryView(run)})
+	cancelledRun, err := s.dbStore.GetDeploymentRun(run.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": deploymentRunHistoryView(cancelledRun)})
 }
 
 func (s *Server) importDeploymentGeneratedNode(c *gin.Context) {

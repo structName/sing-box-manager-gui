@@ -23,6 +23,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1746,7 +1747,8 @@ SBM_RESULT {"status":"failed","message":"curl or wget is required"}
 func TestCancelRunningDeploymentRunStopsBackgroundExecution(t *testing.T) {
 	store := newDeploymentTestStore(t)
 	taskManager := service.NewTaskManager(store)
-	executor := &fakeDeploymentScriptExecutor{waitForCancel: true}
+	executorStarted := make(chan struct{})
+	executor := &fakeDeploymentScriptExecutor{waitForCancel: true, started: executorStarted}
 	server := &Server{
 		dbStore:              store,
 		taskManager:          taskManager,
@@ -1775,6 +1777,11 @@ func TestCancelRunningDeploymentRunStopsBackgroundExecution(t *testing.T) {
 	}
 	if err := json.Unmarshal(createRecorder.Body.Bytes(), &createResp); err != nil {
 		t.Fatalf("decode create response: %v", err)
+	}
+	select {
+	case <-executorStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("deployment executor did not start")
 	}
 
 	cancelRecorder := httptest.NewRecorder()
@@ -3806,6 +3813,8 @@ type fakeDeploymentScriptExecutor struct {
 	envs              []map[string]string
 	waitForCancel     bool
 	waitForCancelCall int
+	started           chan struct{}
+	startedOnce       sync.Once
 }
 
 type fakeDeploymentReachabilityChecker struct {
@@ -3857,6 +3866,9 @@ func (f *fakeDeploymentScriptExecutor) Execute(ctx context.Context, req deployme
 		f.env[key] = value
 	}
 	f.envs = append(f.envs, f.env)
+	if f.started != nil {
+		f.startedOnce.Do(func() { close(f.started) })
+	}
 	if f.waitForCancel && (f.waitForCancelCall == 0 || f.waitForCancelCall == f.calls) {
 		<-ctx.Done()
 		return f.output, ctx.Err()
