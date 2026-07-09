@@ -53,22 +53,35 @@ export default function Login() {
             </div>
           </div>
         </CardHeader>
-        <CardBody className="space-y-5 px-6 pb-6">
-          <Input
-            type="password"
-            label="管理员密码"
-            placeholder="请输入已设置的密码"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !submitting) {
+        <CardBody className="px-6 pb-6">
+          <form
+            className="space-y-5"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!submitting) {
                 void handleSubmit();
               }
             }}
-          />
-          <Button color="primary" isLoading={submitting} onPress={() => void handleSubmit()}>
-            登录
-          </Button>
+          >
+            <Input
+              id="login-password"
+              name="password"
+              type="password"
+              autoComplete="current-password"
+              label="管理员密码"
+              placeholder="请输入已设置的密码"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !submitting) {
+                  void handleSubmit();
+                }
+              }}
+            />
+            <Button color="primary" type="submit" isLoading={submitting}>
+              登录
+            </Button>
+          </form>
         </CardBody>
       </Card>
     </div>

@@ -133,6 +133,7 @@ func autoMigrateDB(database *gorm.DB) error {
 
 		// 任务管理
 		&models.Task{},
+		&models.DeploymentRun{},
 	)
 }
 

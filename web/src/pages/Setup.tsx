@@ -54,29 +54,45 @@ export default function Setup() {
             </div>
           </div>
         </CardHeader>
-        <CardBody className="space-y-5 px-6 pb-6">
-          <Input
-            type="password"
-            label="管理员密码"
-            placeholder={`至少 ${MIN_PASSWORD_LENGTH} 位`}
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-          />
-          <Input
-            type="password"
-            label="确认密码"
-            placeholder="再次输入管理员密码"
-            value={confirmPassword}
-            onChange={(event) => setConfirmPassword(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !submitting) {
+        <CardBody className="px-6 pb-6">
+          <form
+            className="space-y-5"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!submitting) {
                 void handleSubmit();
               }
             }}
-          />
-          <Button color="primary" isLoading={submitting} onPress={() => void handleSubmit()}>
-            完成初始化
-          </Button>
+          >
+            <Input
+              id="setup-password"
+              name="password"
+              type="password"
+              autoComplete="new-password"
+              label="管理员密码"
+              placeholder={`至少 ${MIN_PASSWORD_LENGTH} 位`}
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+            />
+            <Input
+              id="setup-confirm-password"
+              name="confirm_password"
+              type="password"
+              autoComplete="new-password"
+              label="确认密码"
+              placeholder="再次输入管理员密码"
+              value={confirmPassword}
+              onChange={(event) => setConfirmPassword(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !submitting) {
+                  void handleSubmit();
+                }
+              }}
+            />
+            <Button color="primary" type="submit" isLoading={submitting}>
+              完成初始化
+            </Button>
+          </form>
         </CardBody>
       </Card>
     </div>

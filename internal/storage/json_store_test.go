@@ -130,3 +130,97 @@ func TestGetSubscriptionReturnsDeepCopy(t *testing.T) {
 		t.Fatalf("password = %v, want secret", again.Nodes[0].Extra["password"])
 	}
 }
+func TestJSONStorePreservesManualNodeSourceName(t *testing.T) {
+	store, err := NewJSONStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewJSONStore() error = %v", err)
+	}
+	if err := store.AddManualNode(ManualNode{
+		ID: "manual-1",
+		Node: Node{
+			Tag:        "edge-a",
+			Type:       "vless",
+			Server:     "vpn.example.com",
+			ServerPort: 443,
+			SourceName: "自建节点",
+		},
+		Enabled: true,
+	}); err != nil {
+		t.Fatalf("AddManualNode() error = %v", err)
+	}
+
+	nodes := store.GetAllNodes()
+	if len(nodes) != 1 {
+		t.Fatalf("GetAllNodes() count = %d, want 1", len(nodes))
+	}
+	if nodes[0].Source != "manual" || nodes[0].SourceName != "自建节点" {
+		t.Fatalf("GetAllNodes() source metadata = %q/%q, want manual/自建节点", nodes[0].Source, nodes[0].SourceName)
+	}
+
+	groups := store.GetNodesGrouped()
+	if len(groups) != 1 || len(groups[0].Nodes) != 1 {
+		t.Fatalf("GetNodesGrouped() = %#v, want one manual group with one node", groups)
+	}
+	if groups[0].Source != "manual:自建节点" || groups[0].SourceName != "自建节点" {
+		t.Fatalf("manual group metadata = %q/%q, want manual:自建节点/自建节点", groups[0].Source, groups[0].SourceName)
+	}
+	if groups[0].Nodes[0].SourceName != "自建节点" {
+		t.Fatalf("grouped manual node source_name = %q, want 自建节点", groups[0].Nodes[0].SourceName)
+	}
+}
+
+func TestJSONStoreGroupsManualNodesBySourceName(t *testing.T) {
+	store, err := NewJSONStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewJSONStore() error = %v", err)
+	}
+	for _, node := range []ManualNode{
+		{
+			ID:      "manual-default",
+			Enabled: true,
+			Node: Node{
+				Tag:        "manual-a",
+				Type:       "socks",
+				Server:     "127.0.0.1",
+				ServerPort: 1080,
+			},
+		},
+		{
+			ID:      "manual-self-hosted",
+			Enabled: true,
+			Node: Node{
+				Tag:        "self-hosted-a",
+				Type:       "vless",
+				Server:     "vpn.example.com",
+				ServerPort: 443,
+				SourceName: "自建节点",
+			},
+		},
+	} {
+		if err := store.AddManualNode(node); err != nil {
+			t.Fatalf("AddManualNode() error = %v", err)
+		}
+	}
+
+	groups := store.GetNodesGrouped()
+	if !nodeGroupHasTag(groups, "manual", "手动添加", "manual-a") {
+		t.Fatalf("default manual group missing node: %#v", groups)
+	}
+	if !nodeGroupHasTag(groups, "manual:自建节点", "自建节点", "self-hosted-a") {
+		t.Fatalf("custom manual group missing node: %#v", groups)
+	}
+}
+
+func nodeGroupHasTag(groups []NodeGroup, source, sourceName, tag string) bool {
+	for _, group := range groups {
+		if group.Source != source || group.SourceName != sourceName {
+			continue
+		}
+		for _, node := range group.Nodes {
+			if node.Tag == tag && node.Source == "manual" {
+				return true
+			}
+		}
+	}
+	return false
+}

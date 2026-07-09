@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Globe, Settings, Activity, ScrollText, Layers, Link2, Network, ListTodo, Tag } from 'lucide-react';
+import { LayoutDashboard, Globe, Settings, Activity, ScrollText, Layers, Link2, Network, ListTodo, Tag, ServerCog } from 'lucide-react';
 import { useStore } from '../store';
 import { buildZashboardPanelUrl } from '../utils/zashboard';
 import { useAuthStore } from '../store/authStore';
@@ -9,6 +9,7 @@ const menuItems = [
   { path: '/', icon: LayoutDashboard, label: '仪表盘' },
   { path: '/subscriptions', icon: Globe, label: '节点' },
   { path: '/proxy-chains', icon: Link2, label: '链路' },
+  { path: '/deployments', icon: ServerCog, label: '部署' },
   { path: '/inbound-ports', icon: Network, label: '入站' },
   { path: '/profiles', icon: Layers, label: '配置方案' },
   { path: '/tags', icon: Tag, label: '标签' },

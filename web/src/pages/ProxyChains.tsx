@@ -678,7 +678,7 @@ export default function ProxyChains() {
           <div className="flex items-center gap-2">
             <Chip
               size="sm"
-              color={group.source === 'manual' ? 'primary' : 'secondary'}
+              color={group.source.startsWith('manual') ? 'primary' : 'secondary'}
               variant="flat"
             >
               {group.source_name}

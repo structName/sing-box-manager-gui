@@ -75,6 +75,14 @@ type Server struct {
 	schedulerHandler *SchedulerHandler
 	// SSE 事件
 	eventsHandler *EventsHandler
+	// 部署执行器
+	deployRunner              deploymentRunner
+	deployScriptExecutor      deploymentScriptExecutor
+	deploySSHTester           deploymentSSHTester
+	deployReachabilityChecker deploymentReachabilityChecker
+	deployEntrypointStarter   deploymentManagedEntrypointStarter
+	// Test hook for deployment managed-route discovery. Nil means use processManager.
+	deployServiceRunning *bool
 	// Test hook for Tor detection candidates. Nil means use platform defaults.
 	torDetectionPaths []string
 }
@@ -611,6 +619,9 @@ func (s *Server) setupRoutes() {
 		api.POST("/manual-nodes", s.addManualNode)
 		api.PUT("/manual-nodes/:id", s.updateManualNode)
 		api.DELETE("/manual-nodes/:id", s.deleteManualNode)
+
+		// 代理节点部署
+		s.registerDeploymentRoutes(api)
 
 		// 入站端口管理
 		api.GET("/inbound-ports", s.getInboundPorts)
@@ -3280,27 +3291,36 @@ func (s *Server) syncNodesToSQLite() error {
 	subs := s.store.GetSubscriptions()
 	manualNodes := s.store.GetManualNodes()
 
+	type nodeSyncEntry struct {
+		node    storage.Node
+		enabled bool
+	}
+
 	// 构建 source -> 节点列表 的映射
-	sourceNodes := make(map[string][]storage.Node)
+	sourceNodes := make(map[string][]nodeSyncEntry)
 
 	// 订阅节点
 	for _, sub := range subs {
 		if sub.Enabled {
-			sourceNodes[sub.ID] = sub.Nodes
+			entries := make([]nodeSyncEntry, 0, len(sub.Nodes))
+			for _, node := range sub.Nodes {
+				entries = append(entries, nodeSyncEntry{node: node, enabled: true})
+			}
+			sourceNodes[sub.ID] = entries
 		}
 	}
 
-	// 手动节点
-	var enabledManualNodes []storage.Node
+	// 手动节点。禁用节点也同步到 SQLite，供 Deployment Run imported_node_id 等历史链接使用。
+	var manualSyncNodes []nodeSyncEntry
 	for _, mn := range manualNodes {
-		if mn.Enabled {
-			mn.Node.Source = "manual"
+		mn.Node.Source = "manual"
+		if strings.TrimSpace(mn.Node.SourceName) == "" {
 			mn.Node.SourceName = "手动添加"
-			enabledManualNodes = append(enabledManualNodes, mn.Node)
 		}
+		manualSyncNodes = append(manualSyncNodes, nodeSyncEntry{node: mn.Node, enabled: mn.Enabled})
 	}
-	if len(enabledManualNodes) > 0 {
-		sourceNodes["manual"] = enabledManualNodes
+	if len(manualSyncNodes) > 0 {
+		sourceNodes["manual"] = manualSyncNodes
 	}
 
 	// 获取数据库中现有节点
@@ -3320,7 +3340,7 @@ func (s *Server) syncNodesToSQLite() error {
 	var nodesToCreate []models.Node
 	var nodesToUpdate []models.Node
 
-	for source, nodes := range sourceNodes {
+	for source, entries := range sourceNodes {
 		// 获取订阅名称
 		sourceName := "手动添加"
 		if source != "manual" {
@@ -3332,27 +3352,35 @@ func (s *Server) syncNodesToSQLite() error {
 			}
 		}
 
-		for _, node := range nodes {
+		for _, entry := range entries {
+			node := entry.node
 			neededTags[node.Tag] = true
+			nodeSourceName := sourceName
+			if source == "manual" && strings.TrimSpace(node.SourceName) != "" {
+				nodeSourceName = strings.TrimSpace(node.SourceName)
+			}
 
 			if existing, ok := existingMap[node.Tag]; ok {
 				// 节点已存在，检查是否需要更新基本信息
 				needUpdate := false
+				nextExtra := models.JSONMap(node.Extra)
 				if existing.Server != node.Server || existing.ServerPort != node.ServerPort ||
-					existing.Type != node.Type || existing.Source != source {
+					existing.Type != node.Type || existing.Source != source || existing.SourceName != nodeSourceName {
 					existing.Server = node.Server
 					existing.ServerPort = node.ServerPort
 					existing.Type = node.Type
 					existing.Source = source
-					existing.SourceName = sourceName
+					existing.SourceName = nodeSourceName
 					existing.Country = node.Country
 					existing.CountryEmoji = node.CountryEmoji
-					existing.Extra = models.JSONMap(node.Extra)
 					needUpdate = true
 				}
-				// 确保节点启用
-				if !existing.Enabled {
-					existing.Enabled = true
+				if !jsonMapsEqual(existing.Extra, nextExtra) {
+					existing.Extra = nextExtra
+					needUpdate = true
+				}
+				if existing.Enabled != entry.enabled {
+					existing.Enabled = entry.enabled
 					needUpdate = true
 				}
 				if needUpdate {
@@ -3366,11 +3394,11 @@ func (s *Server) syncNodesToSQLite() error {
 					Server:       node.Server,
 					ServerPort:   node.ServerPort,
 					Source:       source,
-					SourceName:   sourceName,
+					SourceName:   nodeSourceName,
 					Country:      node.Country,
 					CountryEmoji: node.CountryEmoji,
 					Extra:        models.JSONMap(node.Extra),
-					Enabled:      true,
+					Enabled:      entry.enabled,
 					DelayStatus:  "untested",
 					SpeedStatus:  "untested",
 				}
@@ -3389,8 +3417,24 @@ func (s *Server) syncNodesToSQLite() error {
 
 	// 执行数据库操作
 	if len(nodesToCreate) > 0 {
+		disabledCreatedTags := map[string]bool{}
+		for _, node := range nodesToCreate {
+			if !node.Enabled {
+				disabledCreatedTags[node.Tag] = true
+			}
+		}
 		if err := s.dbStore.BatchCreateNodes(nodesToCreate); err != nil {
 			return fmt.Errorf("批量创建节点失败: %w", err)
+		}
+		for tag := range disabledCreatedTags {
+			created, err := s.dbStore.GetNodeByTag(tag)
+			if err != nil {
+				return fmt.Errorf("获取新建节点失败: %w", err)
+			}
+			created.Enabled = false
+			if err := s.dbStore.UpdateNode(created); err != nil {
+				return fmt.Errorf("更新新建节点启用状态失败: %w", err)
+			}
 		}
 		logger.Debug("创建了 %d 个新节点", len(nodesToCreate))
 	}
@@ -3418,6 +3462,15 @@ func (s *Server) syncNodesToSQLite() error {
 
 	logger.Debug("节点同步完成")
 	return nil
+}
+
+func jsonMapsEqual(left, right models.JSONMap) bool {
+	leftJSON, leftErr := json.Marshal(left)
+	rightJSON, rightErr := json.Marshal(right)
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	return string(leftJSON) == string(rightJSON)
 }
 
 // syncNodesToSQLiteAndGetIDs 同步节点并返回所有节点 ID

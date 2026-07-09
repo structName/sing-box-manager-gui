@@ -6,11 +6,12 @@ import (
 
 // 任务类型常量
 const (
-	TaskTypeSpeedTest   = "speed_test"   // 节点测速
-	TaskTypeSubUpdate   = "sub_update"   // 订阅更新
-	TaskTypeTagRule     = "tag_rule"     // 标签规则
-	TaskTypeChainCheck  = "chain_check"  // 链路检测
-	TaskTypeConfigApply = "config_apply" // 配置应用
+	TaskTypeSpeedTest     = "speed_test"     // 节点测速
+	TaskTypeSubUpdate     = "sub_update"     // 订阅更新
+	TaskTypeTagRule       = "tag_rule"       // 标签规则
+	TaskTypeChainCheck    = "chain_check"    // 链路检测
+	TaskTypeConfigApply   = "config_apply"   // 配置应用
+	TaskTypeDeploymentRun = "deployment_run" // 代理节点部署
 )
 
 // 任务状态常量

@@ -148,6 +148,39 @@ func (s *Store) DeleteNodesBySource(source string) error {
 	return s.db.Where("source = ?", source).Delete(&models.Node{}).Error
 }
 
+// ==================== 部署运行操作 ====================
+
+func (s *Store) CreateDeploymentRun(run *models.DeploymentRun) error {
+	return s.db.Create(run).Error
+}
+
+func (s *Store) UpdateDeploymentRun(run *models.DeploymentRun) error {
+	return s.db.Save(run).Error
+}
+
+func (s *Store) GetDeploymentRun(id string) (*models.DeploymentRun, error) {
+	var run models.DeploymentRun
+	if err := s.db.First(&run, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &run, nil
+}
+
+func (s *Store) GetDeploymentRuns(limit, offset int, status string) ([]models.DeploymentRun, error) {
+	var runs []models.DeploymentRun
+	query := s.db.Order("created_at DESC")
+	if status != "" {
+		query = query.Where("status = ?", status)
+	}
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+	if offset > 0 {
+		query = query.Offset(offset)
+	}
+	return runs, query.Find(&runs).Error
+}
+
 // GetCountryStats 获取国家统计
 func (s *Store) GetCountryStats() ([]map[string]interface{}, error) {
 	var results []map[string]interface{}
