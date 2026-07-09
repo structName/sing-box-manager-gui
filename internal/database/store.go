@@ -158,6 +158,15 @@ func (s *Store) UpdateDeploymentRun(run *models.DeploymentRun) error {
 	return s.db.Save(run).Error
 }
 
+func (s *Store) CancelDeploymentRun(id string, completedAt time.Time) error {
+	return s.db.Model(&models.DeploymentRun{}).
+		Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"status":       models.DeploymentRunStatusCancelled,
+			"completed_at": completedAt,
+		}).Error
+}
+
 func (s *Store) GetDeploymentRun(id string) (*models.DeploymentRun, error) {
 	var run models.DeploymentRun
 	if err := s.db.First(&run, "id = ?", id).Error; err != nil {
