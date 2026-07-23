@@ -1501,6 +1501,11 @@ func (s *Server) buildAndSaveCurrentConfig() error {
 	return s.saveConfigFile(s.resolvePath(settings.ConfigPath), configJSON)
 }
 
+// PrepareRuntimeConfig 在自动恢复 sing-box 前重建并校验当前 Profile 配置。
+func (s *Server) PrepareRuntimeConfig() error {
+	return s.buildAndSaveCurrentConfig()
+}
+
 func rebuildConfigAndRestart(build func() error, restart func() error) error {
 	if err := build(); err != nil {
 		return err
@@ -1524,7 +1529,22 @@ func (s *Server) buildConfig() (string, error) {
 
 	b := builder.NewConfigBuilder(settings, nodes, filters, inboundPorts, proxyChains)
 	b.SetDataDir(s.store.GetDataDir()) // 设置数据目录用于生成绝对路径
-	return b.BuildJSON()
+
+	var validate func(string) error
+	if s.processManager != nil {
+		validate = s.processManager.CheckConfigContent
+	}
+	result, err := b.BuildValidatedJSON(validate)
+	if err != nil {
+		return "", err
+	}
+	for _, skipped := range result.SkippedNodes {
+		logger.Warn("跳过无效代理节点 tag=%q type=%q: %s", skipped.Tag, skipped.Type, skipped.Reason)
+	}
+	if len(result.SkippedNodes) > 0 {
+		logger.Warn("配置生成完成，共跳过 %d 个无效代理节点", len(result.SkippedNodes))
+	}
+	return result.JSON, nil
 }
 
 func (s *Server) saveConfigFile(path, content string) error {

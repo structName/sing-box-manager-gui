@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +18,50 @@ import (
 )
 
 const desiredStateFileName = "singbox.desired"
+
+var (
+	configOutboundIndexPattern = regexp.MustCompile(`(?i)outbounds?\[(\d+)\]`)
+	ansiEscapePattern          = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+)
+
+// ConfigCheckError 是 sing-box 对候选配置的结构化校验错误。
+type ConfigCheckError struct {
+	message       string
+	cause         error
+	outboundIndex int
+	hasOutbound   bool
+}
+
+func (e *ConfigCheckError) Error() string {
+	if e.message == "" {
+		return fmt.Sprintf("配置检查失败: %v", e.cause)
+	}
+	return "配置检查失败: " + e.message
+}
+
+func (e *ConfigCheckError) Unwrap() error {
+	return e.cause
+}
+
+// OutboundIndex 返回 sing-box 错误指向的出站索引。
+func (e *ConfigCheckError) OutboundIndex() (int, bool) {
+	return e.outboundIndex, e.hasOutbound
+}
+
+func newConfigCheckError(output string, cause error) *ConfigCheckError {
+	message := strings.TrimSpace(ansiEscapePattern.ReplaceAllString(output, ""))
+	checkErr := &ConfigCheckError{message: message, cause: cause}
+	match := configOutboundIndexPattern.FindStringSubmatch(message)
+	if len(match) != 2 {
+		return checkErr
+	}
+	index, err := strconv.Atoi(match[1])
+	if err == nil {
+		checkErr.outboundIndex = index
+		checkErr.hasOutbound = true
+	}
+	return checkErr
+}
 
 // ProcessManager 进程管理器
 type ProcessManager struct {
@@ -446,7 +491,7 @@ func (pm *ProcessManager) RestoreDesiredState() (bool, error) {
 }
 
 // StartDesiredStateMonitor 持续守护上次运行意图，处理 sing-box 异常退出后的自动恢复。
-func (pm *ProcessManager) StartDesiredStateMonitor(interval time.Duration) {
+func (pm *ProcessManager) StartDesiredStateMonitor(interval time.Duration, preflight func() error) {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
@@ -462,6 +507,12 @@ func (pm *ProcessManager) StartDesiredStateMonitor(interval time.Duration) {
 				}
 
 				logger.Printf("检测到 sing-box 应保持运行但当前未运行，尝试自动启动")
+				if preflight != nil {
+					if err := preflight(); err != nil {
+						logger.Printf("自动启动前配置校验失败: %v", err)
+						continue
+					}
+				}
 				if err := pm.Start(); err != nil {
 					logger.Printf("自动启动 sing-box 失败: %v", err)
 				}
@@ -615,10 +666,55 @@ func (pm *ProcessManager) SetConfigPath(configPath string) {
 
 // Check 检查配置文件
 func (pm *ProcessManager) Check() error {
-	cmd := exec.Command(pm.singboxPath, "check", "-c", pm.configPath)
+	pm.mu.RLock()
+	configPath := pm.configPath
+	pm.mu.RUnlock()
+	return pm.checkConfigPath(configPath)
+}
+
+// CheckConfigContent 校验候选内容，但不覆盖当前运行配置。
+func (pm *ProcessManager) CheckConfigContent(content string) error {
+	pm.mu.RLock()
+	configPath := pm.configPath
+	pm.mu.RUnlock()
+
+	configDir := filepath.Dir(configPath)
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		return fmt.Errorf("创建配置目录失败: %w", err)
+	}
+	temporary, err := os.CreateTemp(configDir, ".sbm-check-*.json")
+	if err != nil {
+		return fmt.Errorf("创建候选配置失败: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+
+	if err := temporary.Chmod(0o600); err != nil {
+		temporary.Close()
+		return fmt.Errorf("设置候选配置权限失败: %w", err)
+	}
+	if _, err := temporary.WriteString(content); err != nil {
+		temporary.Close()
+		return fmt.Errorf("写入候选配置失败: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("关闭候选配置失败: %w", err)
+	}
+
+	return pm.checkConfigPath(temporaryPath)
+}
+
+func (pm *ProcessManager) checkConfigPath(configPath string) error {
+	pm.mu.RLock()
+	singboxPath := pm.singboxPath
+	dataDir := pm.dataDir
+	pm.mu.RUnlock()
+
+	cmd := exec.Command(singboxPath, "check", "-c", configPath)
+	cmd.Dir = dataDir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("配置检查失败: %s", string(output))
+		return newConfigCheckError(string(output), err)
 	}
 	return nil
 }

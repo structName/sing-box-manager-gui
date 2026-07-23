@@ -96,13 +96,19 @@ type RealityOpts struct {
 
 // ParseClashYAML 解析 Clash YAML 配置
 func ParseClashYAML(content string) ([]storage.Node, error) {
-	var config ClashConfig
-	if err := yaml.Unmarshal([]byte(content), &config); err != nil {
+	var document struct {
+		Proxies []yaml.Node `yaml:"proxies"`
+	}
+	if err := yaml.Unmarshal([]byte(content), &document); err != nil {
 		return nil, fmt.Errorf("解析 YAML 失败: %w", err)
 	}
 
 	var nodes []storage.Node
-	for _, proxy := range config.Proxies {
+	for _, proxyNode := range document.Proxies {
+		var proxy ClashProxy
+		if err := proxyNode.Decode(&proxy); err != nil {
+			continue
+		}
 		node, err := convertClashProxy(proxy)
 		if err != nil {
 			continue // 跳过无法解析的节点
@@ -326,8 +332,8 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 		extra["transport"] = transport
 	}
 
-	// TLS 配置（REALITY 节点即使没有显式设置 tls: true 也需要处理）
-	if proxy.TLS || proxy.RealityOpts != nil {
+	// REALITY、Hysteria2 和 TUIC 的协议本身要求 TLS，不能依赖订阅显式声明。
+	if proxy.TLS || proxy.RealityOpts != nil || nodeType == "hysteria2" || nodeType == "tuic" {
 		tls := map[string]interface{}{
 			"enabled": true,
 		}
