@@ -2,6 +2,7 @@ package builder
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -141,6 +142,19 @@ type ConfigBuilder struct {
 	dataDir      string // 数据目录路径
 }
 
+// SkippedNode 被排除在运行配置之外的无效代理节点。
+type SkippedNode struct {
+	Tag    string
+	Type   string
+	Reason string
+}
+
+// ValidatedConfig 已通过内核校验的 sing-box 配置。
+type ValidatedConfig struct {
+	JSON         string
+	SkippedNodes []SkippedNode
+}
+
 // NewConfigBuilder 创建配置生成器
 func NewConfigBuilder(settings *storage.Settings, nodes []storage.Node, filters []storage.Filter, inboundPorts []storage.InboundPort, proxyChains []storage.ProxyChain) *ConfigBuilder {
 	return &ConfigBuilder{
@@ -163,6 +177,7 @@ func (b *ConfigBuilder) Build() (*SingBoxConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	route := b.buildRoute()
 
 	config := &SingBoxConfig{
 		Log:          b.buildLog(),
@@ -170,11 +185,37 @@ func (b *ConfigBuilder) Build() (*SingBoxConfig, error) {
 		NTP:          b.buildNTP(),
 		Inbounds:     b.buildInbounds(),
 		Outbounds:    outbounds,
-		Route:        b.buildRoute(),
+		Route:        route,
 		Experimental: b.buildExperimental(), // 始终启用，FakeIP 需要 cache_file
 	}
 
 	return config, nil
+}
+
+func fallbackMissingRouteOutbounds(route *RouteConfig, outbounds []Outbound, excluded map[string]struct{}) {
+	if route == nil {
+		return
+	}
+	available := make(map[string]struct{}, len(outbounds))
+	for _, outbound := range outbounds {
+		if tag, _ := outbound["tag"].(string); tag != "" {
+			available[tag] = struct{}{}
+		}
+	}
+	fallback := "DIRECT"
+	if _, ok := available["Proxy"]; ok {
+		fallback = "Proxy"
+	}
+	for _, rule := range route.Rules {
+		target, _ := rule["outbound"].(string)
+		if target == "" {
+			continue
+		}
+		_, wasExcluded := excluded[target]
+		if _, ok := available[target]; !ok && wasExcluded {
+			rule["outbound"] = fallback
+		}
+	}
 }
 
 // BuildJSON 构建 JSON 字符串
@@ -183,13 +224,176 @@ func (b *ConfigBuilder) BuildJSON() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return marshalConfigJSON(config)
+}
 
+func marshalConfigJSON(config *SingBoxConfig) (string, error) {
 	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("序列化配置失败: %w", err)
 	}
 
 	return string(data), nil
+}
+
+// BuildValidatedJSON 排除被 sing-box 拒绝的代理节点，重建分组和链路后再次校验。
+func (b *ConfigBuilder) BuildValidatedJSON(validate func(string) error) (*ValidatedConfig, error) {
+	remaining := append([]storage.Node(nil), b.nodes...)
+	skipped := make([]SkippedNode, 0)
+	placeholderNodes := append([]storage.Node(nil), b.nodes...)
+	hasPlaceholders := false
+
+	buildable := make([]storage.Node, 0, len(remaining))
+	for index, node := range remaining {
+		if _, err := b.nodeToOutbound(node); err != nil {
+			skipped = append(skipped, skippedNode(node, err))
+			placeholderNodes[index] = validationPlaceholderNode(node)
+			hasPlaceholders = true
+			continue
+		}
+		buildable = append(buildable, node)
+	}
+	remaining = buildable
+
+	var baselineTags map[string]struct{}
+	if hasPlaceholders {
+		outbounds, err := b.withNodes(placeholderNodes).buildOutbounds()
+		if err != nil {
+			return nil, err
+		}
+		baselineTags = outboundTagSet(outbounds)
+	}
+
+	for {
+		candidate := b.withNodes(remaining)
+		config, err := candidate.Build()
+		if err != nil {
+			return nil, err
+		}
+		currentTags := outboundTagSet(config.Outbounds)
+		if baselineTags == nil {
+			baselineTags = currentTags
+		}
+		fallbackMissingRouteOutbounds(config.Route, config.Outbounds, missingOutboundTags(baselineTags, currentTags))
+		configJSON, err := marshalConfigJSON(config)
+		if err != nil {
+			return nil, err
+		}
+		if validate == nil {
+			return &ValidatedConfig{JSON: configJSON, SkippedNodes: skipped}, nil
+		}
+
+		validationErr := validate(configJSON)
+		if validationErr == nil {
+			return &ValidatedConfig{JSON: configJSON, SkippedNodes: skipped}, nil
+		}
+
+		outboundIndex, ok := outboundIndexFromError(validationErr)
+		if !ok {
+			return nil, fmt.Errorf("sing-box 配置校验失败且无法定位到代理节点: %w", validationErr)
+		}
+
+		if outboundIndex < 0 || outboundIndex >= len(config.Outbounds) {
+			return nil, fmt.Errorf("sing-box 配置校验返回无效出站索引 %d: %w", outboundIndex, validationErr)
+		}
+
+		nodeIndex := candidate.nodeIndexForOutbound(config.Outbounds[outboundIndex])
+		if nodeIndex < 0 {
+			return nil, fmt.Errorf("sing-box 配置校验失败，出站 %d 不是可排除的代理节点: %w", outboundIndex, validationErr)
+		}
+
+		skipped = append(skipped, skippedNode(remaining[nodeIndex], validationErr))
+		remaining = append(remaining[:nodeIndex], remaining[nodeIndex+1:]...)
+	}
+}
+
+func (b *ConfigBuilder) withNodes(nodes []storage.Node) *ConfigBuilder {
+	return &ConfigBuilder{
+		settings:     b.settings,
+		nodes:        nodes,
+		filters:      b.filters,
+		inboundPorts: b.inboundPorts,
+		proxyChains:  b.proxyChains,
+		dataDir:      b.dataDir,
+	}
+}
+
+func validationPlaceholderNode(node storage.Node) storage.Node {
+	node.Type = "socks"
+	node.Server = "127.0.0.1"
+	node.ServerPort = 1
+	node.Extra = map[string]interface{}{"version": "5"}
+	return node
+}
+
+func outboundTagSet(outbounds []Outbound) map[string]struct{} {
+	tags := make(map[string]struct{}, len(outbounds))
+	for _, outbound := range outbounds {
+		if tag, _ := outbound["tag"].(string); tag != "" {
+			tags[tag] = struct{}{}
+		}
+	}
+	return tags
+}
+
+func missingOutboundTags(baseline, current map[string]struct{}) map[string]struct{} {
+	missing := make(map[string]struct{})
+	for tag := range baseline {
+		if _, ok := current[tag]; !ok {
+			missing[tag] = struct{}{}
+		}
+	}
+	return missing
+}
+
+func (b *ConfigBuilder) nodeIndexForOutbound(outbound Outbound) int {
+	if tag, _ := outbound["tag"].(string); tag != "" {
+		for index, node := range b.nodes {
+			if node.Tag == tag {
+				return index
+			}
+		}
+	}
+
+	want := cloneOutbound(outbound)
+	delete(want, "tag")
+	delete(want, "detour")
+	for index, node := range b.nodes {
+		candidate, err := b.nodeToOutbound(node)
+		if err != nil {
+			continue
+		}
+		delete(candidate, "tag")
+		delete(candidate, "detour")
+		if outboundJSONEqual(candidate, want) {
+			return index
+		}
+	}
+	return -1
+}
+
+func outboundJSONEqual(left, right Outbound) bool {
+	leftJSON, leftErr := json.Marshal(left)
+	rightJSON, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && string(leftJSON) == string(rightJSON)
+}
+
+func outboundIndexFromError(err error) (int, bool) {
+	var indexed interface {
+		OutboundIndex() (int, bool)
+	}
+	if !errors.As(err, &indexed) {
+		return 0, false
+	}
+	return indexed.OutboundIndex()
+}
+
+func skippedNode(node storage.Node, err error) SkippedNode {
+	return SkippedNode{
+		Tag:    node.Tag,
+		Type:   node.Type,
+		Reason: strings.TrimSpace(err.Error()),
+	}
 }
 
 // buildLog 构建日志配置
@@ -914,12 +1118,12 @@ func (b *ConfigBuilder) nodeToOutbound(node storage.Node) (Outbound, error) {
 		"server_port": node.ServerPort,
 	}
 
-	// 复制 Extra 字段
+	// 复制 Extra 字段，避免多轮配置校验修改存储中的节点数据。
 	for k, v := range node.Extra {
 		if isNodeMetadataField(k) {
 			continue
 		}
-		outbound[k] = v
+		outbound[k] = cloneOutboundValue(v)
 	}
 
 	if err := normalizeOutbound(outbound); err != nil {
@@ -927,6 +1131,41 @@ func (b *ConfigBuilder) nodeToOutbound(node storage.Node) (Outbound, error) {
 	}
 
 	return outbound, nil
+}
+
+func cloneOutbound(outbound Outbound) Outbound {
+	clone := make(Outbound, len(outbound))
+	for key, value := range outbound {
+		clone[key] = cloneOutboundValue(value)
+	}
+	return clone
+}
+
+func cloneOutboundValue(value interface{}) interface{} {
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		clone := make(map[string]interface{}, len(typed))
+		for key, nested := range typed {
+			clone[key] = cloneOutboundValue(nested)
+		}
+		return clone
+	case map[string]string:
+		clone := make(map[string]string, len(typed))
+		for key, nested := range typed {
+			clone[key] = nested
+		}
+		return clone
+	case []interface{}:
+		clone := make([]interface{}, len(typed))
+		for index, nested := range typed {
+			clone[index] = cloneOutboundValue(nested)
+		}
+		return clone
+	case []string:
+		return append([]string(nil), typed...)
+	default:
+		return value
+	}
 }
 
 func isNodeMetadataField(key string) bool {

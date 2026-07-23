@@ -2,13 +2,323 @@ package builder
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/structName/sing-box-manager-gui/internal/storage"
 )
+
+type testOutboundValidationError struct {
+	index   int
+	message string
+}
+
+func (e *testOutboundValidationError) Error() string {
+	return e.message
+}
+
+func (e *testOutboundValidationError) OutboundIndex() (int, bool) {
+	return e.index, true
+}
+
+func TestBuildValidatedJSONSkipsNodeRejectedBySingBox(t *testing.T) {
+	settings := storage.DefaultSettings()
+	b := NewConfigBuilder(settings, []storage.Node{
+		{
+			Tag:        "usable-node",
+			Type:       "socks",
+			Server:     "127.0.0.1",
+			ServerPort: 1080,
+			Extra:      map[string]interface{}{"version": "5"},
+		},
+		{
+			Tag:        "future-node",
+			Type:       "future-protocol",
+			Server:     "192.0.2.10",
+			ServerPort: 443,
+		},
+	}, nil, nil, nil)
+
+	validationCalls := 0
+	result, err := b.BuildValidatedJSON(func(configJSON string) error {
+		validationCalls++
+		return rejectFutureProtocol(configJSON)
+	})
+	if err != nil {
+		t.Fatalf("BuildValidatedJSON() error = %v", err)
+	}
+	if validationCalls != 2 {
+		t.Fatalf("validation calls = %d, want 2", validationCalls)
+	}
+	if len(result.SkippedNodes) != 1 {
+		t.Fatalf("skipped node count = %d, want 1", len(result.SkippedNodes))
+	}
+	if got := result.SkippedNodes[0]; got.Tag != "future-node" || got.Type != "future-protocol" || !strings.Contains(got.Reason, "unsupported outbound type") {
+		t.Fatalf("skipped node = %#v", got)
+	}
+
+	var config SingBoxConfig
+	if err := json.Unmarshal([]byte(result.JSON), &config); err != nil {
+		t.Fatalf("decode validated config: %v", err)
+	}
+	if outboundByTag(config.Outbounds, "usable-node") == nil {
+		t.Fatal("usable node missing from validated config")
+	}
+	if outboundByTag(config.Outbounds, "future-node") != nil {
+		t.Fatal("rejected node remains in validated config")
+	}
+	auto := outboundByTag(config.Outbounds, "Auto")
+	if auto == nil || !stringListContains(auto["outbounds"], "usable-node") || stringListContains(auto["outbounds"], "future-node") {
+		t.Fatalf("Auto group not rebuilt after exclusion: %#v", auto)
+	}
+}
+
+func TestBuildValidatedJSONDoesNotSwallowGlobalConfigErrors(t *testing.T) {
+	b := NewConfigBuilder(storage.DefaultSettings(), nil, nil, nil, nil)
+
+	result, err := b.BuildValidatedJSON(func(string) error {
+		return fmt.Errorf("FATAL initialize inbound[0]: listen tcp: address already in use")
+	})
+	if err == nil {
+		t.Fatal("BuildValidatedJSON() error = nil, want global config error")
+	}
+	if result != nil {
+		t.Fatalf("result = %#v, want nil", result)
+	}
+}
+
+func TestBuildValidatedJSONSkipsRejectedNodeUsedByProxyChain(t *testing.T) {
+	b := NewConfigBuilder(storage.DefaultSettings(), []storage.Node{
+		{
+			Tag:        "relay-node",
+			Type:       "socks",
+			Server:     "127.0.0.1",
+			ServerPort: 1080,
+			Extra:      map[string]interface{}{"version": "5"},
+		},
+		{
+			Tag:        "future-node",
+			Type:       "future-protocol",
+			Server:     "192.0.2.20",
+			ServerPort: 443,
+		},
+	}, nil, nil, []storage.ProxyChain{
+		{
+			ID:      "chain-1",
+			Name:    "test-chain",
+			Nodes:   []string{"relay-node", "future-node"},
+			Enabled: true,
+		},
+	})
+
+	result, err := b.BuildValidatedJSON(rejectFutureProtocol)
+	if err != nil {
+		t.Fatalf("BuildValidatedJSON() error = %v", err)
+	}
+	if len(result.SkippedNodes) != 1 || result.SkippedNodes[0].Tag != "future-node" {
+		t.Fatalf("skipped nodes = %#v", result.SkippedNodes)
+	}
+
+	var config SingBoxConfig
+	if err := json.Unmarshal([]byte(result.JSON), &config); err != nil {
+		t.Fatal(err)
+	}
+	if outboundByTag(config.Outbounds, "test-chain") != nil {
+		t.Fatal("chain containing rejected node remains in validated config")
+	}
+	if outboundByTag(config.Outbounds, "relay-node") == nil {
+		t.Fatal("unrelated usable node was removed with chain")
+	}
+}
+
+func TestBuildValidatedJSONSkipsLocallyRejectedNode(t *testing.T) {
+	b := NewConfigBuilder(storage.DefaultSettings(), []storage.Node{
+		{
+			Tag:        "usable-node",
+			Type:       "socks",
+			Server:     "127.0.0.1",
+			ServerPort: 1080,
+			Extra:      map[string]interface{}{"version": "5"},
+		},
+		{
+			Tag:        "bad-plugin",
+			Type:       "shadowsocks",
+			Server:     "192.0.2.30",
+			ServerPort: 443,
+			Extra: map[string]interface{}{
+				"method":      "aes-128-gcm",
+				"password":    "secret",
+				"plugin":      "shadowtls",
+				"plugin_opts": "version=3",
+			},
+		},
+	}, nil, nil, nil)
+
+	validationCalls := 0
+	result, err := b.BuildValidatedJSON(func(string) error {
+		validationCalls++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("BuildValidatedJSON() error = %v", err)
+	}
+	if validationCalls != 1 {
+		t.Fatalf("validation calls = %d, want 1", validationCalls)
+	}
+	if len(result.SkippedNodes) != 1 || result.SkippedNodes[0].Tag != "bad-plugin" {
+		t.Fatalf("skipped nodes = %#v", result.SkippedNodes)
+	}
+	if !strings.Contains(result.SkippedNodes[0].Reason, "shadowtls") || !strings.Contains(result.SkippedNodes[0].Reason, "不受 sing-box 支持") {
+		t.Fatalf("skip reason = %q", result.SkippedNodes[0].Reason)
+	}
+}
+
+func TestBuildValidatedJSONRewritesRouteThatTargetsRejectedNode(t *testing.T) {
+	b := NewConfigBuilder(storage.DefaultSettings(), []storage.Node{
+		{
+			Tag:        "usable-node",
+			Type:       "socks",
+			Server:     "127.0.0.1",
+			ServerPort: 1080,
+			Extra:      map[string]interface{}{"version": "5"},
+		},
+		{
+			Tag:        "future-node",
+			Type:       "future-protocol",
+			Server:     "192.0.2.40",
+			ServerPort: 443,
+		},
+	}, nil, []storage.InboundPort{
+		{
+			ID:       "port-1",
+			Type:     "mixed",
+			Listen:   "127.0.0.1",
+			Port:     2081,
+			Outbound: "future-node",
+			Enabled:  true,
+		},
+	}, nil)
+
+	result, err := b.BuildValidatedJSON(func(configJSON string) error {
+		if err := rejectFutureProtocol(configJSON); err != nil {
+			return err
+		}
+		var config SingBoxConfig
+		if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
+			return err
+		}
+		for index, rule := range config.Route.Rules {
+			if rule["outbound"] == "future-node" {
+				return fmt.Errorf("FATAL route.rules[%d].outbound: outbound not found: future-node", index)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("BuildValidatedJSON() error = %v", err)
+	}
+
+	var config SingBoxConfig
+	if err := json.Unmarshal([]byte(result.JSON), &config); err != nil {
+		t.Fatal(err)
+	}
+	for _, rule := range config.Route.Rules {
+		if inbound, ok := rule["inbound"].([]interface{}); ok && len(inbound) == 1 && inbound[0] == "custom-port-1" {
+			if rule["outbound"] != "Proxy" {
+				t.Fatalf("custom inbound outbound = %v, want Proxy", rule["outbound"])
+			}
+			return
+		}
+	}
+	t.Fatal("custom inbound route rule missing")
+}
+
+func TestBuildValidatedJSONPreservesUnrelatedGlobalRouteError(t *testing.T) {
+	b := NewConfigBuilder(storage.DefaultSettings(), []storage.Node{
+		{
+			Tag:        "usable-node",
+			Type:       "socks",
+			Server:     "127.0.0.1",
+			ServerPort: 1080,
+			Extra:      map[string]interface{}{"version": "5"},
+		},
+		{
+			Tag:        "future-node",
+			Type:       "future-protocol",
+			Server:     "192.0.2.41",
+			ServerPort: 443,
+		},
+	}, nil, []storage.InboundPort{
+		{
+			ID:       "port-1",
+			Type:     "mixed",
+			Listen:   "127.0.0.1",
+			Port:     2081,
+			Outbound: "unrelated-typo",
+			Enabled:  true,
+		},
+	}, nil)
+
+	result, err := b.BuildValidatedJSON(func(configJSON string) error {
+		if err := rejectFutureProtocol(configJSON); err != nil {
+			return err
+		}
+		var config SingBoxConfig
+		if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
+			return err
+		}
+		for index, rule := range config.Route.Rules {
+			if rule["outbound"] == "unrelated-typo" {
+				return fmt.Errorf("FATAL route.rules[%d].outbound: outbound not found: unrelated-typo", index)
+			}
+		}
+		return nil
+	})
+	if err == nil {
+		t.Fatal("BuildValidatedJSON() error = nil, want unrelated global route error")
+	}
+	if result != nil {
+		t.Fatalf("result = %#v, want nil", result)
+	}
+}
+
+func rejectFutureProtocol(configJSON string) error {
+	var config SingBoxConfig
+	if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
+		return err
+	}
+	for index, outbound := range config.Outbounds {
+		if outbound["type"] == "future-protocol" {
+			return &testOutboundValidationError{
+				index:   index,
+				message: fmt.Sprintf("FATAL initialize outbound[%d]: unsupported outbound type", index),
+			}
+		}
+	}
+	return nil
+}
+
+func stringListContains(raw interface{}, want string) bool {
+	switch values := raw.(type) {
+	case []interface{}:
+		for _, value := range values {
+			if value == want {
+				return true
+			}
+		}
+	case []string:
+		for _, value := range values {
+			if value == want {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 func TestNodeToOutboundNormalizesSimpleObfsPlugin(t *testing.T) {
 	builder := &ConfigBuilder{}

@@ -117,12 +117,21 @@ func main() {
 		logger.Printf("Swagger OpenAPI 已生成: %s", swaggerOut)
 	}
 
-	if restored, err := processManager.RestoreDesiredState(); err != nil {
-		logger.Printf("恢复 sing-box 运行状态失败: %v", err)
-	} else if restored {
-		logger.Printf("已按上次运行状态自动启动 sing-box")
+	runtimeConfigReady := true
+	if err := server.PrepareRuntimeConfig(); err != nil {
+		runtimeConfigReady = false
+		logger.Printf("启动前准备 sing-box 配置失败: %v", err)
 	}
-	processManager.StartDesiredStateMonitor(30 * time.Second)
+	if runtimeConfigReady {
+		if restored, err := processManager.RestoreDesiredState(); err != nil {
+			logger.Printf("恢复 sing-box 运行状态失败: %v", err)
+		} else if restored {
+			logger.Printf("已按上次运行状态自动启动 sing-box")
+		}
+	} else if processManager.ShouldBeRunning() {
+		logger.Printf("已跳过 sing-box 自动恢复，避免使用未通过校验的配置")
+	}
+	processManager.StartDesiredStateMonitor(30*time.Second, server.PrepareRuntimeConfig)
 
 	// 启动统一调度器（包含订阅更新、测速、链路检测等）
 	server.StartUnifiedScheduler()

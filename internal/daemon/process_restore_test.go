@@ -1,9 +1,11 @@
 package daemon
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -135,7 +137,7 @@ func TestProcessManagerDesiredStateMonitorRestartsUnexpectedExit(t *testing.T) {
 	if err := pm.setDesiredRunning(true); err != nil {
 		t.Fatalf("set desired running: %v", err)
 	}
-	pm.StartDesiredStateMonitor(10 * time.Millisecond)
+	pm.StartDesiredStateMonitor(10*time.Millisecond, nil)
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
@@ -147,4 +149,33 @@ func TestProcessManagerDesiredStateMonitorRestartsUnexpectedExit(t *testing.T) {
 	}
 
 	t.Fatal("monitor did not start sing-box from desired running state")
+}
+
+func TestProcessManagerDesiredStateMonitorRunsPreflightBeforeRestart(t *testing.T) {
+	pm := newTestProcessManager(t)
+	if err := pm.setDesiredRunning(true); err != nil {
+		t.Fatalf("set desired running: %v", err)
+	}
+
+	var attempts atomic.Int32
+	pm.StartDesiredStateMonitor(10*time.Millisecond, func() error {
+		if attempts.Add(1) == 1 {
+			return errors.New("candidate config is invalid")
+		}
+		return nil
+	})
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if pm.IsRunning() {
+			t.Cleanup(func() { _ = pm.Stop() })
+			if attempts.Load() < 2 {
+				t.Fatalf("preflight attempts = %d, want at least 2", attempts.Load())
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatal("monitor did not retry after preflight became valid")
 }
