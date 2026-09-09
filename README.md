@@ -85,7 +85,7 @@ A modern web-based management panel for [sing-box](https://github.com/SagerNet/s
 | Trojan | ✅ | ✅ | ✅ | ✅ |
 | Hysteria2 | ✅ | ✅ | ✅ | ✅ |
 | TUIC | ✅ | ✅ | ✅ | ✅ |
-| SOCKS | ✅ | - | ✅ | ✅ |
+| SOCKS | ✅ | ✅ | ✅ | ✅ |
 
 ### Screenshots
 
@@ -310,7 +310,7 @@ MIT License
 | Trojan | ✅ | ✅ | ✅ | ✅ |
 | Hysteria2 | ✅ | ✅ | ✅ | ✅ |
 | TUIC | ✅ | ✅ | ✅ | ✅ |
-| SOCKS | ✅ | - | ✅ | ✅ |
+| SOCKS | ✅ | ✅ | ✅ | ✅ |
 
 ### 截图
 
