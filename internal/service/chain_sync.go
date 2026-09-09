@@ -1,6 +1,8 @@
 package service
 
 import (
+	"strings"
+
 	"github.com/structName/sing-box-manager-gui/internal/storage"
 )
 
@@ -14,17 +16,37 @@ func NewChainSyncService(store *storage.JSONStore) *ChainSyncService {
 	return &ChainSyncService{store: store}
 }
 
+// validNodeTagsForChainSync 构建链路同步用的有效节点集合。
+// 包含 GetAllNodes()（启用的订阅/手动节点），并额外保留已禁用的手动节点 Tag，
+// 避免“仅禁用”导致链路引用被误剪枝；真正删除后节点会从 ManualNodes 消失再被剪枝。
+func (s *ChainSyncService) validNodeTagsForChainSync() map[string]storage.Node {
+	validNodeTags := make(map[string]storage.Node)
+	for _, node := range s.store.GetAllNodes() {
+		validNodeTags[node.Tag] = node
+	}
+	for _, mn := range s.store.GetManualNodes() {
+		tag := strings.TrimSpace(mn.Node.Tag)
+		if tag == "" {
+			continue
+		}
+		if _, exists := validNodeTags[tag]; exists {
+			continue
+		}
+		node := mn.Node
+		node.Source = "manual"
+		if node.SourceName == "" {
+			node.SourceName = "手动添加"
+		}
+		validNodeTags[tag] = node
+	}
+	return validNodeTags
+}
+
 // SyncChainNodes 同步所有链路的节点副本
 // 当订阅刷新后调用，清理已失效的节点引用
 func (s *ChainSyncService) SyncChainNodes() error {
 	chains := s.store.GetProxyChains()
-	allNodes := s.store.GetAllNodes()
-
-	// 构建当前有效节点 Tag 集合
-	validNodeTags := make(map[string]storage.Node)
-	for _, node := range allNodes {
-		validNodeTags[node.Tag] = node
-	}
+	validNodeTags := s.validNodeTagsForChainSync()
 
 	for _, chain := range chains {
 		updated := false
@@ -118,6 +140,152 @@ func (s *ChainSyncService) SyncChainNodesForSubscription(subID string) error {
 		}
 	}
 
+	return nil
+}
+
+// RetargetNodeTag 将所有链路中的节点引用从 oldTag 改写为 newTag。
+// 跳过特殊节点（country/auto/tor）。用于手动节点重命名后级联更新链路。
+func (s *ChainSyncService) RetargetNodeTag(oldTag, newTag string) error {
+	oldTag = strings.TrimSpace(oldTag)
+	newTag = strings.TrimSpace(newTag)
+	if oldTag == "" || newTag == "" || oldTag == newTag {
+		return nil
+	}
+	// 特殊节点 Tag 不应作为普通节点被改写
+	if _, ok := storage.ChainSpecialNodeMetadata("", oldTag); ok {
+		return nil
+	}
+
+	allNodes := s.store.GetAllNodes()
+	nodeMap := make(map[string]storage.Node, len(allNodes))
+	for _, n := range allNodes {
+		nodeMap[n.Tag] = n
+	}
+	// 禁用手动节点也可能被改名，补充来源信息
+	for _, mn := range s.store.GetManualNodes() {
+		tag := strings.TrimSpace(mn.Node.Tag)
+		if tag == "" {
+			continue
+		}
+		if _, exists := nodeMap[tag]; exists {
+			continue
+		}
+		node := mn.Node
+		node.Source = "manual"
+		nodeMap[tag] = node
+	}
+
+	chains := s.store.GetProxyChains()
+	for _, chain := range chains {
+		updated := false
+
+		for i, tag := range chain.Nodes {
+			if tag == oldTag {
+				chain.Nodes[i] = newTag
+				updated = true
+			}
+		}
+
+		if len(chain.ChainNodes) > 0 {
+			newChainNodes := make([]storage.ChainNode, 0, len(chain.ChainNodes))
+			for _, chainNode := range chain.ChainNodes {
+				tag := chainNode.OriginalTag
+				if tag == oldTag {
+					tag = newTag
+					updated = true
+				}
+				if specialNode, ok := storage.ChainSpecialNodeMetadata(chain.Name, tag); ok {
+					newChainNodes = append(newChainNodes, specialNode)
+					continue
+				}
+				source := chainNode.Source
+				if node, exists := nodeMap[tag]; exists && node.Source != "" {
+					source = node.Source
+				} else if tag == newTag && (source == "" || chainNode.OriginalTag == oldTag) {
+					if node, exists := nodeMap[newTag]; exists && node.Source != "" {
+						source = node.Source
+					} else if source == "" {
+						source = "manual"
+					}
+				}
+				newChainNodes = append(newChainNodes, storage.ChainNode{
+					OriginalTag: tag,
+					CopyTag:     storage.GenerateChainNodeCopyTag(chain.Name, tag),
+					Source:      source,
+				})
+			}
+			chain.ChainNodes = newChainNodes
+		} else if updated {
+			// Nodes 已改写但无 ChainNodes：按 RegenerateChainNodes 模式补齐
+			newChainNodes := make([]storage.ChainNode, 0, len(chain.Nodes))
+			for _, tag := range chain.Nodes {
+				if specialNode, ok := storage.ChainSpecialNodeMetadata(chain.Name, tag); ok {
+					newChainNodes = append(newChainNodes, specialNode)
+					continue
+				}
+				source := ""
+				if node, exists := nodeMap[tag]; exists {
+					source = node.Source
+				}
+				newChainNodes = append(newChainNodes, storage.ChainNode{
+					OriginalTag: tag,
+					CopyTag:     storage.GenerateChainNodeCopyTag(chain.Name, tag),
+					Source:      source,
+				})
+			}
+			chain.ChainNodes = newChainNodes
+		}
+
+		if updated {
+			if err := s.store.UpdateProxyChain(chain); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// RemoveNodeTag 从所有链路中移除指定节点 Tag 的引用（真正删除节点时使用）。
+// 跳过特殊节点 Tag。
+func (s *ChainSyncService) RemoveNodeTag(tag string) error {
+	tag = strings.TrimSpace(tag)
+	if tag == "" {
+		return nil
+	}
+	if _, ok := storage.ChainSpecialNodeMetadata("", tag); ok {
+		return nil
+	}
+
+	chains := s.store.GetProxyChains()
+	for _, chain := range chains {
+		updated := false
+		validNodes := make([]string, 0, len(chain.Nodes))
+		for _, nodeTag := range chain.Nodes {
+			if nodeTag == tag {
+				updated = true
+				continue
+			}
+			validNodes = append(validNodes, nodeTag)
+		}
+
+		validChainNodes := make([]storage.ChainNode, 0, len(chain.ChainNodes))
+		for _, chainNode := range chain.ChainNodes {
+			if chainNode.OriginalTag == tag {
+				updated = true
+				continue
+			}
+			validChainNodes = append(validChainNodes, chainNode)
+		}
+
+		if updated {
+			chain.Nodes = validNodes
+			chain.ChainNodes = validChainNodes
+			if err := s.store.UpdateProxyChain(chain); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
