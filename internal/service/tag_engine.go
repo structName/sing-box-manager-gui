@@ -201,7 +201,8 @@ func (e *TagEngine) matchCondition(node *models.Node, cond models.TagCondition) 
 	case "name", "tag":
 		value = node.Tag
 	case "type", "protocol":
-		value = node.Type
+		value = normalizeProtocolType(node.Type)
+		cond.Value = normalizeProtocolType(fmt.Sprint(cond.Value))
 	case "server", "server_address":
 		value = node.Server
 	case "server_port", "port":
@@ -375,4 +376,19 @@ func (e *TagEngine) ApplyRulesAfterSpeedTest(nodeIDs []uint) error {
 func (e *TagEngine) ApplyRulesAfterSubscriptionUpdate(nodeIDs []uint) error {
 	_, err := e.ApplyRules("subscription_update", nodeIDs)
 	return err
+}
+
+func normalizeProtocolType(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "ss", "shadowsocks":
+		return "shadowsocks"
+	case "ssr", "shadowsocksr":
+		return "shadowsocksr"
+	case "hy2", "hysteria", "hysteria2":
+		return "hysteria2"
+	case "socks", "socks5", "socks4", "socks4a":
+		return "socks"
+	default:
+		return strings.ToLower(strings.TrimSpace(raw))
+	}
 }
