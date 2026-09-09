@@ -117,3 +117,105 @@ func TestNodeToMihomoProxyConvertsAnyTLSDurationsToSeconds(t *testing.T) {
 		t.Fatalf("client-fingerprint = %v, want chrome", got)
 	}
 }
+
+func TestNodeToMihomoProxySocks5(t *testing.T) {
+	node := &models.Node{
+		Tag:        "socks5-node",
+		Type:       "socks",
+		Server:     "127.0.0.1",
+		ServerPort: 1080,
+		Extra: models.JSONMap{
+			"version":  "5",
+			"username": "user",
+			"password": "pass",
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy socks5 error: %v", err)
+	}
+	if proxy["type"] != "socks5" {
+		t.Fatalf("type = %v, want socks5", proxy["type"])
+	}
+	if proxy["username"] != "user" || proxy["password"] != "pass" {
+		t.Fatalf("auth = %v/%v, want user/pass", proxy["username"], proxy["password"])
+	}
+}
+
+func TestNodeToMihomoProxySocks4(t *testing.T) {
+	node := &models.Node{
+		Tag:        "socks4-node",
+		Type:       "socks",
+		Server:     "127.0.0.1",
+		ServerPort: 1080,
+		Extra: models.JSONMap{
+			"version": "4",
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy socks4 error: %v", err)
+	}
+	if proxy["type"] != "socks4" {
+		t.Fatalf("type = %v, want socks4", proxy["type"])
+	}
+}
+
+func TestNodeToMihomoProxySocks5URLAlias(t *testing.T) {
+	node := &models.Node{
+		Tag:        "socks5-alias",
+		Type:       "socks5",
+		Server:     "example.com",
+		ServerPort: 1080,
+		Extra:      models.JSONMap{},
+	}
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy socks5 alias error: %v", err)
+	}
+	if proxy["type"] != "socks5" {
+		t.Fatalf("type = %v, want socks5", proxy["type"])
+	}
+}
+
+
+func TestNodeToMihomoProxySocksDefaultVersion(t *testing.T) {
+	node := &models.Node{
+		Tag:        "socks-default",
+		Type:       "socks",
+		Server:     "127.0.0.1",
+		ServerPort: 1080,
+		Extra:      models.JSONMap{},
+	}
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy default socks error: %v", err)
+	}
+	if proxy["type"] != "socks5" {
+		t.Fatalf("type = %v, want socks5 when version omitted", proxy["type"])
+	}
+}
+
+func TestNodeToMihomoProxySocksUDPOverTCP(t *testing.T) {
+	node := &models.Node{
+		Tag:        "socks-uot",
+		Type:       "socks",
+		Server:     "127.0.0.1",
+		ServerPort: 1080,
+		Extra: models.JSONMap{
+			"version": "5",
+			"udp_over_tcp": map[string]interface{}{
+				"enabled": true,
+			},
+		},
+	}
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy uot error: %v", err)
+	}
+	if proxy["udp-over-tcp"] != true {
+		t.Fatalf("udp-over-tcp = %v, want true", proxy["udp-over-tcp"])
+	}
+}
