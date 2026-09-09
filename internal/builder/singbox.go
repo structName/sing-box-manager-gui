@@ -1182,6 +1182,9 @@ func normalizeOutbound(outbound Outbound) error {
 	switch outboundType {
 	case "shadowsocks":
 		return normalizeShadowsocksOutbound(outbound)
+	case "socks", "socks5", "socks4", "socks4a":
+		normalizeSocksOutbound(outbound)
+		return nil
 	case "vless":
 		normalizeVLESSOutbound(outbound)
 		return nil
@@ -1190,6 +1193,29 @@ func normalizeOutbound(outbound Outbound) error {
 		return nil
 	default:
 		return nil
+	}
+}
+
+// normalizeSocksOutbound ensures SOCKS outbounds have a usable version and
+// canonical type for sing-box (type must be "socks").
+func normalizeSocksOutbound(outbound Outbound) {
+	outbound["type"] = "socks"
+	version, _ := outbound["version"].(string)
+	if version == "" {
+		outbound["version"] = "5"
+		return
+	}
+	switch version {
+	case "4", "4a", "5":
+		// keep as-is
+	case "socks4", "SOCKS4":
+		outbound["version"] = "4"
+	case "socks4a", "SOCKS4A":
+		outbound["version"] = "4"
+	case "socks5", "SOCKS5":
+		outbound["version"] = "5"
+	default:
+		outbound["version"] = "5"
 	}
 }
 

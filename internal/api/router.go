@@ -2670,6 +2670,20 @@ func (s *Server) addManualNode(c *gin.Context) {
 func (s *Server) updateManualNode(c *gin.Context) {
 	id := c.Param("id")
 
+	// 加载旧节点，用于检测 Tag 变更并级联改写链路引用
+	var oldNode *storage.ManualNode
+	for _, mn := range s.store.GetManualNodes() {
+		if mn.ID == id {
+			cp := mn
+			oldNode = &cp
+			break
+		}
+	}
+	if oldNode == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "手动节点不存在"})
+		return
+	}
+
 	var node storage.ManualNode
 	if err := c.ShouldBindJSON(&node); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -2682,13 +2696,34 @@ func (s *Server) updateManualNode(c *gin.Context) {
 		return
 	}
 
+	var cascadeMessages []string
+	oldTag := strings.TrimSpace(oldNode.Node.Tag)
+	newTag := strings.TrimSpace(node.Node.Tag)
+	// 仅在 Tag 实际变更时改写链路引用；禁用/启用不调用 SyncChainNodes，避免误剪枝
+	if oldTag != "" && oldTag != newTag && s.chainSyncSvc != nil {
+		if err := s.chainSyncSvc.RetargetNodeTag(oldTag, newTag); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "更新节点成功，但级联更新链路失败: " + err.Error()})
+			return
+		}
+		cascadeMessages = append(cascadeMessages, fmt.Sprintf("已更新链路中的节点引用: %s → %s", oldTag, newTag))
+	}
+
 	// 自动应用配置
 	if err := s.autoApplyConfig(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"message": "更新成功，但自动应用配置失败: " + err.Error()})
+		resp := gin.H{"message": "更新成功，但自动应用配置失败: " + err.Error()}
+		if len(cascadeMessages) > 0 {
+			resp["cascade"] = cascadeMessages
+		}
+		c.JSON(http.StatusOK, resp)
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "更新成功"})
+	resp := gin.H{"message": "更新成功"}
+	if len(cascadeMessages) > 0 {
+		resp["message"] = "更新成功，" + strings.Join(cascadeMessages, "；")
+		resp["cascade"] = cascadeMessages
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 func (s *Server) deleteManualNode(c *gin.Context) {
@@ -2697,6 +2732,14 @@ func (s *Server) deleteManualNode(c *gin.Context) {
 	if err := s.store.DeleteManualNode(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+
+	// 节点已真正删除：同步链路，剪掉失效的 OriginalTag 引用
+	if s.chainSyncSvc != nil {
+		if err := s.chainSyncSvc.SyncChainNodes(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "删除节点成功，但同步链路失败: " + err.Error()})
+			return
+		}
 	}
 
 	// 自动应用配置
