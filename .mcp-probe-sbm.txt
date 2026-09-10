@@ -1,1 +1,1 @@
-probe-ok-2026-09-10
+@/tmp/sbm-mcp/tags-content-only.txt
