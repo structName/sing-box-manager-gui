@@ -854,3 +854,195 @@ func TestBuildExperimentalUsesGithubProxyForCustomExternalUIDownloadURL(t *testi
 		t.Fatalf("external ui download url = %q, want %q", experimental.ClashAPI.ExternalUIDownloadURL, expected)
 	}
 }
+
+
+func TestNodeToOutboundNormalizesSocks(t *testing.T) {
+	builder := &ConfigBuilder{}
+
+	t.Run("defaults version and canonical type", func(t *testing.T) {
+		outbound, err := builder.nodeToOutbound(storage.Node{
+			Tag:        "socks-manual",
+			Type:       "socks5",
+			Server:     "127.0.0.1",
+			ServerPort: 1080,
+			Extra: map[string]interface{}{
+				"username": "u",
+				"password": "p",
+			},
+		})
+		if err != nil {
+			t.Fatalf("nodeToOutbound error: %v", err)
+		}
+		if outbound["type"] != "socks" {
+			t.Fatalf("type = %v, want socks", outbound["type"])
+		}
+		if outbound["version"] != "5" {
+			t.Fatalf("version = %v, want 5", outbound["version"])
+		}
+		if outbound["username"] != "u" || outbound["password"] != "p" {
+			t.Fatalf("auth not preserved: %v/%v", outbound["username"], outbound["password"])
+		}
+	})
+
+	t.Run("maps socks4 alias version", func(t *testing.T) {
+		outbound, err := builder.nodeToOutbound(storage.Node{
+			Tag:        "socks4-node",
+			Type:       "socks",
+			Server:     "127.0.0.1",
+			ServerPort: 1080,
+			Extra: map[string]interface{}{
+				"version": "socks4",
+			},
+		})
+		if err != nil {
+			t.Fatalf("nodeToOutbound error: %v", err)
+		}
+		if outbound["version"] != "4" {
+			t.Fatalf("version = %v, want 4", outbound["version"])
+		}
+	})
+}
+
+func TestProxyChainDetourMixesSocksSSAndVLESS(t *testing.T) {
+	settings := storage.DefaultSettings()
+	nodes := []storage.Node{
+		{
+			Tag:        "jp-socks",
+			Type:       "socks5", // alias must normalize to socks + version 5 in chain copies
+			Server:     "147.79.59.130",
+			ServerPort: 21080,
+			Extra: map[string]interface{}{
+				"username": "sbm_test",
+				"password": "secret",
+			},
+		},
+		{
+			Tag:        "hk-socks",
+			Type:       "socks",
+			Server:     "163.53.18.90",
+			ServerPort: 21080,
+			Extra: map[string]interface{}{
+				"username": "sbm_test",
+				"password": "secret",
+			},
+		},
+		{
+			Tag:        "jp-ss",
+			Type:       "shadowsocks",
+			Server:     "147.79.59.130",
+			ServerPort: 21081,
+			Extra: map[string]interface{}{
+				"method":   "aes-128-gcm",
+				"password": "ss-secret",
+			},
+		},
+		{
+			Tag:        "hk-ss",
+			Type:       "shadowsocks",
+			Server:     "163.53.18.90",
+			ServerPort: 21081,
+			Extra: map[string]interface{}{
+				"method":   "aes-128-gcm",
+				"password": "ss-secret",
+			},
+		},
+		{
+			Tag:        "jp-vless",
+			Type:       "vless",
+			Server:     "147.79.59.130",
+			ServerPort: 21083,
+			Extra: map[string]interface{}{
+				"uuid": "29a7533a-e541-406b-a455-1de847a1ff34",
+				"tls": map[string]interface{}{
+					"enabled":     true,
+					"server_name": "www.cloudflare.com",
+					"insecure":    true,
+				},
+			},
+		},
+	}
+
+	chains := []storage.ProxyChain{
+		{ID: "c1", Name: "socks-jp-hk", Nodes: []string{"jp-socks", "hk-socks"}, Enabled: true},
+		{ID: "c2", Name: "ss-jp-socks-hk", Nodes: []string{"jp-ss", "hk-socks"}, Enabled: true},
+		{ID: "c3", Name: "vless-jp-ss-hk", Nodes: []string{"jp-vless", "hk-ss"}, Enabled: true},
+	}
+
+	builder := NewConfigBuilder(settings, nodes, nil, nil, chains)
+	builder.SetDataDir(t.TempDir())
+
+	configJSON, err := builder.BuildJSON()
+	if err != nil {
+		t.Fatalf("BuildJSON() error = %v", err)
+	}
+	var config SingBoxConfig
+	if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
+		t.Fatalf("decode: %v\n%s", err, configJSON)
+	}
+
+	cases := []struct {
+		chainName string
+		entryTag  string
+		exitTag   string
+		exitType  string
+	}{
+		{"socks-jp-hk", "jp-socks", "hk-socks", "socks"},
+		{"ss-jp-socks-hk", "jp-ss", "hk-socks", "socks"},
+		{"vless-jp-ss-hk", "jp-vless", "hk-ss", "shadowsocks"},
+	}
+
+	for _, tc := range cases {
+		entryCopy := storage.GenerateChainNodeCopyTag(tc.chainName, tc.entryTag)
+		exitCopy := storage.GenerateChainNodeCopyTag(tc.chainName, tc.exitTag)
+		entry := outboundByTag(config.Outbounds, entryCopy)
+		exit := outboundByTag(config.Outbounds, exitCopy)
+		if entry == nil {
+			t.Fatalf("%s: missing entry copy %q in %#v", tc.chainName, entryCopy, outboundTags(config.Outbounds))
+		}
+		if exit == nil {
+			t.Fatalf("%s: missing exit copy %q", tc.chainName, exitCopy)
+		}
+		if _, hasDetour := entry["detour"]; hasDetour {
+			t.Fatalf("%s: entry %q must not have detour: %#v", tc.chainName, entryCopy, entry)
+		}
+		if exit["detour"] != entryCopy {
+			t.Fatalf("%s: exit detour = %v, want %q", tc.chainName, exit["detour"], entryCopy)
+		}
+		if exit["type"] != tc.exitType {
+			t.Fatalf("%s: exit type = %v, want %q", tc.chainName, exit["type"], tc.exitType)
+		}
+		selector := outboundByTag(config.Outbounds, tc.chainName)
+		if selector == nil {
+			t.Fatalf("%s: missing chain selector outbound", tc.chainName)
+		}
+		outs, _ := selector["outbounds"].([]interface{})
+		if len(outs) == 0 || outs[0] != exitCopy {
+			t.Fatalf("%s: selector outbounds = %#v, want first %q", tc.chainName, outs, exitCopy)
+		}
+	}
+
+	// SOCKS5 alias on entry must normalize inside chain copy
+	jpSocksCopy := outboundByTag(config.Outbounds, storage.GenerateChainNodeCopyTag("socks-jp-hk", "jp-socks"))
+	if jpSocksCopy["type"] != "socks" || jpSocksCopy["version"] != "5" {
+		t.Fatalf("socks5 alias not normalized in chain copy: %#v", jpSocksCopy)
+	}
+
+	singBoxPath := os.Getenv("SING_BOX_PATH")
+	if singBoxPath == "" {
+		if _, err := os.Stat("/workspace/sbm-test/bin/sing-box"); err == nil {
+			singBoxPath = "/workspace/sbm-test/bin/sing-box"
+		}
+	}
+	if singBoxPath == "" {
+		t.Log("SING_BOX_PATH unset; skip sing-box check")
+		return
+	}
+	configPath := filepath.Join(t.TempDir(), "chain-mix.json")
+	if err := os.WriteFile(configPath, []byte(configJSON), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	output, err := exec.Command(singBoxPath, "check", "-c", configPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("sing-box check failed: %v\n%s", err, output)
+	}
+}

@@ -113,13 +113,15 @@ const statusOptions = [
 
 // 协议类型选项
 const protocolOptions = [
-  { value: 'ss', label: 'Shadowsocks' },
+  { value: 'shadowsocks', label: 'Shadowsocks' },
   { value: 'vmess', label: 'VMess' },
   { value: 'vless', label: 'VLESS' },
   { value: 'trojan', label: 'Trojan' },
   { value: 'hysteria2', label: 'Hysteria2' },
   { value: 'tuic', label: 'TUIC' },
-  { value: 'ssr', label: 'ShadowsocksR' },
+  { value: 'socks', label: 'SOCKS' },
+  { value: 'shadowsocksr', label: 'ShadowsocksR' },
+  { value: 'anytls', label: 'AnyTLS' },
 ];
 
 // 常用国家代码选项
