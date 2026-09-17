@@ -164,6 +164,17 @@ const defaultNode: Node = {
 };
 
 const withNodeTypeDefaults = (node: Node): Node => {
+  if (node.type === 'socks') {
+    return {
+      ...node,
+      extra: {
+        ...node.extra,
+        // Manual SOCKS form historically omitted version; sing-box/mihomo expect "5" by default.
+        version: node.extra?.version || '5',
+      },
+    };
+  }
+
   if (node.type !== 'anytls') return node;
 
   return {
@@ -1343,6 +1354,18 @@ export default function Subscriptions() {
                     {/* SOCKS 参数 */}
                     {nodeForm.type === 'socks' && (
                       <div className="grid grid-cols-2 gap-4">
+                        <Select
+                          label="版本"
+                          selectedKeys={[nodeForm.extra?.version || '5']}
+                          onSelectionChange={(keys) => {
+                            const version = Array.from(keys)[0] as string;
+                            setNodeForm({ ...nodeForm, extra: { ...nodeForm.extra, version: version || '5' } });
+                          }}
+                        >
+                          <SelectItem key="5">SOCKS5</SelectItem>
+                          <SelectItem key="4">SOCKS4</SelectItem>
+                        </Select>
+                        <div />
                         <Input
                           label="用户名"
                           placeholder="可选"
