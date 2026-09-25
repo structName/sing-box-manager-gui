@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/structName/sing-box-manager-gui/internal/storage"
@@ -19,12 +20,12 @@ type ClashProxy struct {
 	Name              string                 `yaml:"name"`
 	Type              string                 `yaml:"type"`
 	Server            string                 `yaml:"server"`
-	Port              int                    `yaml:"port"`
+	Port              flexibleInt            `yaml:"port"`
 	Password          string                 `yaml:"password,omitempty"`
 	Username          string                 `yaml:"username,omitempty"` // SOCKS 用户名
 	UUID              string                 `yaml:"uuid,omitempty"`
 	Cipher            string                 `yaml:"cipher,omitempty"`
-	AlterId           int                    `yaml:"alterId,omitempty"`
+	AlterId           flexibleInt            `yaml:"alterId,omitempty"`
 	Network           string                 `yaml:"network,omitempty"`
 	TLS               bool                   `yaml:"tls,omitempty"`
 	SkipCertVerify    bool                   `yaml:"skip-cert-verify,omitempty"`
@@ -57,16 +58,16 @@ type ClashProxy struct {
 	SSRProtocolParam string `yaml:"protocol-param,omitempty"`
 	SSRObfsParam     string `yaml:"obfs-param,omitempty"`
 	// AnyTLS 特有
-	IdleSessionCheckInterval int `yaml:"idle-session-check-interval,omitempty"`
-	IdleSessionTimeout       int `yaml:"idle-session-timeout,omitempty"`
-	MinIdleSession           int `yaml:"min-idle-session,omitempty"`
+	IdleSessionCheckInterval flexibleInt `yaml:"idle-session-check-interval,omitempty"`
+	IdleSessionTimeout       flexibleInt `yaml:"idle-session-timeout,omitempty"`
+	MinIdleSession           flexibleInt `yaml:"min-idle-session,omitempty"`
 }
 
 // WSOpts WebSocket 选项
 type WSOpts struct {
 	Path                string            `yaml:"path,omitempty"`
 	Headers             map[string]string `yaml:"headers,omitempty"`
-	MaxEarlyData        int               `yaml:"max-early-data,omitempty"`
+	MaxEarlyData        flexibleInt       `yaml:"max-early-data,omitempty"`
 	EarlyDataHeaderName string            `yaml:"early-data-header-name,omitempty"`
 }
 
@@ -92,6 +93,38 @@ type GrpcOpts struct {
 type RealityOpts struct {
 	PublicKey string `yaml:"public-key,omitempty"`
 	ShortID   string `yaml:"short-id,omitempty"`
+}
+
+// flexibleInt accepts YAML integers or numeric strings (e.g. port: "443").
+// Subscriptions frequently quote ports/alterId; a plain int field would fail
+// Decode and silently drop the whole proxy.
+type flexibleInt int
+
+func (f *flexibleInt) UnmarshalYAML(value *yaml.Node) error {
+	if value == nil || value.Tag == "!!null" || (value.Kind == yaml.ScalarNode && strings.TrimSpace(value.Value) == "") {
+		*f = 0
+		return nil
+	}
+	var asInt int
+	if err := value.Decode(&asInt); err == nil {
+		*f = flexibleInt(asInt)
+		return nil
+	}
+	var asStr string
+	if err := value.Decode(&asStr); err != nil {
+		return fmt.Errorf("invalid integer value")
+	}
+	asStr = strings.TrimSpace(asStr)
+	if asStr == "" {
+		*f = 0
+		return nil
+	}
+	n, err := strconv.Atoi(asStr)
+	if err != nil {
+		return fmt.Errorf("invalid integer %q: %w", asStr, err)
+	}
+	*f = flexibleInt(n)
+	return nil
 }
 
 // ParseClashYAML 解析 Clash YAML 配置
@@ -139,7 +172,7 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 	case "vmess":
 		nodeType = "vmess"
 		extra["uuid"] = proxy.UUID
-		extra["alter_id"] = proxy.AlterId
+		extra["alter_id"] = int(proxy.AlterId)
 		extra["security"] = proxy.Cipher
 		if extra["security"] == "" {
 			extra["security"] = "auto"
@@ -262,13 +295,13 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 
 		// 空闲会话管理
 		if proxy.IdleSessionCheckInterval > 0 {
-			extra["idle_session_check_interval"] = secondsDurationString(proxy.IdleSessionCheckInterval)
+			extra["idle_session_check_interval"] = secondsDurationString(int(proxy.IdleSessionCheckInterval))
 		}
 		if proxy.IdleSessionTimeout > 0 {
-			extra["idle_session_timeout"] = secondsDurationString(proxy.IdleSessionTimeout)
+			extra["idle_session_timeout"] = secondsDurationString(int(proxy.IdleSessionTimeout))
 		}
 		if proxy.MinIdleSession > 0 {
-			extra["min_idle_session"] = proxy.MinIdleSession
+			extra["min_idle_session"] = int(proxy.MinIdleSession)
 		}
 
 	default:
@@ -296,7 +329,7 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 					transport["headers"] = proxy.WSOpts.Headers
 				}
 				if proxy.WSOpts.MaxEarlyData > 0 {
-					transport["max_early_data"] = proxy.WSOpts.MaxEarlyData
+					transport["max_early_data"] = int(proxy.WSOpts.MaxEarlyData)
 				}
 				if proxy.WSOpts.EarlyDataHeaderName != "" {
 					transport["early_data_header_name"] = proxy.WSOpts.EarlyDataHeaderName
@@ -408,7 +441,7 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 		Tag:          proxy.Name,
 		Type:         nodeType,
 		Server:       proxy.Server,
-		ServerPort:   proxy.Port,
+		ServerPort:   int(proxy.Port),
 		Extra:        extra,
 		Country:      country,
 		CountryEmoji: countryEmoji,
