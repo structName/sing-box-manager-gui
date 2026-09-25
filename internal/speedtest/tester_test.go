@@ -219,3 +219,134 @@ func TestNodeToMihomoProxySocksUDPOverTCP(t *testing.T) {
 		t.Fatalf("udp-over-tcp = %v, want true", proxy["udp-over-tcp"])
 	}
 }
+
+func TestNodeToMihomoProxyTrojanRealityOpts(t *testing.T) {
+	node := &models.Node{
+		Tag:        "trojan-reality",
+		Type:       "trojan",
+		Server:     "1.2.3.4",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"password": "secret",
+			"tls": map[string]interface{}{
+				"enabled":     true,
+				"server_name": "www.microsoft.com",
+				"alpn":        []string{"h2", "http/1.1"},
+				"reality": map[string]interface{}{
+					"enabled":    true,
+					"public_key": "abcdefghijklmnopqrstuvwxyz123456",
+					"short_id":   "0123456789abcdef",
+				},
+				"utls": map[string]interface{}{
+					"enabled":     true,
+					"fingerprint": "firefox",
+				},
+			},
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy trojan reality error: %v", err)
+	}
+	if proxy["type"] != "trojan" {
+		t.Fatalf("type = %v, want trojan", proxy["type"])
+	}
+	if proxy["tls"] != true {
+		t.Fatalf("tls = %v, want true", proxy["tls"])
+	}
+	if proxy["sni"] != "www.microsoft.com" {
+		t.Fatalf("sni = %v, want www.microsoft.com", proxy["sni"])
+	}
+	if proxy["client-fingerprint"] != "firefox" {
+		t.Fatalf("client-fingerprint = %v, want firefox", proxy["client-fingerprint"])
+	}
+	realityOpts, ok := proxy["reality-opts"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("reality-opts missing or wrong type: %#v", proxy["reality-opts"])
+	}
+	if realityOpts["public-key"] != "abcdefghijklmnopqrstuvwxyz123456" {
+		t.Fatalf("public-key = %v", realityOpts["public-key"])
+	}
+	if realityOpts["short-id"] != "0123456789abcdef" {
+		t.Fatalf("short-id = %v", realityOpts["short-id"])
+	}
+	alpn, ok := proxy["alpn"].([]string)
+	if !ok || len(alpn) != 2 || alpn[0] != "h2" || alpn[1] != "http/1.1" {
+		t.Fatalf("alpn = %#v, want [h2 http/1.1]", proxy["alpn"])
+	}
+}
+
+func TestNodeToMihomoProxyTrojanRealityDefaultsSNIAndFingerprint(t *testing.T) {
+	node := &models.Node{
+		Tag:        "trojan-reality-defaults",
+		Type:       "trojan",
+		Server:     "edge.example.com",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"password": "secret",
+			"tls": map[string]interface{}{
+				"enabled": true,
+				"reality": map[string]interface{}{
+					"enabled":    true,
+					"public_key": "pk",
+					"short_id":   "abcd",
+				},
+			},
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy: %v", err)
+	}
+	if proxy["sni"] != "edge.example.com" {
+		t.Fatalf("sni = %v, want edge.example.com (fallback to server)", proxy["sni"])
+	}
+	if proxy["client-fingerprint"] != "chrome" {
+		t.Fatalf("client-fingerprint = %v, want chrome default", proxy["client-fingerprint"])
+	}
+	realityOpts, ok := proxy["reality-opts"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("reality-opts missing: %#v", proxy["reality-opts"])
+	}
+	if realityOpts["public-key"] != "pk" || realityOpts["short-id"] != "abcd" {
+		t.Fatalf("reality-opts = %#v", realityOpts)
+	}
+}
+
+func TestNodeToMihomoProxyTrojanPlainTLSFingerprintAndAlpn(t *testing.T) {
+	node := &models.Node{
+		Tag:        "trojan-tls-fp",
+		Type:       "trojan",
+		Server:     "1.2.3.4",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"password": "secret",
+			"tls": map[string]interface{}{
+				"enabled":     true,
+				"server_name": "cdn.example.com",
+				"alpn":        []interface{}{"http/1.1"},
+				"utls": map[string]interface{}{
+					"enabled":     true,
+					"fingerprint": "chrome",
+				},
+			},
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy: %v", err)
+	}
+	if _, has := proxy["reality-opts"]; has {
+		t.Fatalf("unexpected reality-opts on plain TLS: %#v", proxy["reality-opts"])
+	}
+	if proxy["client-fingerprint"] != "chrome" {
+		t.Fatalf("client-fingerprint = %v, want chrome", proxy["client-fingerprint"])
+	}
+	alpn, ok := proxy["alpn"].([]string)
+	if !ok || len(alpn) != 1 || alpn[0] != "http/1.1" {
+		t.Fatalf("alpn = %#v, want [http/1.1]", proxy["alpn"])
+	}
+}
