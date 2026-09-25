@@ -219,3 +219,89 @@ func TestNodeToMihomoProxySocksUDPOverTCP(t *testing.T) {
 		t.Fatalf("udp-over-tcp = %v, want true", proxy["udp-over-tcp"])
 	}
 }
+
+func TestNodeToMihomoProxyTuicAcceptsTypedStringALPN(t *testing.T) {
+	node := &models.Node{
+		Tag:        "tuic-alpn-typed",
+		Type:       "tuic",
+		Server:     "tuic.example.com",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"uuid":     "11111111-1111-4111-8111-111111111111",
+			"password": "secret",
+			"tls": map[string]interface{}{
+				"server_name": "tuic.example.com",
+				"alpn":        []string{"h3", "h2"},
+			},
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy tuic typed alpn error: %v", err)
+	}
+	alpn, ok := proxy["alpn"].([]string)
+	if !ok {
+		t.Fatalf("alpn type = %T (%v), want []string", proxy["alpn"], proxy["alpn"])
+	}
+	if len(alpn) != 2 || alpn[0] != "h3" || alpn[1] != "h2" {
+		t.Fatalf("alpn = %#v, want [h3 h2]", alpn)
+	}
+}
+
+func TestNodeToMihomoProxyTuicAcceptsJSONInterfaceALPN(t *testing.T) {
+	node := &models.Node{
+		Tag:        "tuic-alpn-json",
+		Type:       "tuic",
+		Server:     "tuic.example.com",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"uuid":     "11111111-1111-4111-8111-111111111111",
+			"password": "secret",
+			"tls": map[string]interface{}{
+				"server_name": "tuic.example.com",
+				"alpn":        []interface{}{"h3", "", "h2"},
+			},
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy tuic json alpn error: %v", err)
+	}
+	alpn, ok := proxy["alpn"].([]string)
+	if !ok {
+		t.Fatalf("alpn type = %T (%v), want []string", proxy["alpn"], proxy["alpn"])
+	}
+	if len(alpn) != 2 || alpn[0] != "h3" || alpn[1] != "h2" {
+		t.Fatalf("alpn = %#v, want [h3 h2] (blank dropped)", alpn)
+	}
+}
+
+func TestNodeToMihomoProxyTuicMapsUTLSFingerprint(t *testing.T) {
+	node := &models.Node{
+		Tag:        "tuic-fp",
+		Type:       "tuic",
+		Server:     "tuic.example.com",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"uuid":     "11111111-1111-4111-8111-111111111111",
+			"password": "secret",
+			"tls": map[string]interface{}{
+				"server_name": "tuic.example.com",
+				"utls": map[string]interface{}{
+					"enabled":     true,
+					"fingerprint": "firefox",
+				},
+			},
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy tuic fingerprint error: %v", err)
+	}
+	if got := proxy["client-fingerprint"]; got != "firefox" {
+		t.Fatalf("client-fingerprint = %v, want firefox", got)
+	}
+}
