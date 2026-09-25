@@ -333,10 +333,14 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 				proxy["skip-cert-verify"] = insecure
 			}
 		}
-		// Transport
+		// Transport (HTTP/H2 opts via shared helper; WS/gRPC left to #104)
 		if transport, ok := extra["transport"].(map[string]interface{}); ok {
 			if tType, ok := transport["type"].(string); ok {
 				proxy["network"] = tType
+				switch tType {
+				case "http", "h2":
+					applyHTTPOrH2TransportToMihomo(proxy, transport, tType)
+				}
 			}
 		}
 
@@ -542,8 +546,9 @@ func numberAsInt(raw interface{}) (int, bool) {
 
 
 // applyHTTPOrH2TransportToMihomo maps sing-box transport.type=http|h2 fields into
-// mihomo http-opts / h2-opts. Without this, health/speed tests set network=http|h2
-// but dial with empty path/host and fail against HTTP-obfuscated or H2 nodes.
+// mihomo http-opts / h2-opts for VMess, VLESS, and Trojan. Without this, health/speed
+// tests set network=http|h2 but dial with empty path/host and fail against
+// HTTP-obfuscated or H2 nodes.
 func applyHTTPOrH2TransportToMihomo(proxy map[string]interface{}, transport map[string]interface{}, tType string) {
 	switch tType {
 	case "http":
