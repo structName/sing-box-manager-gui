@@ -219,3 +219,120 @@ func TestNodeToMihomoProxySocksUDPOverTCP(t *testing.T) {
 		t.Fatalf("udp-over-tcp = %v, want true", proxy["udp-over-tcp"])
 	}
 }
+
+func TestNodeToMihomoProxyVmessTLSAlpnAndFingerprint(t *testing.T) {
+	node := &models.Node{
+		Tag:        "vmess-tls-alpn",
+		Type:       "vmess",
+		Server:     "vmess.example.com",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"uuid":     "11111111-1111-1111-1111-111111111111",
+			"alter_id": 0,
+			"security": "auto",
+			"tls": map[string]interface{}{
+				"enabled":     true,
+				"server_name": "cdn.example.com",
+				"insecure":    true,
+				"alpn":        []string{"h2", "http/1.1"},
+				"utls": map[string]interface{}{
+					"enabled":     true,
+					"fingerprint": "firefox",
+				},
+			},
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy returned error: %v", err)
+	}
+
+	if got := proxy["tls"]; got != true {
+		t.Fatalf("tls = %v, want true", got)
+	}
+	if got := proxy["servername"]; got != "cdn.example.com" {
+		t.Fatalf("servername = %v, want cdn.example.com", got)
+	}
+	if got := proxy["skip-cert-verify"]; got != true {
+		t.Fatalf("skip-cert-verify = %v, want true", got)
+	}
+	alpn, ok := proxy["alpn"].([]string)
+	if !ok {
+		t.Fatalf("alpn type = %T, want []string", proxy["alpn"])
+	}
+	if len(alpn) != 2 || alpn[0] != "h2" || alpn[1] != "http/1.1" {
+		t.Fatalf("alpn = %#v, want [h2 http/1.1]", alpn)
+	}
+	if got := proxy["client-fingerprint"]; got != "firefox" {
+		t.Fatalf("client-fingerprint = %v, want firefox", got)
+	}
+}
+
+func TestNodeToMihomoProxyVlessTLSAlpnInterfaceSlice(t *testing.T) {
+	node := &models.Node{
+		Tag:        "vless-tls-alpn",
+		Type:       "vless",
+		Server:     "vless.example.com",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"uuid": "22222222-2222-2222-2222-222222222222",
+			"tls": map[string]interface{}{
+				"enabled":     true,
+				"server_name": "cdn.example.com",
+				// JSON round-trip shape from SQLite / JSONStore
+				"alpn": []interface{}{"h2", "http/1.1"},
+				"utls": map[string]interface{}{
+					"enabled":     true,
+					"fingerprint": "chrome",
+				},
+			},
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy returned error: %v", err)
+	}
+
+	if got := proxy["tls"]; got != true {
+		t.Fatalf("tls = %v, want true", got)
+	}
+	alpn, ok := proxy["alpn"].([]string)
+	if !ok {
+		t.Fatalf("alpn type = %T, want []string", proxy["alpn"])
+	}
+	if len(alpn) != 2 || alpn[0] != "h2" || alpn[1] != "http/1.1" {
+		t.Fatalf("alpn = %#v, want [h2 http/1.1]", alpn)
+	}
+	if got := proxy["client-fingerprint"]; got != "chrome" {
+		t.Fatalf("client-fingerprint = %v, want chrome", got)
+	}
+}
+
+func TestNodeToMihomoProxyVmessOmitsAlpnWhenUnset(t *testing.T) {
+	node := &models.Node{
+		Tag:        "vmess-tls-plain",
+		Type:       "vmess",
+		Server:     "vmess.example.com",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"uuid": "33333333-3333-3333-3333-333333333333",
+			"tls": map[string]interface{}{
+				"enabled":     true,
+				"server_name": "vmess.example.com",
+			},
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy returned error: %v", err)
+	}
+	if _, ok := proxy["alpn"]; ok {
+		t.Fatalf("alpn should be omitted when unset, got %#v", proxy["alpn"])
+	}
+	if _, ok := proxy["client-fingerprint"]; ok {
+		t.Fatalf("client-fingerprint should be omitted when unset, got %#v", proxy["client-fingerprint"])
+	}
+}
