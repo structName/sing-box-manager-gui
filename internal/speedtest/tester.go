@@ -392,6 +392,18 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 		if congestion, ok := extra["congestion_control"].(string); ok {
 			proxy["congestion-controller"] = congestion
 		}
+		// UDP relay / 0-RTT / heartbeat — previously dropped so health & speed
+		// checks dialed TUIC with mihomo defaults (native relay, no reduce-rtt)
+		// and mismatched keepalives vs the real node.
+		if mode, ok := extra["udp_relay_mode"].(string); ok && mode != "" {
+			proxy["udp-relay-mode"] = mode
+		}
+		if zeroRTT, ok := extra["zero_rtt_handshake"].(bool); ok && zeroRTT {
+			proxy["reduce-rtt"] = true
+		}
+		if ms, ok := tuicHeartbeatIntervalMs(extra["heartbeat"]); ok {
+			proxy["heartbeat-interval"] = ms
+		}
 
 	case "shadowsocksr", "ssr":
 		proxy["type"] = "ssr"
@@ -502,6 +514,52 @@ func anyTLSDurationSeconds(raw interface{}) (int, bool) {
 		return int(duration / time.Second), true
 	default:
 		return numberAsInt(raw)
+	}
+}
+
+
+// tuicHeartbeatIntervalMs converts sing-box / share-link heartbeat values to
+// mihomo heartbeat-interval milliseconds.
+//   - "10s" / "5000ms" → ParseDuration / ms suffix
+//   - bare "15" → 15 seconds
+//   - numeric < 1000 → seconds; >= 1000 → already milliseconds
+func tuicHeartbeatIntervalMs(raw interface{}) (int, bool) {
+	switch value := raw.(type) {
+	case nil:
+		return 0, false
+	case string:
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return 0, false
+		}
+		if strings.HasSuffix(strings.ToLower(value), "ms") {
+			n, err := strconv.Atoi(strings.TrimSpace(value[:len(value)-2]))
+			if err != nil || n <= 0 {
+				return 0, false
+			}
+			return n, true
+		}
+		if seconds, err := strconv.Atoi(value); err == nil {
+			if seconds <= 0 {
+				return 0, false
+			}
+			return seconds * 1000, true
+		}
+		duration, err := time.ParseDuration(value)
+		if err != nil || duration <= 0 {
+			return 0, false
+		}
+		return int(duration / time.Millisecond), true
+	default:
+		n, ok := numberAsInt(raw)
+		if !ok || n <= 0 {
+			return 0, false
+		}
+		// JSON numbers: treat small values as seconds, large as already-ms.
+		if n < 1000 {
+			return n * 1000, true
+		}
+		return n, true
 	}
 }
 

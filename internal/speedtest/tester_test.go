@@ -219,3 +219,73 @@ func TestNodeToMihomoProxySocksUDPOverTCP(t *testing.T) {
 		t.Fatalf("udp-over-tcp = %v, want true", proxy["udp-over-tcp"])
 	}
 }
+
+func TestNodeToMihomoProxyTuicRelayOpts(t *testing.T) {
+	node := &models.Node{
+		Tag:        "tuic-01",
+		Type:       "tuic",
+		Server:     "1.2.3.4",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"uuid":                 "11111111-2222-3333-4444-555555555555",
+			"password":             "secret",
+			"congestion_control":   "bbr",
+			"udp_relay_mode":       "quic",
+			"zero_rtt_handshake":   true,
+			"heartbeat":            "10s",
+			"tls": map[string]interface{}{
+				"enabled":     true,
+				"server_name": "tuic.example.com",
+				"insecure":    true,
+			},
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy tuic error: %v", err)
+	}
+	if proxy["type"] != "tuic" {
+		t.Fatalf("type = %v, want tuic", proxy["type"])
+	}
+	if proxy["udp-relay-mode"] != "quic" {
+		t.Fatalf("udp-relay-mode = %v, want quic", proxy["udp-relay-mode"])
+	}
+	if proxy["reduce-rtt"] != true {
+		t.Fatalf("reduce-rtt = %v, want true", proxy["reduce-rtt"])
+	}
+	if proxy["heartbeat-interval"] != 10000 {
+		t.Fatalf("heartbeat-interval = %v, want 10000", proxy["heartbeat-interval"])
+	}
+	if proxy["congestion-controller"] != "bbr" {
+		t.Fatalf("congestion-controller = %v, want bbr", proxy["congestion-controller"])
+	}
+	if proxy["sni"] != "tuic.example.com" {
+		t.Fatalf("sni = %v, want tuic.example.com", proxy["sni"])
+	}
+}
+
+func TestTuicHeartbeatIntervalMs(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  interface{}
+		want int
+		ok   bool
+	}{
+		{"duration string", "10s", 10000, true},
+		{"ms suffix", "5000ms", 5000, true},
+		{"bare seconds string", "15", 15000, true},
+		{"small int seconds", 10, 10000, true},
+		{"large int already ms", 10000, 10000, true},
+		{"empty", "", 0, false},
+		{"nil", nil, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := tuicHeartbeatIntervalMs(tc.raw)
+			if ok != tc.ok || got != tc.want {
+				t.Fatalf("tuicHeartbeatIntervalMs(%v) = (%d, %v), want (%d, %v)", tc.raw, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
