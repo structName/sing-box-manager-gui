@@ -50,22 +50,18 @@ build_frontend() {
 
     cd web
 
-    # 检查 npm/pnpm
-    if command -v pnpm &> /dev/null; then
-        PKG_MGR="pnpm"
-    elif command -v npm &> /dev/null; then
-        PKG_MGR="npm"
-    else
-        error "需要安装 npm 或 pnpm"
+    # 前端以 pnpm 为准（web/pnpm-lock.yaml）；勿用 npm 以免再生 package-lock.json
+    if ! command -v pnpm &> /dev/null; then
+        error "需要安装 pnpm（见 https://pnpm.io/installation）"
     fi
 
     if [ ! -d "node_modules" ]; then
-        info "安装前端依赖 (使用 $PKG_MGR)..."
-        $PKG_MGR install
+        info "安装前端依赖 (使用 pnpm)..."
+        pnpm install --frozen-lockfile
     fi
 
     info "编译前端代码..."
-    $PKG_MGR run build
+    pnpm run build
     cd ..
 
     info "前端构建完成"
