@@ -71,6 +71,14 @@ func (p *TrojanParser) Parse(rawURL string) (*storage.Node, error) {
 					"Host": host,
 				}
 			}
+		case "http", "h2":
+			// Match VLESS: HTTP/H2 transports need path + host (not Host header).
+			if path := params.Get("path"); path != "" {
+				transport["path"] = path
+			}
+			if host := params.Get("host"); host != "" {
+				transport["host"] = strings.Split(host, ",")
+			}
 		case "grpc":
 			if serviceName := params.Get("serviceName"); serviceName != "" {
 				transport["service_name"] = serviceName
