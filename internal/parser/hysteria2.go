@@ -82,6 +82,14 @@ func (p *Hysteria2Parser) Parse(rawURL string) (*storage.Node, error) {
 		tls["alpn"] = strings.Split(alpn, ",")
 	}
 
+	// uTLS fingerprint (fp= / fingerprint= via shared helper owned by PR #135)
+	if fp := shareLinkUTLSFingerprint(params, false); fp != "" {
+		tls["utls"] = map[string]interface{}{
+			"enabled":     true,
+			"fingerprint": fp,
+		}
+	}
+
 	extra["tls"] = tls
 
 	// 混淆配置

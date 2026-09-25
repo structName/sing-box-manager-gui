@@ -219,3 +219,87 @@ func TestNodeToMihomoProxySocksUDPOverTCP(t *testing.T) {
 		t.Fatalf("udp-over-tcp = %v, want true", proxy["udp-over-tcp"])
 	}
 }
+
+func TestNodeToMihomoProxyHysteria2MapsAlpnAndFingerprint(t *testing.T) {
+	node := &models.Node{
+		Tag:        "hy2-01",
+		Type:       "hysteria2",
+		Server:     "example.com",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"password": "secret",
+			"tls": map[string]interface{}{
+				"server_name": "example.com",
+				"insecure":    true,
+				"alpn":        []interface{}{"h3", "h3-29"},
+				"utls": map[string]interface{}{
+					"enabled":     true,
+					"fingerprint": "chrome",
+				},
+			},
+			"obfs": map[string]interface{}{
+				"type":     "salamander",
+				"password": "obfs-secret",
+			},
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy returned error: %v", err)
+	}
+	if got := proxy["type"]; got != "hysteria2" {
+		t.Fatalf("type = %v, want hysteria2", got)
+	}
+	if got := proxy["sni"]; got != "example.com" {
+		t.Fatalf("sni = %v, want example.com", got)
+	}
+	if got := proxy["skip-cert-verify"]; got != true {
+		t.Fatalf("skip-cert-verify = %v, want true", got)
+	}
+	alpn, ok := proxy["alpn"].([]string)
+	if !ok {
+		t.Fatalf("alpn type = %T, want []string", proxy["alpn"])
+	}
+	if len(alpn) != 2 || alpn[0] != "h3" || alpn[1] != "h3-29" {
+		t.Fatalf("alpn = %#v, want [h3 h3-29]", alpn)
+	}
+	if got := proxy["client-fingerprint"]; got != "chrome" {
+		t.Fatalf("client-fingerprint = %v, want chrome", got)
+	}
+	if got := proxy["obfs"]; got != "salamander" {
+		t.Fatalf("obfs = %v, want salamander", got)
+	}
+	if got := proxy["obfs-password"]; got != "obfs-secret" {
+		t.Fatalf("obfs-password = %v, want obfs-secret", got)
+	}
+}
+
+func TestNodeToMihomoProxyHysteria2AlpnStringSlice(t *testing.T) {
+	node := &models.Node{
+		Tag:        "hy2-02",
+		Type:       "hy2",
+		Server:     "example.com",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"password": "secret",
+			"tls": map[string]interface{}{
+				"alpn": []string{"h3"},
+				"utls": map[string]interface{}{
+					"fingerprint": "safari",
+				},
+			},
+		},
+	}
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy returned error: %v", err)
+	}
+	alpn, ok := proxy["alpn"].([]string)
+	if !ok || len(alpn) != 1 || alpn[0] != "h3" {
+		t.Fatalf("alpn = %#v, want [h3]", proxy["alpn"])
+	}
+	if got := proxy["client-fingerprint"]; got != "safari" {
+		t.Fatalf("client-fingerprint = %v, want safari", got)
+	}
+}
