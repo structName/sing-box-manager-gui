@@ -52,6 +52,7 @@ type ClashProxy struct {
 	CongestionController string `yaml:"congestion-controller,omitempty"`
 	UDPRelayMode         string `yaml:"udp-relay-mode,omitempty"`
 	ReduceRTT            bool   `yaml:"reduce-rtt,omitempty"`
+	DisableSNI           bool   `yaml:"disable-sni,omitempty"` // Clash Meta TUIC / TLS
 	// SSR 特有 (obfs 字段复用 Hysteria2 的 Obfs)
 	SSRProtocol      string `yaml:"protocol,omitempty"`
 	SSRProtocolParam string `yaml:"protocol-param,omitempty"`
@@ -242,6 +243,9 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 		if proxy.SkipCertVerify {
 			tls["insecure"] = true
 		}
+		if proxy.DisableSNI {
+			tls["disable_sni"] = true
+		}
 		if len(proxy.ALPN) > 0 {
 			tls["alpn"] = proxy.ALPN
 		}
@@ -350,6 +354,9 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 
 		if proxy.SkipCertVerify {
 			tls["insecure"] = true
+		}
+		if proxy.DisableSNI {
+			tls["disable_sni"] = true
 		}
 
 		if len(proxy.ALPN) > 0 {
