@@ -3389,7 +3389,7 @@ func (s *Server) updateProxyChain(c *gin.Context) {
 	// 检测级联操作
 	var cascadeMessages []string
 
-	// 改名：更新关联入站端口的 Outbound 引用
+	// 改名：更新关联入站端口的 Outbound 引用，以及漏网 FinalOutbound
 	if oldChain.Name != chain.Name {
 		renamed, err := s.updateInboundPortsOutbound(oldChain.Name, chain.Name)
 		if err != nil {
@@ -3399,9 +3399,17 @@ func (s *Server) updateProxyChain(c *gin.Context) {
 		if len(renamed) > 0 {
 			cascadeMessages = append(cascadeMessages, fmt.Sprintf("已更新 %d 个关联入站端口", len(renamed)))
 		}
+		retargeted, err := s.retargetFinalOutbound(oldChain.Name, chain.Name)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if retargeted {
+			cascadeMessages = append(cascadeMessages, fmt.Sprintf("已更新漏网出站: %s → %s", oldChain.Name, chain.Name))
+		}
 	}
 
-	// 停用：停用关联入站端口
+	// 停用：停用关联入站端口，并重置指向该链路的漏网 FinalOutbound
 	if oldChain.Enabled && !chain.Enabled {
 		// Tor 绑定按 chain.ID（与名称无关）；Outbound 引用已在改名分支切到新名
 		disabled, err := s.disableInboundPortsReferencingChain(chain)
@@ -3411,6 +3419,14 @@ func (s *Server) updateProxyChain(c *gin.Context) {
 		}
 		if len(disabled) > 0 {
 			cascadeMessages = append(cascadeMessages, fmt.Sprintf("已停用 %d 个关联入站端口", len(disabled)))
+		}
+		reset, err := s.resetFinalOutboundIf(outboundName)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if reset {
+			cascadeMessages = append(cascadeMessages, "已重置漏网出站为 Proxy")
 		}
 	}
 
@@ -3450,6 +3466,12 @@ func (s *Server) deleteProxyChain(c *gin.Context) {
 		return
 	}
 
+	finalReset, err := s.resetFinalOutboundIf(chain.Name)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
 	if err := s.store.DeleteProxyChain(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -3462,8 +3484,15 @@ func (s *Server) deleteProxyChain(c *gin.Context) {
 	}
 
 	message := "删除成功"
+	var cascadeParts []string
 	if len(disabledPorts) > 0 {
-		message = fmt.Sprintf("删除成功，已停用 %d 个关联入站", len(disabledPorts))
+		cascadeParts = append(cascadeParts, fmt.Sprintf("已停用 %d 个关联入站", len(disabledPorts)))
+	}
+	if finalReset {
+		cascadeParts = append(cascadeParts, "已重置漏网出站为 Proxy")
+	}
+	if len(cascadeParts) > 0 {
+		message = "删除成功，" + strings.Join(cascadeParts, "，")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": message})
@@ -3589,6 +3618,25 @@ func (s *Server) clearDeletedChainTorRefs(chainID string) error {
 		}
 	}
 	return nil
+}
+
+func (s *Server) retargetFinalOutbound(oldOutbound, newOutbound string) (bool, error) {
+	settings := s.store.GetSettings()
+	if settings == nil {
+		return false, nil
+	}
+	if strings.TrimSpace(settings.FinalOutbound) != oldOutbound {
+		return false, nil
+	}
+	settings.FinalOutbound = newOutbound
+	if err := s.store.UpdateSettings(settings); err != nil {
+		return false, fmt.Errorf("更新漏网出站引用失败: %w", err)
+	}
+	return true, nil
+}
+
+func (s *Server) resetFinalOutboundIf(outbound string) (bool, error) {
+	return s.retargetFinalOutbound(outbound, "Proxy")
 }
 
 func (s *Server) validateProxyChainForSave(chain storage.ProxyChain) error {
