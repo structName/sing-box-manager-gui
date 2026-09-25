@@ -329,10 +329,41 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 				proxy["skip-cert-verify"] = insecure
 			}
 		}
-		// Transport
+		// Transport — previously only set network, dropping path/host/service_name
+		// so Trojan-WS / Trojan-gRPC health & speed tests hit the wrong endpoint.
 		if transport, ok := extra["transport"].(map[string]interface{}); ok {
 			if tType, ok := transport["type"].(string); ok {
 				proxy["network"] = tType
+				switch tType {
+				case "ws":
+					wsOpts := map[string]interface{}{}
+					if path, ok := transport["path"].(string); ok {
+						wsOpts["path"] = path
+					}
+					if headers, ok := transport["headers"].(map[string]interface{}); ok {
+						wsOpts["headers"] = headers
+					} else if headers, ok := transport["headers"].(map[string]string); ok {
+						// URL parsers store Host as map[string]string
+						wsOpts["headers"] = headers
+					}
+					if v, ok := transport["max_early_data"]; ok {
+						wsOpts["max-early-data"] = v
+					}
+					if v, ok := transport["early_data_header_name"].(string); ok && v != "" {
+						wsOpts["early-data-header-name"] = v
+					}
+					if len(wsOpts) > 0 {
+						proxy["ws-opts"] = wsOpts
+					}
+				case "grpc":
+					grpcOpts := map[string]interface{}{}
+					if serviceName, ok := transport["service_name"].(string); ok {
+						grpcOpts["grpc-service-name"] = serviceName
+					}
+					if len(grpcOpts) > 0 {
+						proxy["grpc-opts"] = grpcOpts
+					}
+				}
 			}
 		}
 
