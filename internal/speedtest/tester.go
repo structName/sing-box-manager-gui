@@ -379,6 +379,10 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 			if insecure, ok := tls["insecure"].(bool); ok {
 				proxy["skip-cert-verify"] = insecure
 			}
+			if disableSNI, ok := tls["disable_sni"].(bool); ok && disableSNI {
+				// mihomo TUIC: omit SNI from ClientHello (share-link / Clash disable-sni)
+				proxy["disable-sni"] = true
+			}
 			if alpn, ok := tls["alpn"].([]interface{}); ok {
 				alpnStrs := make([]string, len(alpn))
 				for i, a := range alpn {
