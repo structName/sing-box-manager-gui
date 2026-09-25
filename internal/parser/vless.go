@@ -54,6 +54,8 @@ func (p *VlessParser) Parse(rawURL string) (*storage.Node, error) {
 	}
 
 	// 传输层配置
+	// V2Ray share links encode HTTP header obfuscation as type=tcp&headerType=http
+	// (distinct from type=http transport). That must become sing-box transport.type=http.
 	transportType := getParamString(params, "type", "tcp")
 	if transportType != "tcp" {
 		transport := map[string]interface{}{
@@ -90,6 +92,8 @@ func (p *VlessParser) Parse(rawURL string) (*storage.Node, error) {
 			}
 		}
 
+		extra["transport"] = transport
+	} else if transport := tcpHTTPObfuscationTransport(params); transport != nil {
 		extra["transport"] = transport
 	}
 

@@ -195,6 +195,28 @@ func parseURLParams(rawURL string) (addressPart string, params url.Values, name 
 	return addressPart, params, name, nil
 }
 
+// tcpHTTPObfuscationTransport builds sing-box HTTP transport for V2Ray-style
+// TCP header obfuscation (type=tcp&headerType=http). Returns nil when not used.
+func tcpHTTPObfuscationTransport(params url.Values) map[string]interface{} {
+	headerType := params.Get("headerType")
+	if headerType == "" {
+		headerType = params.Get("header_type")
+	}
+	if !strings.EqualFold(headerType, "http") {
+		return nil
+	}
+	transport := map[string]interface{}{
+		"type": "http",
+	}
+	if path := params.Get("path"); path != "" {
+		transport["path"] = path
+	}
+	if host := params.Get("host"); host != "" {
+		transport["host"] = strings.Split(host, ",")
+	}
+	return transport
+}
+
 // getParamString 获取字符串参数
 func getParamString(params url.Values, key string, defaultValue string) string {
 	if v := params.Get(key); v != "" {
