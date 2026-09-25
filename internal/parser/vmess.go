@@ -112,6 +112,7 @@ func (p *VmessParser) Parse(rawURL string) (*storage.Node, error) {
 	if network == "" {
 		network = "tcp"
 	}
+	network = normalizeTransportNetwork(network)
 
 	// 构建传输配置
 	if network != "tcp" || config.Type == "http" {

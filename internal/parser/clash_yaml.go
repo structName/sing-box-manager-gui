@@ -280,6 +280,7 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 	if network == "" {
 		network = "tcp"
 	}
+	network = normalizeTransportNetwork(network)
 
 	if network != "tcp" || proxy.WSOpts != nil || proxy.H2Opts != nil || proxy.GrpcOpts != nil {
 		transport := map[string]interface{}{
