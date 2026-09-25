@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -85,6 +86,9 @@ type Server struct {
 	deployServiceRunning *bool
 	// Test hook for Tor detection candidates. Nil means use platform defaults.
 	torDetectionPaths []string
+	// applyMu serializes rebuild+save+restart so concurrent autoApply / apply / start / restart
+	// cannot interleave config writes or double-restart.
+	applyMu sync.Mutex
 }
 
 const maxLocalSubscriptionBytes = 10 << 20
@@ -1460,6 +1464,9 @@ func (s *Server) previewConfig(c *gin.Context) {
 }
 
 func (s *Server) applyConfig(c *gin.Context) {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+
 	configJSON, err := s.buildConfig()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1491,6 +1498,12 @@ func (s *Server) applyConfig(c *gin.Context) {
 }
 
 func (s *Server) buildAndSaveCurrentConfig() error {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+	return s.buildAndSaveCurrentConfigLocked()
+}
+
+func (s *Server) buildAndSaveCurrentConfigLocked() error {
 	settings := s.store.GetSettings()
 
 	configJSON, err := s.buildConfig()
@@ -1551,7 +1564,41 @@ func (s *Server) saveConfigFile(path, content string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(content), 0644)
+
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp.*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	if _, err := tmp.Write([]byte(content)); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	if err := os.Rename(tmpName, path); err != nil {
+		// Windows cannot rename over an existing file; remove then retry.
+		_ = os.Remove(path)
+		if err2 := os.Rename(tmpName, path); err2 != nil {
+			return err
+		}
+	}
+	cleanup = false
+	return nil
 }
 
 // exportConfig 导出 sing-box 配置文件（下载）
@@ -1876,12 +1923,15 @@ func (s *Server) resolvePath(path string) string {
 
 // autoApplyConfig 自动应用配置（如果 sing-box 正在运行）
 func (s *Server) autoApplyConfig() error {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+
 	settings := s.store.GetSettings()
 	if !settings.AutoApply {
 		return nil
 	}
 
-	if err := s.buildAndSaveCurrentConfig(); err != nil {
+	if err := s.buildAndSaveCurrentConfigLocked(); err != nil {
 		return err
 	}
 
@@ -1915,7 +1965,10 @@ func (s *Server) getServiceStatus(c *gin.Context) {
 }
 
 func (s *Server) startService(c *gin.Context) {
-	if err := s.buildAndSaveCurrentConfig(); err != nil {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+
+	if err := s.buildAndSaveCurrentConfigLocked(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -1936,7 +1989,10 @@ func (s *Server) stopService(c *gin.Context) {
 }
 
 func (s *Server) restartService(c *gin.Context) {
-	if err := rebuildConfigAndRestart(s.buildAndSaveCurrentConfig, s.processManager.Restart); err != nil {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+
+	if err := rebuildConfigAndRestart(s.buildAndSaveCurrentConfigLocked, s.processManager.Restart); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -2050,7 +2106,10 @@ func (s *Server) restartLaunchd(c *gin.Context) {
 		return
 	}
 
-	if err := rebuildConfigAndRestart(s.buildAndSaveCurrentConfig, s.launchdManager.Restart); err != nil {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+
+	if err := rebuildConfigAndRestart(s.buildAndSaveCurrentConfigLocked, s.launchdManager.Restart); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -2157,7 +2216,10 @@ func (s *Server) restartSystemd(c *gin.Context) {
 		return
 	}
 
-	if err := rebuildConfigAndRestart(s.buildAndSaveCurrentConfig, s.systemdManager.Restart); err != nil {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+
+	if err := rebuildConfigAndRestart(s.buildAndSaveCurrentConfigLocked, s.systemdManager.Restart); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -2329,7 +2391,10 @@ func (s *Server) restartDaemon(c *gin.Context) {
 		return
 	}
 
-	if err := rebuildConfigAndRestart(s.buildAndSaveCurrentConfig, restart); err != nil {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+
+	if err := rebuildConfigAndRestart(s.buildAndSaveCurrentConfigLocked, restart); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -3215,6 +3280,16 @@ func (s *Server) disableInboundPortsForOutbound(outbound string) ([]storage.Inbo
 }
 
 func (s *Server) validateProxyChainForSave(chain storage.ProxyChain) error {
+	name := strings.TrimSpace(chain.Name)
+	if name == "" {
+		return fmt.Errorf("代理链路名称不能为空")
+	}
+	for _, existing := range s.store.GetProxyChains() {
+		if existing.ID != chain.ID && strings.TrimSpace(existing.Name) == name {
+			return fmt.Errorf("代理链路名称已存在: %s", name)
+		}
+	}
+
 	torCount := 0
 	hasAuto := false
 	for index, nodeTag := range chain.Nodes {
@@ -3264,10 +3339,10 @@ func (s *Server) generateChainNodes(chainName string, nodeTags []string) []stora
 	}
 
 	result := make([]storage.ChainNode, 0, len(nodeTags))
-	for _, tag := range nodeTags {
+	for hopIndex, tag := range nodeTags {
 		node, exists := nodeMap[tag]
 		source := ""
-		copyTag := storage.GenerateChainNodeCopyTag(chainName, tag)
+		copyTag := storage.GenerateChainNodeCopyTag(chainName, tag, hopIndex)
 		if storage.IsChainAutoNodeTag(tag) {
 			source = storage.ChainAutoNodeSource
 			copyTag = storage.ChainAutoDisplayName
