@@ -130,13 +130,13 @@ func (p *VlessParser) Parse(rawURL string) (*storage.Node, error) {
 			}
 			tls["reality"] = reality
 
-			// uTLS fingerprint
-			fp := getParamString(params, "fp", "chrome")
+			// uTLS fingerprint (fp= or fingerprint=)
+			fp := shareLinkUTLSFingerprint(params, true)
 			tls["utls"] = map[string]interface{}{
 				"enabled":     true,
 				"fingerprint": fp,
 			}
-		} else if fp := params.Get("fp"); fp != "" {
+		} else if fp := shareLinkUTLSFingerprint(params, false); fp != "" {
 			// 普通 TLS 的 uTLS
 			tls["utls"] = map[string]interface{}{
 				"enabled":     true,
