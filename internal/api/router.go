@@ -1340,7 +1340,7 @@ func (s *Server) updateFilter(c *gin.Context) {
 
 	var cascadeMessages []string
 
-	// 改名：过滤器 Name 即 outbound tag，入站可直接绑定 → 级联改写出站引用
+	// 改名：过滤器 Name 同时是入站 Outbound 和漏网 FinalOutbound 的引用。
 	if oldFilter.Name != filter.Name {
 		renamed, err := s.updateInboundPortsOutbound(oldFilter.Name, filter.Name)
 		if err != nil {
@@ -1350,10 +1350,18 @@ func (s *Server) updateFilter(c *gin.Context) {
 		if len(renamed) > 0 {
 			cascadeMessages = append(cascadeMessages, fmt.Sprintf("已更新 %d 个关联入站端口", len(renamed)))
 		}
+		retargeted, err := s.retargetFinalOutbound(oldFilter.Name, filter.Name)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if retargeted {
+			cascadeMessages = append(cascadeMessages, fmt.Sprintf("已更新漏网出站: %s → %s", oldFilter.Name, filter.Name))
+		}
 	}
 
-	// 停用：builder 不再发出该分组 → 停用仍指向该 Name 的入站，避免幽灵路由
-	// （若同时改名，上一步已把入站 Outbound 改到新 Name）
+	// 停用：builder 不再发出该分组。入站停用，漏网出站重置。
+	// 若同时改名，上一步已把引用改到新 Name。
 	if oldFilter.Enabled && !filter.Enabled {
 		disabled, err := s.disableInboundPortsForOutbound(filter.Name)
 		if err != nil {
@@ -1362,6 +1370,14 @@ func (s *Server) updateFilter(c *gin.Context) {
 		}
 		if len(disabled) > 0 {
 			cascadeMessages = append(cascadeMessages, fmt.Sprintf("已停用 %d 个关联入站端口", len(disabled)))
+		}
+		reset, err := s.resetFinalOutboundIf(filter.Name)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if reset {
+			cascadeMessages = append(cascadeMessages, "已重置漏网出站为 Proxy")
 		}
 	}
 
@@ -1397,6 +1413,11 @@ func (s *Server) deleteFilter(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	finalReset, err := s.resetFinalOutboundIf(filter.Name)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
 	if err := s.store.DeleteFilter(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1410,8 +1431,15 @@ func (s *Server) deleteFilter(c *gin.Context) {
 	}
 
 	message := "删除成功"
+	var deleteNotes []string
 	if len(disabledPorts) > 0 {
-		message = fmt.Sprintf("删除成功，已停用 %d 个关联入站", len(disabledPorts))
+		deleteNotes = append(deleteNotes, fmt.Sprintf("已停用 %d 个关联入站", len(disabledPorts)))
+	}
+	if finalReset {
+		deleteNotes = append(deleteNotes, "已重置漏网出站为 Proxy")
+	}
+	if len(deleteNotes) > 0 {
+		message = "删除成功，" + strings.Join(deleteNotes, "，")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": message})
