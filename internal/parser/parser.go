@@ -222,3 +222,21 @@ func getParamInt(params url.Values, key string, defaultValue int) int {
 func secondsDurationString(seconds int) string {
 	return fmt.Sprintf("%ds", seconds)
 }
+
+// normalizeTransportNetwork maps common share-link / Clash Meta aliases to
+// sing-box transport type names. Without this, values like "websocket" or
+// "gun" keep path/host/service_name unparsed (switch misses) and sing-box
+// rejects the outbound type on apply.
+// HTTP/2 aliases (http2 / http/2) are deferred this round: Trojan only has
+// ws/grpc arms, and mapping to "h2" is rejected by built-in sing-box
+// (canonical type is "http"; Clash still reads params from h2-opts).
+func normalizeTransportNetwork(network string) string {
+	switch strings.ToLower(strings.TrimSpace(network)) {
+	case "websocket":
+		return "ws"
+	case "gun":
+		return "grpc"
+	default:
+		return network
+	}
+}

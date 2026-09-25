@@ -55,7 +55,7 @@ func (p *TrojanParser) Parse(rawURL string) (*storage.Node, error) {
 	}
 
 	// 传输层配置
-	transportType := getParamString(params, "type", "tcp")
+	transportType := normalizeTransportNetwork(getParamString(params, "type", "tcp"))
 	if transportType != "tcp" {
 		transport := map[string]interface{}{
 			"type": transportType,
