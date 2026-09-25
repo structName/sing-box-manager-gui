@@ -332,8 +332,9 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 		extra["transport"] = transport
 	}
 
-	// REALITY、Hysteria2 和 TUIC 的协议本身要求 TLS，不能依赖订阅显式声明。
-	if proxy.TLS || proxy.RealityOpts != nil || nodeType == "hysteria2" || nodeType == "tuic" {
+	// REALITY、Trojan、Hysteria2 和 TUIC 的协议本身要求 TLS，不能依赖订阅显式声明。
+	// Clash Meta Trojan 配置通常没有 tls: 字段（TLS 为协议固有），与 hy2/tuic 一样必须强制启用。
+	if proxy.TLS || proxy.RealityOpts != nil || nodeType == "trojan" || nodeType == "hysteria2" || nodeType == "tuic" {
 		tls := map[string]interface{}{
 			"enabled": true,
 		}

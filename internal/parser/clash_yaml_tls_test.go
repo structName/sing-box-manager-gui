@@ -9,6 +9,19 @@ func TestParseClashYAMLAddsTLSForProtocolsThatRequireIt(t *testing.T) {
 		wantType  string
 	}{
 		{
+			name: "trojan without explicit tls flag",
+			proxyYAML: `
+  - name: trojan-node
+    type: trojan
+    server: trojan.example.com
+    port: 443
+    password: secret
+    sni: edge.example.com
+    skip-cert-verify: true
+`,
+			wantType: "trojan",
+		},
+		{
 			name: "hysteria2 without explicit tls flag",
 			proxyYAML: `
   - name: hy2-node
