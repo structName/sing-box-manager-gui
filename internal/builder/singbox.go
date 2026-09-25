@@ -1191,6 +1191,9 @@ func normalizeOutbound(outbound Outbound) error {
 	case "anytls":
 		normalizeAnyTLSOutbound(outbound)
 		return nil
+	case "tuic":
+		normalizeTUICOutbound(outbound)
+		return nil
 	default:
 		return nil
 	}
@@ -1311,6 +1314,19 @@ func normalizeAnyTLSOutbound(outbound Outbound) {
 		} else {
 			delete(outbound, field)
 		}
+	}
+}
+
+// normalizeTUICOutbound maps share-link / Clash Meta heartbeat values onto
+// sing-box's Go duration string. Share URLs commonly use bare seconds
+// (heartbeat=10); Clash Meta uses heartbeat-interval in milliseconds. A bare
+// "10" fails sing-box badoption.Duration ("missing unit"), so the node is
+// rejected at apply / check. Normalize to e.g. "10s" / "10000ms".
+func normalizeTUICOutbound(outbound Outbound) {
+	if value, ok := anyTLSDurationValue(outbound["heartbeat"]); ok {
+		outbound["heartbeat"] = value
+	} else {
+		delete(outbound, "heartbeat")
 	}
 }
 

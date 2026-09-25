@@ -52,6 +52,7 @@ type ClashProxy struct {
 	CongestionController string `yaml:"congestion-controller,omitempty"`
 	UDPRelayMode         string `yaml:"udp-relay-mode,omitempty"`
 	ReduceRTT            bool   `yaml:"reduce-rtt,omitempty"`
+	HeartbeatInterval    int    `yaml:"heartbeat-interval,omitempty"` // Clash Meta: milliseconds
 	// SSR 特有 (obfs 字段复用 Hysteria2 的 Obfs)
 	SSRProtocol      string `yaml:"protocol,omitempty"`
 	SSRProtocolParam string `yaml:"protocol-param,omitempty"`
@@ -188,6 +189,11 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 		}
 		if proxy.ReduceRTT {
 			extra["zero_rtt_handshake"] = true
+		}
+		// Clash Meta heartbeat-interval is milliseconds; store as a duration
+		// string so builder/sing-box accept it (bare ints lack a unit).
+		if proxy.HeartbeatInterval > 0 {
+			extra["heartbeat"] = fmt.Sprintf("%dms", proxy.HeartbeatInterval)
 		}
 
 	case "ssr", "shadowsocksr":

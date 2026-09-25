@@ -372,6 +372,94 @@ func TestNodeToOutboundRejectsUnsupportedShadowsocksPlugin(t *testing.T) {
 	}
 }
 
+func TestNodeToOutboundNormalizesTUICHeartbeatDuration(t *testing.T) {
+	builder := &ConfigBuilder{}
+
+	t.Run("bare seconds string from share URL", func(t *testing.T) {
+		outbound, err := builder.nodeToOutbound(storage.Node{
+			Tag:        "tuic-bare",
+			Type:       "tuic",
+			Server:     "tuic.example.com",
+			ServerPort: 443,
+			Extra: map[string]interface{}{
+				"uuid":      "11111111-1111-4111-8111-111111111111",
+				"password":  "secret",
+				"heartbeat": "10", // share-link bare seconds — sing-box rejects without unit
+				"tls": map[string]interface{}{
+					"enabled":     true,
+					"server_name": "tuic.example.com",
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("nodeToOutbound error: %v", err)
+		}
+		if got := outbound["heartbeat"]; got != "10s" {
+			t.Fatalf("heartbeat = %v, want 10s", got)
+		}
+	})
+
+	t.Run("preserves explicit duration", func(t *testing.T) {
+		outbound, err := builder.nodeToOutbound(storage.Node{
+			Tag:        "tuic-dur",
+			Type:       "tuic",
+			Server:     "tuic.example.com",
+			ServerPort: 443,
+			Extra: map[string]interface{}{
+				"uuid":      "11111111-1111-4111-8111-111111111111",
+				"password":  "secret",
+				"heartbeat": "15s",
+			},
+		})
+		if err != nil {
+			t.Fatalf("nodeToOutbound error: %v", err)
+		}
+		if got := outbound["heartbeat"]; got != "15s" {
+			t.Fatalf("heartbeat = %v, want 15s", got)
+		}
+	})
+
+	t.Run("clash-style milliseconds duration string", func(t *testing.T) {
+		outbound, err := builder.nodeToOutbound(storage.Node{
+			Tag:        "tuic-ms",
+			Type:       "tuic",
+			Server:     "tuic.example.com",
+			ServerPort: 443,
+			Extra: map[string]interface{}{
+				"uuid":      "11111111-1111-4111-8111-111111111111",
+				"password":  "secret",
+				"heartbeat": "10000ms",
+			},
+		})
+		if err != nil {
+			t.Fatalf("nodeToOutbound error: %v", err)
+		}
+		if got := outbound["heartbeat"]; got != "10000ms" {
+			t.Fatalf("heartbeat = %v, want 10000ms", got)
+		}
+	})
+
+	t.Run("numeric seconds from JSON Extra", func(t *testing.T) {
+		outbound, err := builder.nodeToOutbound(storage.Node{
+			Tag:        "tuic-num",
+			Type:       "tuic",
+			Server:     "tuic.example.com",
+			ServerPort: 443,
+			Extra: map[string]interface{}{
+				"uuid":      "11111111-1111-4111-8111-111111111111",
+				"password":  "secret",
+				"heartbeat": float64(8),
+			},
+		})
+		if err != nil {
+			t.Fatalf("nodeToOutbound error: %v", err)
+		}
+		if got := outbound["heartbeat"]; got != "8s" {
+			t.Fatalf("heartbeat = %v, want 8s", got)
+		}
+	})
+}
+
 func TestNodeToOutboundNormalizesAnyTLSDurationAndTLS(t *testing.T) {
 	builder := &ConfigBuilder{}
 	node := storage.Node{

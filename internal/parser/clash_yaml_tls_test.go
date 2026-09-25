@@ -91,3 +91,40 @@ proxies:
 		t.Fatalf("parsed node tags = %q, %q", nodes[0].Tag, nodes[1].Tag)
 	}
 }
+
+func TestParseClashYAMLTuicHeartbeatInterval(t *testing.T) {
+	yaml := `
+proxies:
+  - name: tuic-hb
+    type: tuic
+    server: tuic.example.com
+    port: 443
+    uuid: 11111111-1111-4111-8111-111111111111
+    password: secret
+    heartbeat-interval: 10000
+`
+	nodes, err := ParseClashYAML(yaml)
+	if err != nil {
+		t.Fatalf("ParseClashYAML error: %v", err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("len(nodes) = %d, want 1", len(nodes))
+	}
+	// Clash Meta uses milliseconds; store as duration so sing-box accepts it.
+	if got, _ := nodes[0].Extra["heartbeat"].(string); got != "10000ms" {
+		t.Fatalf("heartbeat = %v, want 10000ms", nodes[0].Extra["heartbeat"])
+	}
+}
+
+func TestTuicURLBareHeartbeatNormalizedByBuilder(t *testing.T) {
+	// Share links often omit the unit (heartbeat=10). Parser keeps the raw
+	// value; builder must add "s" before emit — covered in builder tests, but
+	// assert the URL path still stores the bare string so we do not regress.
+	node, err := ParseURL("tuic://11111111-1111-4111-8111-111111111111:secret@tuic.example.com:443?heartbeat=10#t")
+	if err != nil {
+		t.Fatalf("ParseURL error: %v", err)
+	}
+	if got, _ := node.Extra["heartbeat"].(string); got != "10" {
+		t.Fatalf("parser heartbeat = %v, want raw \"10\" (builder normalizes)", node.Extra["heartbeat"])
+	}
+}
