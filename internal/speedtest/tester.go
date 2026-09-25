@@ -319,7 +319,9 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 		if password, ok := extra["password"].(string); ok {
 			proxy["password"] = password
 		}
-		// TLS
+		// TLS / Reality — parsers store reality+utls+alpn under Extra.tls
+		// (same shape as VLESS). Without mapping them here, Trojan-Reality
+		// delay/speed tests dial plain TLS and falsely fail.
 		proxy["tls"] = true
 		if tls, ok := extra["tls"].(map[string]interface{}); ok {
 			if sni, ok := tls["server_name"].(string); ok {
@@ -327,6 +329,41 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 			}
 			if insecure, ok := tls["insecure"].(bool); ok {
 				proxy["skip-cert-verify"] = insecure
+			}
+			if alpn, ok := tls["alpn"].([]interface{}); ok {
+				alpnStrs := make([]string, 0, len(alpn))
+				for _, a := range alpn {
+					if s, ok := a.(string); ok && s != "" {
+						alpnStrs = append(alpnStrs, s)
+					}
+				}
+				if len(alpnStrs) > 0 {
+					proxy["alpn"] = alpnStrs
+				}
+			} else if alpn, ok := tls["alpn"].([]string); ok && len(alpn) > 0 {
+				proxy["alpn"] = alpn
+			}
+			if reality, ok := tls["reality"].(map[string]interface{}); ok {
+				if enabled, ok := reality["enabled"].(bool); ok && enabled {
+					realityOpts := map[string]interface{}{}
+					if pubKey, ok := reality["public_key"].(string); ok {
+						realityOpts["public-key"] = pubKey
+					}
+					if shortID, ok := reality["short_id"].(string); ok {
+						realityOpts["short-id"] = shortID
+					}
+					proxy["reality-opts"] = realityOpts
+					// REALITY requires client-fingerprint; default then override via utls
+					proxy["client-fingerprint"] = "chrome"
+					if _, hasSNI := proxy["sni"]; !hasSNI {
+						proxy["sni"] = node.Server
+					}
+				}
+			}
+			if utls, ok := tls["utls"].(map[string]interface{}); ok {
+				if fp, ok := utls["fingerprint"].(string); ok && fp != "" {
+					proxy["client-fingerprint"] = fp
+				}
 			}
 		}
 		// Transport
