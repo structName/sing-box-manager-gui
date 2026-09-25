@@ -219,3 +219,44 @@ func TestNodeToMihomoProxySocksUDPOverTCP(t *testing.T) {
 		t.Fatalf("udp-over-tcp = %v, want true", proxy["udp-over-tcp"])
 	}
 }
+
+func TestNodeToMihomoProxySocks4aMapsToSocks4(t *testing.T) {
+	node := &models.Node{
+		Tag:        "socks4a-node",
+		Type:       "socks4a",
+		Server:     "127.0.0.1",
+		ServerPort: 1080,
+		Extra: models.JSONMap{
+			"version": "4a",
+		},
+	}
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy socks4a error: %v", err)
+	}
+	if proxy["type"] != "socks4" {
+		t.Fatalf("type = %v, want socks4 for socks4a", proxy["type"])
+	}
+	if _, ok := proxy["udp-over-tcp"]; ok {
+		t.Fatalf("udp-over-tcp unexpectedly set for TCP-only socks4a: %v", proxy["udp-over-tcp"])
+	}
+}
+
+func TestNodeToMihomoProxySocksUoTOnlyWhenExtraEnables(t *testing.T) {
+	node := &models.Node{
+		Tag:        "socks-no-uot",
+		Type:       "socks",
+		Server:     "127.0.0.1",
+		ServerPort: 1080,
+		Extra: models.JSONMap{
+			"version": "5",
+		},
+	}
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy no-uot error: %v", err)
+	}
+	if _, ok := proxy["udp-over-tcp"]; ok {
+		t.Fatalf("udp-over-tcp = %v, want unset when Extra.udp_over_tcp absent", proxy["udp-over-tcp"])
+	}
+}
