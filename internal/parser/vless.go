@@ -24,7 +24,7 @@ func (p *VlessParser) Parse(rawURL string) (*storage.Node, error) {
 	}
 
 	// 分离 uuid 和服务器信息
-	atIdx := strings.Index(addressPart, "@")
+	atIdx := strings.LastIndex(addressPart, "@")
 	if atIdx == -1 {
 		return nil, fmt.Errorf("无效的 VLESS URL 格式")
 	}

@@ -31,7 +31,7 @@ func (p *Hysteria2Parser) Parse(rawURL string) (*storage.Node, error) {
 	// 判断格式
 	if strings.Contains(addressPart, "@") {
 		// 格式1: password@server:port
-		atIdx := strings.Index(addressPart, "@")
+		atIdx := strings.LastIndex(addressPart, "@")
 		password, _ = url.QueryUnescape(addressPart[:atIdx])
 		serverPart := addressPart[atIdx+1:]
 
