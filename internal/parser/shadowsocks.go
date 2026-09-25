@@ -18,7 +18,7 @@ func (p *ShadowsocksParser) Protocol() string {
 }
 
 // Parse 解析 Shadowsocks URL
-// 格式1 (SIP002): ss://BASE64(method:password)@server:port#name
+// 格式1 (SIP002): ss://BASE64(method:password)@server:port/?plugin=...#name
 // 格式2 (Legacy): ss://BASE64(method:password@server:port)#name
 func (p *ShadowsocksParser) Parse(rawURL string) (*storage.Node, error) {
 	// 去除协议头
@@ -30,6 +30,17 @@ func (p *ShadowsocksParser) Parse(rawURL string) (*storage.Node, error) {
 		name, _ = url.QueryUnescape(rawURL[idx+1:])
 		rawURL = rawURL[:idx]
 	}
+
+	// SIP002 query (plugin=obfs-local;obfs=http;...) — must strip before host:port parse
+	var params url.Values
+	if qIdx := strings.Index(rawURL, "?"); qIdx != -1 {
+		params, _ = url.ParseQuery(rawURL[qIdx+1:])
+		rawURL = rawURL[:qIdx]
+	} else {
+		params = url.Values{}
+	}
+	// Common SIP002 form uses a trailing slash before '?'
+	rawURL = strings.TrimSuffix(rawURL, "/")
 
 	var method, password, server string
 	var port int
@@ -100,16 +111,39 @@ func (p *ShadowsocksParser) Parse(rawURL string) (*storage.Node, error) {
 		name = fmt.Sprintf("%s:%d", server, port)
 	}
 
+	extra := map[string]interface{}{
+		"method":   method,
+		"password": password,
+	}
+	applySIP002Plugin(extra, params.Get("plugin"))
+
 	node := &storage.Node{
 		Tag:        name,
 		Type:       "shadowsocks",
 		Server:     server,
 		ServerPort: port,
-		Extra: map[string]interface{}{
-			"method":   method,
-			"password": password,
-		},
+		Extra:      extra,
 	}
 
 	return node, nil
+}
+
+// applySIP002Plugin parses SIP002 plugin=name;opt=val;... into Extra fields
+// that match Clash YAML import and builder normalizeShadowsocksOutbound.
+func applySIP002Plugin(extra map[string]interface{}, plugin string) {
+	plugin = strings.TrimSpace(plugin)
+	if plugin == "" {
+		return
+	}
+	name, opts, ok := strings.Cut(plugin, ";")
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	extra["plugin"] = name
+	opts = strings.TrimSpace(opts)
+	if ok && opts != "" {
+		// Keep SIP003 option string as-is (builder accepts string plugin_opts).
+		extra["plugin_opts"] = opts
+	}
 }

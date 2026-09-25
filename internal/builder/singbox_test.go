@@ -352,6 +352,34 @@ func TestNodeToOutboundNormalizesSimpleObfsPlugin(t *testing.T) {
 	}
 }
 
+func TestNodeToOutboundPreservesSIP003StringPluginOpts(t *testing.T) {
+	// URL SIP002 stores plugin_opts as a SIP003 option string (not Clash map).
+	builder := &ConfigBuilder{}
+	node := storage.Node{
+		Tag:        "ss-url-plugin",
+		Type:       "shadowsocks",
+		Server:     "192.168.100.1",
+		ServerPort: 8888,
+		Extra: map[string]interface{}{
+			"method":      "aes-128-gcm",
+			"password":    "test",
+			"plugin":      "obfs-local",
+			"plugin_opts": "obfs=http;obfs-host=cdn.example.com",
+		},
+	}
+
+	outbound, err := builder.nodeToOutbound(node)
+	if err != nil {
+		t.Fatalf("nodeToOutbound returned error: %v", err)
+	}
+	if got := outbound["plugin"]; got != "obfs-local" {
+		t.Fatalf("plugin = %v, want obfs-local", got)
+	}
+	if got := outbound["plugin_opts"]; got != "obfs=http;obfs-host=cdn.example.com" {
+		t.Fatalf("plugin_opts = %v, want SIP003 string preserved", got)
+	}
+}
+
 func TestNodeToOutboundRejectsUnsupportedShadowsocksPlugin(t *testing.T) {
 	builder := &ConfigBuilder{}
 	node := storage.Node{
