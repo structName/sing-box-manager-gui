@@ -237,6 +237,8 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 					if len(grpcOpts) > 0 {
 						proxy["grpc-opts"] = grpcOpts
 					}
+				case "httpupgrade", "http_upgrade":
+					applyHTTPUpgradeTransportToMihomo(proxy, transport)
 				}
 			}
 		}
@@ -310,6 +312,8 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 					if len(grpcOpts) > 0 {
 						proxy["grpc-opts"] = grpcOpts
 					}
+				case "httpupgrade", "http_upgrade":
+					applyHTTPUpgradeTransportToMihomo(proxy, transport)
 				}
 			}
 		}
@@ -329,10 +333,14 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 				proxy["skip-cert-verify"] = insecure
 			}
 		}
-		// Transport
+		// Transport (HTTPUpgrade needs remap; WS/gRPC/HTTP/H2 covered by other digs)
 		if transport, ok := extra["transport"].(map[string]interface{}); ok {
 			if tType, ok := transport["type"].(string); ok {
 				proxy["network"] = tType
+				switch tType {
+				case "httpupgrade", "http_upgrade":
+					applyHTTPUpgradeTransportToMihomo(proxy, transport)
+				}
 			}
 		}
 
@@ -475,7 +483,6 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 			proxy["udp-over-tcp"] = true
 		}
 
-
 	default:
 		return nil, fmt.Errorf("不支持的协议类型: %s", node.Type)
 	}
@@ -534,6 +541,58 @@ func numberAsInt(raw interface{}) (int, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// applyHTTPUpgradeTransportToMihomo maps sing-box transport.type=httpupgrade into
+// mihomo network=ws + ws-opts.v2ray-http-upgrade. Mihomo has no network=httpupgrade;
+// leaving the type as-is makes StreamConn fall through to plain TCP and drop path/Host,
+// so HTTPUpgrade nodes fail health/speed tests against the real endpoint.
+func applyHTTPUpgradeTransportToMihomo(proxy map[string]interface{}, transport map[string]interface{}) {
+	proxy["network"] = "ws"
+	wsOpts := map[string]interface{}{
+		"v2ray-http-upgrade": true,
+	}
+	if path, ok := transport["path"].(string); ok && path != "" {
+		wsOpts["path"] = path
+	}
+	if headers := httpUpgradeHeadersForMihomo(transport); len(headers) > 0 {
+		wsOpts["headers"] = headers
+	}
+	proxy["ws-opts"] = wsOpts
+}
+
+// httpUpgradeHeadersForMihomo builds ws-opts headers. Share-link / sing-box style
+// stores authority in transport["host"]; Clash-style stores Host under headers.
+func httpUpgradeHeadersForMihomo(transport map[string]interface{}) map[string]string {
+	headers := map[string]string{}
+
+	switch h := transport["headers"].(type) {
+	case map[string]string:
+		for k, v := range h {
+			if v != "" {
+				headers[k] = v
+			}
+		}
+	case map[string]interface{}:
+		for k, raw := range h {
+			if s, ok := raw.(string); ok && s != "" {
+				headers[k] = s
+			}
+		}
+	}
+
+	if _, hasHost := headers["Host"]; !hasHost {
+		if _, hasHost = headers["host"]; !hasHost {
+			if host, ok := transport["host"].(string); ok && host != "" {
+				headers["Host"] = host
+			}
+		}
+	}
+
+	if len(headers) == 0 {
+		return nil
+	}
+	return headers
 }
 
 func applyShadowsocksPluginToMihomo(proxy map[string]interface{}, extra map[string]interface{}) error {
