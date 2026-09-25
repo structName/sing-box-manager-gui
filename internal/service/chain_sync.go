@@ -100,6 +100,9 @@ func (s *ChainSyncService) SyncChainNodesForSubscription(subID string) error {
 		subNodeTags[node.Tag] = true
 	}
 
+	// 全局有效节点（含已禁用手动节点，与 SyncChainNodes / #23 一致）
+	validNodeTags := s.validNodeTagsForChainSync()
+
 	chains := s.store.GetProxyChains()
 
 	for _, chain := range chains {
@@ -114,18 +117,41 @@ func (s *ChainSyncService) SyncChainNodesForSubscription(subID string) error {
 				continue
 			}
 
-			// 只检查来自此订阅的节点
-			if chainNode.Source == subID {
+			switch {
+			case chainNode.Source == subID:
+				// 明确来自此订阅：仅当仍在 sub.Nodes 中时保留
 				if subNodeTags[chainNode.OriginalTag] {
-					// 节点仍然存在
 					validChainNodes = append(validChainNodes, chainNode)
 					validNodes = append(validNodes, chainNode.OriginalTag)
 				} else {
-					// 节点已被删除
 					updated = true
 				}
-			} else {
-				// 非此订阅的节点，保留
+
+			case chainNode.Source == "":
+				// 空 Source（历史数据 / generate 时节点不在 GetAllNodes）：
+				// 回退到「tag 是否仍在 sub.Nodes ∪ 全局 valid set」；保留时回填 Source。
+				if subNodeTags[chainNode.OriginalTag] {
+					chainNode.Source = subID
+					if node, exists := validNodeTags[chainNode.OriginalTag]; exists && node.Source != "" {
+						chainNode.Source = node.Source
+					}
+					validChainNodes = append(validChainNodes, chainNode)
+					validNodes = append(validNodes, chainNode.OriginalTag)
+					updated = true
+				} else if node, exists := validNodeTags[chainNode.OriginalTag]; exists {
+					if node.Source != "" {
+						chainNode.Source = node.Source
+						updated = true
+					}
+					validChainNodes = append(validChainNodes, chainNode)
+					validNodes = append(validNodes, chainNode.OriginalTag)
+				} else {
+					// 全局已不存在 → 剪掉失效 hop
+					updated = true
+				}
+
+			default:
+				// 其他订阅 / manual：保留
 				validChainNodes = append(validChainNodes, chainNode)
 				validNodes = append(validNodes, chainNode.OriginalTag)
 			}
