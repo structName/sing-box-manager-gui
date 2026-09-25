@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -42,13 +44,16 @@ type DNSConfig struct {
 
 // DNSServer DNS 服务器 (新格式，支持 FakeIP 和 hosts)
 type DNSServer struct {
-	Tag        string         `json:"tag"`
-	Type       string         `json:"type"`                  // udp, tcp, https, tls, quic, h3, fakeip, rcode, hosts
-	Server     string         `json:"server,omitempty"`      // 服务器地址
-	Detour     string         `json:"detour,omitempty"`      // 出站代理
-	Inet4Range string         `json:"inet4_range,omitempty"` // FakeIP IPv4 地址池
-	Inet6Range string         `json:"inet6_range,omitempty"` // FakeIP IPv6 地址池
-	Predefined map[string]any `json:"predefined,omitempty"`  // hosts 类型专用：预定义域名映射
+	Tag            string         `json:"tag"`
+	Type           string         `json:"type"`                      // udp, tcp, https, tls, quic, h3, fakeip, rcode, hosts, local
+	Server         string         `json:"server,omitempty"`          // 服务器地址
+	ServerPort     int            `json:"server_port,omitempty"`     // 非默认端口时写出
+	Path           string         `json:"path,omitempty"`            // DoH/H3 路径（默认 /dns-query 可省略）
+	DomainResolver string         `json:"domain_resolver,omitempty"` // server 为域名时的解析器
+	Detour         string         `json:"detour,omitempty"`          // 出站代理
+	Inet4Range     string         `json:"inet4_range,omitempty"`     // FakeIP IPv4 地址池
+	Inet6Range     string         `json:"inet6_range,omitempty"`     // FakeIP IPv6 地址池
+	Predefined     map[string]any `json:"predefined,omitempty"`      // hosts 类型专用：预定义域名映射
 }
 
 // DNSRule DNS 规则
@@ -443,22 +448,120 @@ func ParseSystemHosts() map[string][]string {
 	return hosts
 }
 
+// parseSettingsDNSServer 将设置里的 DNS 地址（URL 或裸 IP/主机名）转为 sing-box 1.12+ DNS server。
+// 支持: https/h3/tls/quic/tcp/udp 以及 "local"；无 scheme 时按 udp 处理。
+func parseSettingsDNSServer(tag, raw, detour string) (DNSServer, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return DNSServer{}, fmt.Errorf("empty dns address")
+	}
+	if strings.EqualFold(raw, "local") {
+		return DNSServer{Tag: tag, Type: "local", Detour: detour}, nil
+	}
+
+	serverType := "udp"
+	host := raw
+	path := ""
+	port := 0
+
+	if strings.Contains(raw, "://") {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return DNSServer{}, fmt.Errorf("parse dns address: %w", err)
+		}
+		switch strings.ToLower(u.Scheme) {
+		case "https", "http":
+			serverType = "https"
+		case "h3":
+			serverType = "h3"
+		case "tls":
+			serverType = "tls"
+		case "quic":
+			serverType = "quic"
+		case "tcp":
+			serverType = "tcp"
+		case "udp":
+			serverType = "udp"
+		default:
+			return DNSServer{}, fmt.Errorf("unsupported dns scheme %q", u.Scheme)
+		}
+		host = u.Hostname()
+		if host == "" {
+			return DNSServer{}, fmt.Errorf("dns address missing host")
+		}
+		if u.Port() != "" {
+			p, err := strconv.Atoi(u.Port())
+			if err != nil {
+				return DNSServer{}, fmt.Errorf("invalid dns port: %w", err)
+			}
+			port = p
+		}
+		path = u.EscapedPath()
+	}
+
+	srv := DNSServer{
+		Tag:        tag,
+		Type:       serverType,
+		Server:     host,
+		ServerPort: port,
+		Detour:     detour,
+	}
+	// sing-box https/h3 默认 path 为 /dns-query，仅在非默认时写出
+	if (serverType == "https" || serverType == "h3") && path != "" && path != "/" && path != "/dns-query" {
+		srv.Path = path
+	}
+	return srv, nil
+}
+
+func mustParseSettingsDNSServer(tag, raw, detour string) DNSServer {
+	srv, err := parseSettingsDNSServer(tag, raw, detour)
+	if err == nil {
+		return srv
+	}
+	// 解析失败时回退到安全默认，避免生成无效配置
+	switch tag {
+	case "dns_direct":
+		return DNSServer{Tag: tag, Type: "udp", Server: "223.5.5.5"}
+	default:
+		return DNSServer{Tag: tag, Type: "https", Server: "1.1.1.1", Detour: detour}
+	}
+}
+
+func dnsServerNeedsDomainResolver(srv DNSServer) bool {
+	if srv.Type == "" || srv.Type == "local" || srv.Type == "fakeip" || srv.Type == "hosts" || srv.Type == "rcode" {
+		return false
+	}
+	host := strings.TrimSpace(srv.Server)
+	if host == "" {
+		return false
+	}
+	return net.ParseIP(host) == nil
+}
+
 // buildDNS 构建 DNS 配置
 func (b *ConfigBuilder) buildDNS() *DNSConfig {
-	// 基础 DNS 服务器
-	servers := []DNSServer{
-		{
-			Tag:    "dns_proxy",
-			Type:   "https",
-			Server: "8.8.8.8",
-			Detour: "Proxy",
-		},
-		{
-			Tag:    "dns_direct",
-			Type:   "udp",
-			Server: "223.5.5.5",
-		},
+	proxyDNS := strings.TrimSpace(b.settings.ProxyDNS)
+	if proxyDNS == "" {
+		proxyDNS = "https://1.1.1.1/dns-query"
 	}
+	directDNS := strings.TrimSpace(b.settings.DirectDNS)
+	if directDNS == "" {
+		directDNS = "https://dns.alidns.com/dns-query"
+	}
+
+	dnsProxy := mustParseSettingsDNSServer("dns_proxy", proxyDNS, "Proxy")
+	dnsDirect := mustParseSettingsDNSServer("dns_direct", directDNS, "")
+
+	var servers []DNSServer
+	// server 字段为域名时需要 domain_resolver；直连 DNS 用 local 引导，代理 DNS 复用 dns_direct。
+	if dnsServerNeedsDomainResolver(dnsDirect) {
+		servers = append(servers, DNSServer{Tag: "dns_local", Type: "local"})
+		dnsDirect.DomainResolver = "dns_local"
+	}
+	if dnsServerNeedsDomainResolver(dnsProxy) {
+		dnsProxy.DomainResolver = "dns_direct"
+	}
+	servers = append(servers, dnsProxy, dnsDirect)
 
 	// 基础 DNS 规则
 	var rules []DNSRule
