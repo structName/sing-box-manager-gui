@@ -170,7 +170,7 @@ func (h *HealthCheckService) CheckChain(chainID string) (*storage.ChainHealthSta
 			var testErr error
 
 			if clashAPIPort > 0 {
-				copyTag := storage.GenerateChainNodeCopyTag(chain.Name, nodeTag)
+				copyTag := storage.GenerateChainNodeCopyTag(chain.Name, nodeTag, i)
 				latency, testErr = h.testViaClashAPI(clashAPIPort, copyTag, testURL, timeout)
 			}
 

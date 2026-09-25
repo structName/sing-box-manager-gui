@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"fmt"
 	"strings"
 	"time"
 )
@@ -62,7 +63,7 @@ type ProxyChain struct {
 // ChainNode 链路节点副本引用
 type ChainNode struct {
 	OriginalTag string `json:"original_tag"` // 原节点 Tag
-	CopyTag     string `json:"copy_tag"`     // 副本 Tag: "{链路名}-{原Tag}"
+	CopyTag     string `json:"copy_tag"`     // 副本 Tag: "{链路名}-{hop}-{原Tag}"
 	Source      string `json:"source"`       // 来源订阅 ID 或 "manual"
 }
 
@@ -102,19 +103,33 @@ type ChainSpeedResult struct {
 	Duration   int64     `json:"duration"`    // 耗时 ms
 }
 
-// GenerateChainNodeCopyTag 生成链路节点副本 Tag
-func GenerateChainNodeCopyTag(chainName, originalTag string) string {
-	return chainName + "-" + originalTag
+// GenerateChainNodeCopyTag 生成链路节点副本 Tag（含 hop 下标，避免同一链路重复 hop 冲突）
+// 格式: "{chainName}-{hopIndex}-{originalTag}"
+func GenerateChainNodeCopyTag(chainName, originalTag string, hopIndex int) string {
+	return fmt.Sprintf("%s-%d-%s", chainName, hopIndex, originalTag)
 }
 
 // GenerateChainCountryCandidateCopyTag 生成链路中地区自动选择候选节点的副本 Tag
-func GenerateChainCountryCandidateCopyTag(chainName, countryTag, originalTag string) string {
-	return GenerateChainNodeCopyTag(chainName, countryTag+"-"+originalTag)
+func GenerateChainCountryCandidateCopyTag(chainName, countryTag, originalTag string, hopIndex int) string {
+	return GenerateChainNodeCopyTag(chainName, countryTag+"-"+originalTag, hopIndex)
 }
 
 // GenerateChainAutoCandidateCopyTag 生成链路中全局自动选择候选节点的副本 Tag
-func GenerateChainAutoCandidateCopyTag(chainName, originalTag string) string {
-	return GenerateChainNodeCopyTag(chainName, ChainAutoNodeTag+"-"+originalTag)
+func GenerateChainAutoCandidateCopyTag(chainName, originalTag string, hopIndex int) string {
+	return GenerateChainNodeCopyTag(chainName, ChainAutoNodeTag+"-"+originalTag, hopIndex)
+}
+
+// DisambiguateCopyTag 若 base 已被占用则追加 #N 后缀直至唯一
+func DisambiguateCopyTag(base string, used map[string]bool) string {
+	if base == "" || !used[base] {
+		return base
+	}
+	for n := 2; ; n++ {
+		candidate := fmt.Sprintf("%s#%d", base, n)
+		if !used[candidate] {
+			return candidate
+		}
+	}
 }
 
 // MakeChainCountryNodeTag 生成链路中的地区自动选择节点 Tag
@@ -185,7 +200,8 @@ func GetSpecialChainNodeDisplayName(tag string) string {
 }
 
 // ChainSpecialNodeMetadata 返回链路特殊节点的稳定副本元数据
-func ChainSpecialNodeMetadata(chainName, tag string) (ChainNode, bool) {
+// hopIndex 用于地区自动选择节点的 CopyTag（与 builder 一致）；Tor/Auto 使用固定显示名。
+func ChainSpecialNodeMetadata(chainName, tag string, hopIndex int) (ChainNode, bool) {
 	if IsChainAutoNodeTag(tag) {
 		return ChainNode{
 			OriginalTag: tag,
@@ -203,7 +219,7 @@ func ChainSpecialNodeMetadata(chainName, tag string) (ChainNode, bool) {
 	if IsChainCountryNodeTag(tag) {
 		return ChainNode{
 			OriginalTag: tag,
-			CopyTag:     GenerateChainNodeCopyTag(chainName, tag),
+			CopyTag:     GenerateChainNodeCopyTag(chainName, tag, hopIndex),
 			Source:      GetChainCountryNodeSource(ParseChainCountryNodeCode(tag)),
 		}, true
 	}

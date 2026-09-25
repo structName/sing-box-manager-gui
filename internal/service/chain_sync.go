@@ -54,8 +54,8 @@ func (s *ChainSyncService) SyncChainNodes() error {
 		validNodes := make([]string, 0, len(chain.Nodes))
 
 		// 检查每个链路节点是否仍然有效
-		for _, chainNode := range chain.ChainNodes {
-			if specialNode, ok := storage.ChainSpecialNodeMetadata(chain.Name, chainNode.OriginalTag); ok {
+		for hopIndex, chainNode := range chain.ChainNodes {
+			if specialNode, ok := storage.ChainSpecialNodeMetadata(chain.Name, chainNode.OriginalTag, hopIndex); ok {
 				validChainNodes = append(validChainNodes, specialNode)
 				validNodes = append(validNodes, specialNode.OriginalTag)
 			} else if node, exists := validNodeTags[chainNode.OriginalTag]; exists {
@@ -107,8 +107,8 @@ func (s *ChainSyncService) SyncChainNodesForSubscription(subID string) error {
 		validChainNodes := make([]storage.ChainNode, 0, len(chain.ChainNodes))
 		validNodes := make([]string, 0, len(chain.Nodes))
 
-		for _, chainNode := range chain.ChainNodes {
-			if specialNode, ok := storage.ChainSpecialNodeMetadata(chain.Name, chainNode.OriginalTag); ok {
+		for hopIndex, chainNode := range chain.ChainNodes {
+			if specialNode, ok := storage.ChainSpecialNodeMetadata(chain.Name, chainNode.OriginalTag, hopIndex); ok {
 				validChainNodes = append(validChainNodes, specialNode)
 				validNodes = append(validNodes, specialNode.OriginalTag)
 				continue
@@ -152,7 +152,7 @@ func (s *ChainSyncService) RetargetNodeTag(oldTag, newTag string) error {
 		return nil
 	}
 	// 特殊节点 Tag 不应作为普通节点被改写
-	if _, ok := storage.ChainSpecialNodeMetadata("", oldTag); ok {
+	if _, ok := storage.ChainSpecialNodeMetadata("", oldTag, 0); ok {
 		return nil
 	}
 
@@ -188,13 +188,13 @@ func (s *ChainSyncService) RetargetNodeTag(oldTag, newTag string) error {
 
 		if len(chain.ChainNodes) > 0 {
 			newChainNodes := make([]storage.ChainNode, 0, len(chain.ChainNodes))
-			for _, chainNode := range chain.ChainNodes {
+			for hopIndex, chainNode := range chain.ChainNodes {
 				tag := chainNode.OriginalTag
 				if tag == oldTag {
 					tag = newTag
 					updated = true
 				}
-				if specialNode, ok := storage.ChainSpecialNodeMetadata(chain.Name, tag); ok {
+				if specialNode, ok := storage.ChainSpecialNodeMetadata(chain.Name, tag, hopIndex); ok {
 					newChainNodes = append(newChainNodes, specialNode)
 					continue
 				}
@@ -210,7 +210,7 @@ func (s *ChainSyncService) RetargetNodeTag(oldTag, newTag string) error {
 				}
 				newChainNodes = append(newChainNodes, storage.ChainNode{
 					OriginalTag: tag,
-					CopyTag:     storage.GenerateChainNodeCopyTag(chain.Name, tag),
+					CopyTag:     storage.GenerateChainNodeCopyTag(chain.Name, tag, hopIndex),
 					Source:      source,
 				})
 			}
@@ -218,8 +218,8 @@ func (s *ChainSyncService) RetargetNodeTag(oldTag, newTag string) error {
 		} else if updated {
 			// Nodes 已改写但无 ChainNodes：按 RegenerateChainNodes 模式补齐
 			newChainNodes := make([]storage.ChainNode, 0, len(chain.Nodes))
-			for _, tag := range chain.Nodes {
-				if specialNode, ok := storage.ChainSpecialNodeMetadata(chain.Name, tag); ok {
+			for hopIndex, tag := range chain.Nodes {
+				if specialNode, ok := storage.ChainSpecialNodeMetadata(chain.Name, tag, hopIndex); ok {
 					newChainNodes = append(newChainNodes, specialNode)
 					continue
 				}
@@ -229,7 +229,7 @@ func (s *ChainSyncService) RetargetNodeTag(oldTag, newTag string) error {
 				}
 				newChainNodes = append(newChainNodes, storage.ChainNode{
 					OriginalTag: tag,
-					CopyTag:     storage.GenerateChainNodeCopyTag(chain.Name, tag),
+					CopyTag:     storage.GenerateChainNodeCopyTag(chain.Name, tag, hopIndex),
 					Source:      source,
 				})
 			}
@@ -253,7 +253,7 @@ func (s *ChainSyncService) RemoveNodeTag(tag string) error {
 	if tag == "" {
 		return nil
 	}
-	if _, ok := storage.ChainSpecialNodeMetadata("", tag); ok {
+	if _, ok := storage.ChainSpecialNodeMetadata("", tag, 0); ok {
 		return nil
 	}
 
@@ -304,8 +304,8 @@ func (s *ChainSyncService) RegenerateChainNodes(chainID string) error {
 	}
 
 	newChainNodes := make([]storage.ChainNode, 0, len(chain.Nodes))
-	for _, tag := range chain.Nodes {
-		if specialNode, ok := storage.ChainSpecialNodeMetadata(chain.Name, tag); ok {
+	for hopIndex, tag := range chain.Nodes {
+		if specialNode, ok := storage.ChainSpecialNodeMetadata(chain.Name, tag, hopIndex); ok {
 			newChainNodes = append(newChainNodes, specialNode)
 			continue
 		}
@@ -314,7 +314,7 @@ func (s *ChainSyncService) RegenerateChainNodes(chainID string) error {
 		source = nodeMap[tag].Source
 		newChainNodes = append(newChainNodes, storage.ChainNode{
 			OriginalTag: tag,
-			CopyTag:     storage.GenerateChainNodeCopyTag(chain.Name, tag),
+			CopyTag:     storage.GenerateChainNodeCopyTag(chain.Name, tag, hopIndex),
 			Source:      source,
 		})
 	}

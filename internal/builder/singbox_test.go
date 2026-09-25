@@ -563,8 +563,8 @@ func TestDeploymentImportedVLESSRealityNodeCanBeUsedInProxyChain(t *testing.T) {
 		t.Fatalf("decode config: %v\n%s", err, configJSON)
 	}
 
-	relayCopyTag := storage.GenerateChainNodeCopyTag("self-hosted-chain", "relay-a")
-	importedCopyTag := storage.GenerateChainNodeCopyTag("self-hosted-chain", "edge-a-imported")
+	relayCopyTag := storage.GenerateChainNodeCopyTag("self-hosted-chain", "relay-a", 0)
+	importedCopyTag := storage.GenerateChainNodeCopyTag("self-hosted-chain", "edge-a-imported", 1)
 	chainOutbound := outboundByTag(config.Outbounds, importedCopyTag)
 	if chainOutbound == nil {
 		t.Fatalf("chain copy outbound %q missing from %#v", importedCopyTag, outboundTags(config.Outbounds))
@@ -992,8 +992,8 @@ func TestProxyChainDetourMixesSocksSSAndVLESS(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		entryCopy := storage.GenerateChainNodeCopyTag(tc.chainName, tc.entryTag)
-		exitCopy := storage.GenerateChainNodeCopyTag(tc.chainName, tc.exitTag)
+		entryCopy := storage.GenerateChainNodeCopyTag(tc.chainName, tc.entryTag, 0)
+		exitCopy := storage.GenerateChainNodeCopyTag(tc.chainName, tc.exitTag, 1)
 		entry := outboundByTag(config.Outbounds, entryCopy)
 		exit := outboundByTag(config.Outbounds, exitCopy)
 		if entry == nil {
@@ -1022,7 +1022,7 @@ func TestProxyChainDetourMixesSocksSSAndVLESS(t *testing.T) {
 	}
 
 	// SOCKS5 alias on entry must normalize inside chain copy
-	jpSocksCopy := outboundByTag(config.Outbounds, storage.GenerateChainNodeCopyTag("socks-jp-hk", "jp-socks"))
+	jpSocksCopy := outboundByTag(config.Outbounds, storage.GenerateChainNodeCopyTag("socks-jp-hk", "jp-socks", 0))
 	if jpSocksCopy["type"] != "socks" || jpSocksCopy["version"] != "5" {
 		t.Fatalf("socks5 alias not normalized in chain copy: %#v", jpSocksCopy)
 	}
