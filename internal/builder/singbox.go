@@ -1571,25 +1571,9 @@ func (b *ConfigBuilder) buildRoute() *RouteConfig {
 	// 3. 添加 hosts 域名的路由规则（优先级高，在其他规则之前）
 	// 使用 override_address 直接指定目标 IP，避免 DIRECT outbound 重新 DNS 解析
 	// 这解决了 sniff_override_destination 导致的 NXDOMAIN 问题
-	systemHosts := ParseSystemHosts()
-	for domain, ips := range systemHosts {
-		if len(ips) > 0 {
-			rules = append(rules, RouteRule{
-				"domain":           []string{domain},
-				"outbound":         "DIRECT",
-				"override_address": ips[0],
-			})
-		}
-	}
-	for _, host := range b.settings.Hosts {
-		if host.Enabled && host.Domain != "" && len(host.IPs) > 0 {
-			rules = append(rules, RouteRule{
-				"domain":           []string{host.Domain},
-				"outbound":         "DIRECT",
-				"override_address": host.IPs[0],
-			})
-		}
-	}
+	// 用户自定义 hosts 优先于系统 /etc/hosts（与 buildDNS 一致）；
+	// sing-box 路由按首条命中，旧实现先写系统再写用户会导致覆盖失效。
+	rules = appendHostOverrideRouteRules(rules, ParseSystemHosts(), b.settings.Hosts)
 
 	// 自定义入站端口绑定的出站应优先于普通分流规则，
 	// 否则会被域名/IP 规则提前命中，导致指定链路或节点失效。
@@ -1624,6 +1608,35 @@ func (b *ConfigBuilder) buildRoute() *RouteConfig {
 	route.Rules = rules
 
 	return route
+}
+
+
+// appendHostOverrideRouteRules 将 hosts 映射写成 route override_address 规则。
+// 启用的用户 hosts 优先；同名系统 hosts 被跳过，避免首条命中锁死系统 IP。
+func appendHostOverrideRouteRules(rules []RouteRule, systemHosts map[string][]string, userHosts []storage.HostEntry) []RouteRule {
+	userOverride := make(map[string]bool)
+	for _, host := range userHosts {
+		if !host.Enabled || host.Domain == "" || len(host.IPs) == 0 {
+			continue
+		}
+		userOverride[host.Domain] = true
+		rules = append(rules, RouteRule{
+			"domain":           []string{host.Domain},
+			"outbound":         "DIRECT",
+			"override_address": host.IPs[0],
+		})
+	}
+	for domain, ips := range systemHosts {
+		if userOverride[domain] || len(ips) == 0 {
+			continue
+		}
+		rules = append(rules, RouteRule{
+			"domain":           []string{domain},
+			"outbound":         "DIRECT",
+			"override_address": ips[0],
+		})
+	}
+	return rules
 }
 
 func (b *ConfigBuilder) torChainRouteOutbound(chainID string) string {
