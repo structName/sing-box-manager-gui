@@ -371,59 +371,31 @@ func (s *Server) updateSubscriptionSchedule(sub storage.Subscription) {
 	}
 }
 
-// ensureDefaultSpeedTestProfile 确保存在启用自动测速的策略
-// 当添加订阅时，检查是否有启用自动测速的策略，如果没有则创建两个默认策略
+// ensureDefaultSpeedTestProfile ensures delay/speed default profiles exist when
+// a subscription is added. Existing profiles with AutoTest=false are left alone
+// (users may intentionally disable scheduled tests); only missing mode types are
+// created with AutoTest enabled.
 func (s *Server) ensureDefaultSpeedTestProfile() {
 	if s.dbStore == nil || s.unifiedScheduler == nil {
 		return
 	}
 
-	// 检查是否已有启用自动测速的策略
 	profiles, err := s.dbStore.GetSpeedTestProfiles()
 	if err != nil {
 		return
 	}
 
-	// 检查是否有启用 AutoTest 的策略
-	hasAutoTest := false
 	hasDelayProfile := false
 	hasSpeedProfile := false
 	for _, p := range profiles {
 		if p.AutoTest && p.Enabled {
 			s.addSpeedTestSchedule(&p)
-			hasAutoTest = true
 		}
 		// Mode 为空或 "delay" 都视为延迟检测类型
 		if p.Mode == "delay" || p.Mode == "" {
 			hasDelayProfile = true
 		} else if p.Mode == "speed" {
 			hasSpeedProfile = true
-		}
-	}
-
-	// 如果已有策略但没启用自动测速，自动启用所有策略的自动测速
-	if len(profiles) > 0 && !hasAutoTest {
-		for i := range profiles {
-			profile := &profiles[i]
-			profile.AutoTest = true
-			profile.Enabled = true
-			if profile.ScheduleCron == "" {
-				profile.ScheduleType = "cron"
-				if profile.Mode == "delay" || profile.Mode == "" {
-					profile.ScheduleCron = "0 0 * * * *" // 延迟检测每小时
-					profile.Mode = "delay"
-					hasDelayProfile = true
-				} else {
-					profile.ScheduleCron = "0 30 */6 * * *" // 速度测试每6小时
-					hasSpeedProfile = true
-				}
-			}
-			if err := s.dbStore.UpdateSpeedTestProfile(profile); err != nil {
-				logger.Warn("更新测速策略失败: %v", err)
-				continue
-			}
-			s.addSpeedTestSchedule(profile)
-			logger.Info("已启用测速策略 [%s] 的自动测速", profile.Name)
 		}
 	}
 
