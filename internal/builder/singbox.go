@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -404,16 +405,23 @@ func (b *ConfigBuilder) buildLog() *LogConfig {
 	}
 }
 
-// ParseSystemHosts 解析系统 /etc/hosts 文件
+// ParseSystemHosts 解析系统 /etc/hosts 文件。
+// 仅保留可路由的「真实」映射：跳过 loopback / 未指定 / 链路本地 / 组播地址，
+// 以及 localhost 类域名。否则 Debian/Ubuntu 的 `127.0.0.1 <hostname>` 与
+// `ip6-allnodes` 等条目会进入 DNS hosts / route override_address，把本机主机名
+// 或组播名钉死到回环/组播地址。
 func ParseSystemHosts() map[string][]string {
-	hosts := make(map[string][]string)
-
 	data, err := os.ReadFile("/etc/hosts")
 	if err != nil {
-		return hosts
+		return map[string][]string{}
 	}
+	return parseHostsFileContent(string(data))
+}
 
-	lines := strings.Split(string(data), "\n")
+func parseHostsFileContent(content string) map[string][]string {
+	hosts := make(map[string][]string)
+
+	lines := strings.Split(content, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		// 跳过空行和注释
@@ -431,9 +439,12 @@ func ParseSystemHosts() map[string][]string {
 		}
 
 		ip := fields[0]
-		// 跳过 localhost 相关条目
+		if shouldSkipSystemHostIP(ip) {
+			continue
+		}
+
 		for _, domain := range fields[1:] {
-			if domain == "localhost" || strings.HasSuffix(domain, ".localhost") {
+			if shouldSkipSystemHostDomain(domain) {
 				continue
 			}
 			hosts[domain] = append(hosts[domain], ip)
@@ -441,6 +452,36 @@ func ParseSystemHosts() map[string][]string {
 	}
 
 	return hosts
+}
+
+func shouldSkipSystemHostIP(ip string) bool {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return true
+	}
+	return parsed.IsLoopback() ||
+		parsed.IsUnspecified() ||
+		parsed.IsMulticast() ||
+		parsed.IsLinkLocalUnicast() ||
+		parsed.IsLinkLocalMulticast()
+}
+
+func shouldSkipSystemHostDomain(domain string) bool {
+	if domain == "" {
+		return true
+	}
+	lower := strings.ToLower(domain)
+	if lower == "localhost" || strings.HasSuffix(lower, ".localhost") {
+		return true
+	}
+	// glibc/Debian IPv6 伪主机名（即便落在非 loopback 地址上也不该进入代理配置）
+	if strings.HasPrefix(lower, "ip6-") {
+		return true
+	}
+	if lower == "broadcasthost" {
+		return true
+	}
+	return false
 }
 
 // buildDNS 构建 DNS 配置
