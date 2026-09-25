@@ -1046,3 +1046,54 @@ func TestProxyChainDetourMixesSocksSSAndVLESS(t *testing.T) {
 		t.Fatalf("sing-box check failed: %v\n%s", err, output)
 	}
 }
+
+
+func TestNodeToOutboundPreservesVLESSPacketEncoding(t *testing.T) {
+	builder := &ConfigBuilder{}
+
+	t.Run("xudp", func(t *testing.T) {
+		outbound, err := builder.nodeToOutbound(storage.Node{
+			Tag:        "vless-xudp",
+			Type:       "vless",
+			Server:     "edge.example.com",
+			ServerPort: 443,
+			Extra: map[string]interface{}{
+				"uuid":             "11111111-1111-1111-1111-111111111111",
+				"packet_encoding":  "xudp",
+				"tls": map[string]interface{}{
+					"enabled":     true,
+					"server_name": "cdn.example.com",
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("nodeToOutbound: %v", err)
+		}
+		if got := outbound["packet_encoding"]; got != "xudp" {
+			t.Fatalf("packet_encoding = %#v, want xudp", got)
+		}
+	})
+
+	t.Run("none becomes empty string disable", func(t *testing.T) {
+		outbound, err := builder.nodeToOutbound(storage.Node{
+			Tag:        "vless-none",
+			Type:       "vless",
+			Server:     "edge.example.com",
+			ServerPort: 443,
+			Extra: map[string]interface{}{
+				"uuid":            "11111111-1111-1111-1111-111111111111",
+				"packet_encoding": "", // parser maps share-link none → ""
+			},
+		})
+		if err != nil {
+			t.Fatalf("nodeToOutbound: %v", err)
+		}
+		got, ok := outbound["packet_encoding"]
+		if !ok {
+			t.Fatal("packet_encoding missing — empty string must be emitted to disable (omit defaults to xudp)")
+		}
+		if got != "" {
+			t.Fatalf("packet_encoding = %#v, want empty string", got)
+		}
+	})
+}

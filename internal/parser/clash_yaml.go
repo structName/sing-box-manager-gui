@@ -34,6 +34,7 @@ type ClashProxy struct {
 	Fingerprint       string                 `yaml:"fingerprint,omitempty"`
 	ClientFingerprint string                 `yaml:"client-fingerprint,omitempty"`
 	Flow              string                 `yaml:"flow,omitempty"`
+	PacketEncoding    string                 `yaml:"packet-encoding,omitempty"` // vmess/vless: xudp/packetaddr/none
 	UDP               bool                   `yaml:"udp,omitempty"`
 	Plugin            string                 `yaml:"plugin,omitempty"`
 	PluginOpts        map[string]interface{} `yaml:"plugin-opts,omitempty"`
@@ -277,6 +278,10 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 
 	// 传输层配置
 	network := proxy.Network
+	if nodeType == "vmess" || nodeType == "vless" {
+		applyPacketEncodingValue(extra, proxy.PacketEncoding)
+	}
+
 	if network == "" {
 		network = "tcp"
 	}

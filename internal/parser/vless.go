@@ -147,6 +147,8 @@ func (p *VlessParser) Parse(rawURL string) (*storage.Node, error) {
 		extra["tls"] = tls
 	}
 
+	applyPacketEncodingFromParams(extra, params)
+
 	node := &storage.Node{
 		Tag:        name,
 		Type:       "vless",

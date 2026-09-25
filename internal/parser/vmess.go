@@ -34,9 +34,11 @@ type vmessConfig struct {
 	Path string      `json:"path"`             // 路径
 	TLS  string      `json:"tls"`              // TLS
 	SNI  string      `json:"sni"`              // SNI
-	ALPN string      `json:"alpn"`             // ALPN
-	Fp   string      `json:"fp"`               // Fingerprint
-	Skip bool        `json:"skip-cert-verify"` // 跳过证书验证
+	ALPN            string `json:"alpn"`                      // ALPN
+	Fp              string `json:"fp"`                        // Fingerprint
+	Skip            bool   `json:"skip-cert-verify"`          // 跳过证书验证
+	PacketEncoding  string `json:"packetEncoding,omitempty"`  // xudp / packetaddr / none
+	PacketEncoding2 string `json:"packet_encoding,omitempty"` // alias
 }
 
 // Parse 解析 VMess URL
@@ -178,6 +180,12 @@ func (p *VmessParser) Parse(rawURL string) (*storage.Node, error) {
 		}
 		extra["tls"] = tls
 	}
+
+	enc := config.PacketEncoding
+	if enc == "" {
+		enc = config.PacketEncoding2
+	}
+	applyPacketEncodingValue(extra, enc)
 
 	node := &storage.Node{
 		Tag:        name,
