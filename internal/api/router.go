@@ -3111,11 +3111,8 @@ func (s *Server) updateProxyChain(c *gin.Context) {
 
 	// 停用：停用关联入站端口
 	if oldChain.Enabled && !chain.Enabled {
-		outboundName := chain.Name
-		if oldChain.Name != chain.Name {
-			outboundName = chain.Name // 如果同时改名，用新名字（已更新过了）
-		}
-		disabled, err := s.disableInboundPortsForOutbound(outboundName)
+		// Tor 绑定按 chain.ID（与名称无关）；Outbound 引用已在改名分支切到新名
+		disabled, err := s.disableInboundPortsReferencingChain(chain)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -3151,8 +3148,12 @@ func (s *Server) deleteProxyChain(c *gin.Context) {
 		return
 	}
 
-	disabledPorts, err := s.disableInboundPortsForOutbound(chain.Name)
+	disabledPorts, err := s.disableInboundPortsReferencingChain(*chain)
 	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := s.clearDeletedChainTorRefs(chain.ID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -3195,12 +3196,21 @@ func (s *Server) updateInboundPortsOutbound(oldOutbound, newOutbound string) ([]
 	return updated, nil
 }
 
-func (s *Server) disableInboundPortsForOutbound(outbound string) ([]storage.InboundPort, error) {
+// disableInboundPortsReferencingChain disables enabled inbound ports that
+// reference the chain either as Outbound (by name) or via UseTorExit+TorChainID.
+// Tor-bound ports save outbound as empty (InboundPorts UI), so name-only matching
+// left them enabled; builder then mapped the missing Tor chain to REJECT.
+func (s *Server) disableInboundPortsReferencingChain(chain storage.ProxyChain) ([]storage.InboundPort, error) {
 	ports := s.store.GetInboundPorts()
 	disabled := make([]storage.InboundPort, 0)
 
 	for _, port := range ports {
-		if !port.Enabled || port.Outbound != outbound {
+		if !port.Enabled {
+			continue
+		}
+		byOutbound := port.Outbound != "" && port.Outbound == chain.Name
+		byTor := port.UseTorExit && strings.TrimSpace(port.TorChainID) == chain.ID
+		if !byOutbound && !byTor {
 			continue
 		}
 
@@ -3212,6 +3222,26 @@ func (s *Server) disableInboundPortsForOutbound(outbound string) ([]storage.Inbo
 	}
 
 	return disabled, nil
+}
+
+// clearDeletedChainTorRefs drops UseTorExit/TorChainID on any inbound still
+// pointing at a deleted chain (including ports that were already disabled).
+func (s *Server) clearDeletedChainTorRefs(chainID string) error {
+	chainID = strings.TrimSpace(chainID)
+	if chainID == "" {
+		return nil
+	}
+	for _, port := range s.store.GetInboundPorts() {
+		if strings.TrimSpace(port.TorChainID) != chainID {
+			continue
+		}
+		port.UseTorExit = false
+		port.TorChainID = ""
+		if err := s.store.UpdateInboundPort(port); err != nil {
+			return fmt.Errorf("清除入站端口 %s 的 Tor 链路引用失败: %w", port.Name, err)
+		}
+	}
+	return nil
 }
 
 func (s *Server) validateProxyChainForSave(chain storage.ProxyChain) error {
