@@ -44,6 +44,12 @@ A modern web-based management panel for [sing-box](https://github.com/SagerNet/s
   - Multi-hop proxy chain configuration
   - Country-based auto-selection
   - Custom outbound routing per inbound port
+  - Tor exit chains (see Tor bind contract below)
+
+- **Tor exit bind contract**
+  - A proxy chain that contains the Tor hop (`special:tor`) is **not** emitted into generated sing-box config merely because it is enabled.
+  - The builder only includes a Tor chain when at least one **enabled inbound port** has `UseTorExit` turned on and its `TorChainID` set to that chain (`activeTorChainIDs`).
+  - Unbound Tor chains stay in the UI for editing/diagnostics but produce no outbounds until an inbound binds them — avoiding surprise Tor instances.
 
 - **DNS Management**
   - Multiple DNS protocols (UDP, DoT, DoH)
@@ -269,6 +275,12 @@ MIT License
   - 多跳代理链配置
   - 按国家自动选择
   - 每个入站端口可配置独立出站
+  - Tor 出口链路（见下方绑定约定）
+
+- **Tor 出口绑定约定**
+  - 包含 Tor 跳（`special:tor`）的代理链路**不会**仅因「已启用」就写入生成的 sing-box 配置。
+  - 仅当至少有一个**已启用入站端口**打开 `UseTorExit` 并将其 `TorChainID` 绑定到该链路时，构建器才会通过 `activeTorChainIDs` 把该 Tor 链路写入出站。
+  - 未绑定的 Tor 链路仍可在 UI 中编辑与诊断，但不会产生出站，也不会拉起 Tor 实例。
 
 - **DNS 管理**
   - 多种 DNS 协议（UDP、DoT、DoH）
