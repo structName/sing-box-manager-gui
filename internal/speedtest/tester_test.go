@@ -219,3 +219,87 @@ func TestNodeToMihomoProxySocksUDPOverTCP(t *testing.T) {
 		t.Fatalf("udp-over-tcp = %v, want true", proxy["udp-over-tcp"])
 	}
 }
+
+func TestNodeToMihomoProxyTrojanWSTransportOpts(t *testing.T) {
+	node := &models.Node{
+		Tag:        "trojan-ws",
+		Type:       "trojan",
+		Server:     "1.2.3.4",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"password": "secret",
+			"tls": map[string]interface{}{
+				"enabled":     true,
+				"server_name": "www.example.com",
+			},
+			"transport": map[string]interface{}{
+				"type": "ws",
+				"path": "/trojanws",
+				// URL parsers store Host as map[string]string
+				"headers": map[string]string{
+					"Host": "www.example.com",
+				},
+			},
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy trojan ws error: %v", err)
+	}
+	if proxy["network"] != "ws" {
+		t.Fatalf("network = %v, want ws", proxy["network"])
+	}
+	wsOpts, ok := proxy["ws-opts"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("ws-opts missing or wrong type: %#v", proxy["ws-opts"])
+	}
+	if wsOpts["path"] != "/trojanws" {
+		t.Fatalf("ws-opts.path = %v, want /trojanws", wsOpts["path"])
+	}
+	headers, ok := wsOpts["headers"].(map[string]string)
+	if !ok {
+		t.Fatalf("ws-opts.headers type = %T, want map[string]string", wsOpts["headers"])
+	}
+	if headers["Host"] != "www.example.com" {
+		t.Fatalf("ws-opts.headers.Host = %v, want www.example.com", headers["Host"])
+	}
+	if proxy["sni"] != "www.example.com" {
+		t.Fatalf("sni = %v, want www.example.com", proxy["sni"])
+	}
+}
+
+func TestNodeToMihomoProxyTrojanGRPCTransportOpts(t *testing.T) {
+	node := &models.Node{
+		Tag:        "trojan-grpc",
+		Type:       "trojan",
+		Server:     "1.2.3.4",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"password": "secret",
+			"tls": map[string]interface{}{
+				"enabled":     true,
+				"server_name": "grpc.example.com",
+			},
+			"transport": map[string]interface{}{
+				"type":         "grpc",
+				"service_name": "TrojanService",
+			},
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy trojan grpc error: %v", err)
+	}
+	if proxy["network"] != "grpc" {
+		t.Fatalf("network = %v, want grpc", proxy["network"])
+	}
+	grpcOpts, ok := proxy["grpc-opts"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("grpc-opts missing or wrong type: %#v", proxy["grpc-opts"])
+	}
+	if grpcOpts["grpc-service-name"] != "TrojanService" {
+		t.Fatalf("grpc-service-name = %v, want TrojanService", grpcOpts["grpc-service-name"])
+	}
+}
