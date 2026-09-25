@@ -44,8 +44,8 @@ func TestUpdateManualNodeRetargetsProxyChainTags(t *testing.T) {
 		ID: "chain-1", Name: "ab-chain", Enabled: true,
 		Nodes: []string{"A", "B"},
 		ChainNodes: []storage.ChainNode{
-			{OriginalTag: "A", CopyTag: storage.GenerateChainNodeCopyTag("ab-chain", "A"), Source: "manual"},
-			{OriginalTag: "B", CopyTag: storage.GenerateChainNodeCopyTag("ab-chain", "B"), Source: "manual"},
+			{OriginalTag: "A", CopyTag: storage.GenerateChainNodeCopyTag("ab-chain", "A", 0), Source: "manual"},
+			{OriginalTag: "B", CopyTag: storage.GenerateChainNodeCopyTag("ab-chain", "B", 1), Source: "manual"},
 		},
 	}); err != nil {
 		t.Fatalf("AddProxyChain() error = %v", err)
@@ -85,7 +85,7 @@ func TestUpdateManualNodeRetargetsProxyChainTags(t *testing.T) {
 	if len(saved.Nodes) != 2 || saved.Nodes[0] != "A2" || saved.Nodes[1] != "B" {
 		t.Fatalf("nodes = %#v, want [A2 B]", saved.Nodes)
 	}
-	wantCopy := storage.GenerateChainNodeCopyTag("ab-chain", "A2")
+	wantCopy := storage.GenerateChainNodeCopyTag("ab-chain", "A2", 0)
 	if saved.ChainNodes[0].OriginalTag != "A2" || saved.ChainNodes[0].CopyTag != wantCopy {
 		t.Fatalf("ChainNodes[0] = %#v, want OriginalTag=A2 CopyTag=%s", saved.ChainNodes[0], wantCopy)
 	}

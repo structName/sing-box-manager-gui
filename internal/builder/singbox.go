@@ -650,12 +650,12 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 			continue
 		}
 
-		// 为链路中的每个节点创建副本
+		// 为链路中的每个节点创建副本（CopyTag 含 hop 下标，重复 hop 各自独立）
 		// 链路顺序: [入口, 中间..., 出口]
 		// detour 方向: 出口节点的 detour 指向前一个节点
 		// 流量路径: 客户端 → 入口 → 中间... → 出口 → 目标
 		var prevCopyTag string
-		for _, nodeTag := range chain.Nodes {
+		for hopIndex, nodeTag := range chain.Nodes {
 			if storage.IsChainCountryNodeTag(nodeTag) {
 				countryCode := storage.ParseChainCountryNodeCode(nodeTag)
 				candidateTags := countryNodes[countryCode]
@@ -663,14 +663,11 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 					continue
 				}
 
-				groupCopyTag := storage.GenerateChainNodeCopyTag(chain.Name, nodeTag)
+				groupCopyTag := reserveChainCopyTag(chainCopyTags, storage.GenerateChainNodeCopyTag(chain.Name, nodeTag, hopIndex))
 				virtualOutbounds := make([]string, 0, len(candidateTags))
 				for _, candidateTag := range candidateTags {
-					candidateCopyTag := storage.GenerateChainCountryCandidateCopyTag(chain.Name, nodeTag, candidateTag)
+					candidateCopyTag := reserveChainCopyTag(chainCopyTags, storage.GenerateChainCountryCandidateCopyTag(chain.Name, nodeTag, candidateTag, hopIndex))
 					virtualOutbounds = append(virtualOutbounds, candidateCopyTag)
-					if chainCopyTags[candidateCopyTag] {
-						continue
-					}
 
 					copyOutbound, err := b.nodeToOutbound(nodeMap[candidateTag])
 					if err != nil {
@@ -682,39 +679,31 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 					}
 
 					outbounds = append(outbounds, copyOutbound)
-					chainCopyTags[candidateCopyTag] = true
 				}
 
-				if !chainCopyTags[groupCopyTag] {
-					outbounds = append(outbounds, Outbound{
-						"tag":       groupCopyTag,
-						"type":      "urltest",
-						"outbounds": virtualOutbounds,
-						"url":       "https://www.gstatic.com/generate_204",
-						"interval":  "30m",
-						"tolerance": 50,
-					})
-					chainCopyTags[groupCopyTag] = true
-				}
+				outbounds = append(outbounds, Outbound{
+					"tag":       groupCopyTag,
+					"type":      "urltest",
+					"outbounds": virtualOutbounds,
+					"url":       "https://www.gstatic.com/generate_204",
+					"interval":  "30m",
+					"tolerance": 50,
+				})
 				prevCopyTag = groupCopyTag
 				continue
 			}
 
-			copyTag := storage.GenerateChainNodeCopyTag(chain.Name, nodeTag)
-			if !chainCopyTags[copyTag] {
-				copyOutbound, err := b.nodeToOutbound(nodeMap[nodeTag])
-				if err != nil {
-					return nil, err
-				}
-				copyOutbound["tag"] = copyTag
-				if prevCopyTag != "" {
-					copyOutbound["detour"] = prevCopyTag
-				}
-
-				outbounds = append(outbounds, copyOutbound)
-				chainCopyTags[copyTag] = true
+			copyTag := reserveChainCopyTag(chainCopyTags, storage.GenerateChainNodeCopyTag(chain.Name, nodeTag, hopIndex))
+			copyOutbound, err := b.nodeToOutbound(nodeMap[nodeTag])
+			if err != nil {
+				return nil, err
+			}
+			copyOutbound["tag"] = copyTag
+			if prevCopyTag != "" {
+				copyOutbound["detour"] = prevCopyTag
 			}
 
+			outbounds = append(outbounds, copyOutbound)
 			prevCopyTag = copyTag
 		}
 	}
@@ -844,7 +833,8 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 
 		// 创建链路选择器，指向链路的副本出口节点（最后一个）
 		// 流量路径: 选择器 → 出口节点 → (detour) 中间节点... → 入口节点 → 目标
-		exitCopyTag := storage.GenerateChainNodeCopyTag(chain.Name, chain.Nodes[len(chain.Nodes)-1])
+		exitHop := len(chain.Nodes) - 1
+		exitCopyTag := storage.GenerateChainNodeCopyTag(chain.Name, chain.Nodes[exitHop], exitHop)
 		outbounds = append(outbounds, Outbound{
 			"tag":       chain.Name,
 			"type":      "selector",
@@ -900,6 +890,12 @@ func (b *ConfigBuilder) activeTorChainIDs() map[string]bool {
 	return active
 }
 
+func reserveChainCopyTag(chainCopyTags map[string]bool, base string) string {
+	tag := storage.DisambiguateCopyTag(base, chainCopyTags)
+	chainCopyTags[tag] = true
+	return tag
+}
+
 func (b *ConfigBuilder) appendTorChainOutbounds(
 	outbounds []Outbound,
 	chainCopyTags map[string]bool,
@@ -919,8 +915,8 @@ func (b *ConfigBuilder) appendTorChainOutbounds(
 	}
 
 	var prevCopyTag string
-	for _, nodeTag := range chain.Nodes[:torIndex] {
-		generated, copyTag, ok, err := b.appendTorChainHopOutbounds(outbounds, chainCopyTags, chain, nodeTag, prevCopyTag, nodeMap, countryNodes)
+	for hopIndex, nodeTag := range chain.Nodes[:torIndex] {
+		generated, copyTag, ok, err := b.appendTorChainHopOutbounds(outbounds, chainCopyTags, chain, nodeTag, hopIndex, prevCopyTag, nodeMap, countryNodes)
 		if err != nil {
 			return nil, err
 		}
@@ -940,8 +936,9 @@ func (b *ConfigBuilder) appendTorChainOutbounds(
 		chainCopyTags[torTag] = true
 	}
 	exitTag := torTag
-	for _, nodeTag := range chain.Nodes[torIndex+1:] {
-		generated, copyTag, ok, err := b.appendTorChainHopOutbounds(outbounds, chainCopyTags, chain, nodeTag, exitTag, nodeMap, countryNodes)
+	for offset, nodeTag := range chain.Nodes[torIndex+1:] {
+		hopIndex := torIndex + 1 + offset
+		generated, copyTag, ok, err := b.appendTorChainHopOutbounds(outbounds, chainCopyTags, chain, nodeTag, hopIndex, exitTag, nodeMap, countryNodes)
 		if err != nil {
 			return nil, err
 		}
@@ -969,6 +966,7 @@ func (b *ConfigBuilder) appendTorChainHopOutbounds(
 	chainCopyTags map[string]bool,
 	chain storage.ProxyChain,
 	nodeTag string,
+	hopIndex int,
 	prevCopyTag string,
 	nodeMap map[string]storage.Node,
 	countryNodes map[string][]string,
@@ -983,14 +981,11 @@ func (b *ConfigBuilder) appendTorChainHopOutbounds(
 			return outbounds, "", false, nil
 		}
 
-		groupCopyTag := storage.GenerateChainNodeCopyTag(chain.Name, nodeTag)
+		groupCopyTag := reserveChainCopyTag(chainCopyTags, storage.GenerateChainNodeCopyTag(chain.Name, nodeTag, hopIndex))
 		virtualOutbounds := make([]string, 0, len(candidateTags))
 		for _, candidateTag := range candidateTags {
-			candidateCopyTag := storage.GenerateChainAutoCandidateCopyTag(chain.Name, candidateTag)
+			candidateCopyTag := reserveChainCopyTag(chainCopyTags, storage.GenerateChainAutoCandidateCopyTag(chain.Name, candidateTag, hopIndex))
 			virtualOutbounds = append(virtualOutbounds, candidateCopyTag)
-			if chainCopyTags[candidateCopyTag] {
-				continue
-			}
 
 			copyOutbound, err := b.nodeToOutbound(nodeMap[candidateTag])
 			if err != nil {
@@ -1001,20 +996,16 @@ func (b *ConfigBuilder) appendTorChainHopOutbounds(
 				copyOutbound["detour"] = prevCopyTag
 			}
 			outbounds = append(outbounds, copyOutbound)
-			chainCopyTags[candidateCopyTag] = true
 		}
 
-		if !chainCopyTags[groupCopyTag] {
-			outbounds = append(outbounds, Outbound{
-				"tag":       groupCopyTag,
-				"type":      "urltest",
-				"outbounds": virtualOutbounds,
-				"url":       "https://www.gstatic.com/generate_204",
-				"interval":  "30m",
-				"tolerance": 50,
-			})
-			chainCopyTags[groupCopyTag] = true
-		}
+		outbounds = append(outbounds, Outbound{
+			"tag":       groupCopyTag,
+			"type":      "urltest",
+			"outbounds": virtualOutbounds,
+			"url":       "https://www.gstatic.com/generate_204",
+			"interval":  "30m",
+			"tolerance": 50,
+		})
 		return outbounds, groupCopyTag, true, nil
 	}
 
@@ -1025,14 +1016,11 @@ func (b *ConfigBuilder) appendTorChainHopOutbounds(
 			return outbounds, "", false, nil
 		}
 
-		groupCopyTag := storage.GenerateChainNodeCopyTag(chain.Name, nodeTag)
+		groupCopyTag := reserveChainCopyTag(chainCopyTags, storage.GenerateChainNodeCopyTag(chain.Name, nodeTag, hopIndex))
 		virtualOutbounds := make([]string, 0, len(candidateTags))
 		for _, candidateTag := range candidateTags {
-			candidateCopyTag := storage.GenerateChainCountryCandidateCopyTag(chain.Name, nodeTag, candidateTag)
+			candidateCopyTag := reserveChainCopyTag(chainCopyTags, storage.GenerateChainCountryCandidateCopyTag(chain.Name, nodeTag, candidateTag, hopIndex))
 			virtualOutbounds = append(virtualOutbounds, candidateCopyTag)
-			if chainCopyTags[candidateCopyTag] {
-				continue
-			}
 
 			copyOutbound, err := b.nodeToOutbound(nodeMap[candidateTag])
 			if err != nil {
@@ -1043,20 +1031,16 @@ func (b *ConfigBuilder) appendTorChainHopOutbounds(
 				copyOutbound["detour"] = prevCopyTag
 			}
 			outbounds = append(outbounds, copyOutbound)
-			chainCopyTags[candidateCopyTag] = true
 		}
 
-		if !chainCopyTags[groupCopyTag] {
-			outbounds = append(outbounds, Outbound{
-				"tag":       groupCopyTag,
-				"type":      "urltest",
-				"outbounds": virtualOutbounds,
-				"url":       "https://www.gstatic.com/generate_204",
-				"interval":  "30m",
-				"tolerance": 50,
-			})
-			chainCopyTags[groupCopyTag] = true
-		}
+		outbounds = append(outbounds, Outbound{
+			"tag":       groupCopyTag,
+			"type":      "urltest",
+			"outbounds": virtualOutbounds,
+			"url":       "https://www.gstatic.com/generate_204",
+			"interval":  "30m",
+			"tolerance": 50,
+		})
 		return outbounds, groupCopyTag, true, nil
 	}
 
@@ -1064,20 +1048,17 @@ func (b *ConfigBuilder) appendTorChainHopOutbounds(
 	if !exists {
 		return outbounds, "", false, nil
 	}
-	copyTag := storage.GenerateChainNodeCopyTag(chain.Name, nodeTag)
-	if !chainCopyTags[copyTag] {
-		copyOutbound, err := b.nodeToOutbound(node)
-		if err != nil {
-			return nil, "", false, err
-		}
-		copyOutbound["tag"] = copyTag
-		if prevCopyTag != "" {
-			copyOutbound["detour"] = prevCopyTag
-		}
-
-		outbounds = append(outbounds, copyOutbound)
-		chainCopyTags[copyTag] = true
+	copyTag := reserveChainCopyTag(chainCopyTags, storage.GenerateChainNodeCopyTag(chain.Name, nodeTag, hopIndex))
+	copyOutbound, err := b.nodeToOutbound(node)
+	if err != nil {
+		return nil, "", false, err
 	}
+	copyOutbound["tag"] = copyTag
+	if prevCopyTag != "" {
+		copyOutbound["detour"] = prevCopyTag
+	}
+
+	outbounds = append(outbounds, copyOutbound)
 	return outbounds, copyTag, true, nil
 }
 
