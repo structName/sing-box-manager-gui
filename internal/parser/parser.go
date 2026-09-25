@@ -132,6 +132,9 @@ func ParseSubscriptionContent(content string) ([]storage.Node, error) {
 // parseServerInfo 解析服务器地址和端口
 func parseServerInfo(serverInfo string) (host string, port int, err error) {
 	serverInfo = strings.TrimSpace(serverInfo)
+	// Share-link generators commonly emit host:port/?query — a trailing path
+	// slash must not be treated as part of the port number.
+	serverInfo = strings.TrimRight(serverInfo, "/")
 
 	// 处理 IPv6 地址 [::1]:8080
 	if strings.HasPrefix(serverInfo, "[") {
