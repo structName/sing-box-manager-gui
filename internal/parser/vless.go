@@ -124,10 +124,10 @@ func (p *VlessParser) Parse(rawURL string) (*storage.Node, error) {
 			}
 			// Share links commonly use pbk/sid; some generators emit camelCase
 			// (publicKey/shortId) or kebab-case (public-key/short-id).
-			if pbk := firstNonEmptyParam(params, "pbk", "publicKey", "public-key"); pbk != "" {
+			if pbk := FirstNonEmptyParam(params, "pbk", "publicKey", "public-key"); pbk != "" {
 				reality["public_key"] = pbk
 			}
-			if sid := firstNonEmptyParam(params, "sid", "shortId", "short-id"); sid != "" {
+			if sid := FirstNonEmptyParam(params, "sid", "shortId", "short-id"); sid != "" {
 				reality["short_id"] = sid
 			}
 			tls["reality"] = reality
