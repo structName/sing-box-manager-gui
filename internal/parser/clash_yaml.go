@@ -163,9 +163,15 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 		} else if proxy.Auth != "" {
 			extra["password"] = proxy.Auth
 		}
-		if proxy.Obfs != "" && proxy.ObfsPassword != "" {
+		// Clash Meta / converters often emit only obfs-password (salamander implied).
+		// Match hysteria2:// URL import: password gates obfs; type defaults to salamander.
+		if proxy.ObfsPassword != "" {
+			obfsType := proxy.Obfs
+			if obfsType == "" {
+				obfsType = "salamander"
+			}
 			extra["obfs"] = map[string]interface{}{
-				"type":     proxy.Obfs,
+				"type":     obfsType,
 				"password": proxy.ObfsPassword,
 			}
 		}
