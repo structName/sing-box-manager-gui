@@ -109,10 +109,12 @@ func (p *TrojanParser) Parse(rawURL string) (*storage.Node, error) {
 			reality := map[string]interface{}{
 				"enabled": true,
 			}
-			if pbk := params.Get("pbk"); pbk != "" {
+			// Share links commonly use pbk/sid; some generators emit camelCase
+			// (publicKey/shortId) or kebab-case (public-key/short-id).
+			if pbk := FirstNonEmptyParam(params, "pbk", "publicKey", "public-key"); pbk != "" {
 				reality["public_key"] = pbk
 			}
-			if sid := params.Get("sid"); sid != "" {
+			if sid := FirstNonEmptyParam(params, "sid", "shortId", "short-id"); sid != "" {
 				reality["short_id"] = sid
 			}
 			tls["reality"] = reality
