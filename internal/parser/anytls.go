@@ -58,8 +58,8 @@ func (p *AnyTLSParser) Parse(rawURL string) (*storage.Node, error) {
 		"enabled": true,
 	}
 
-	// SNI
-	if sni := params.Get("sni"); sni != "" {
+	// SNI (peer/host are Clash-style aliases)
+	if sni := firstNonEmptyParam(params, "sni", "peer", "host"); sni != "" {
 		tls["server_name"] = sni
 	}
 

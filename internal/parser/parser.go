@@ -195,6 +195,18 @@ func parseURLParams(rawURL string) (addressPart string, params url.Values, name 
 	return addressPart, params, name, nil
 }
 
+
+// firstNonEmptyParam returns the first non-empty query value among keys (Clash /
+// hysteria-style aliases such as peer/host for SNI).
+func firstNonEmptyParam(params url.Values, keys ...string) string {
+	for _, key := range keys {
+		if v := params.Get(key); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // getParamString 获取字符串参数
 func getParamString(params url.Values, key string, defaultValue string) string {
 	if v := params.Get(key); v != "" {
