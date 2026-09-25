@@ -15,3 +15,6 @@ data/*
 sbm
 sublinkPro/
 .ace-tool/
+
+# npm lockfile — source of truth is web/pnpm-lock.yaml (pnpm only)
+web/package-lock.json

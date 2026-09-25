@@ -8,7 +8,7 @@ Run from the repository root:
 
 ```bash
 go test ./...
-npm --prefix web run build
+(cd web && pnpm install --frozen-lockfile && pnpm run build)
 bash -n build.sh scripts/package-deployment-assets.sh scripts/verify-deployment-vps.sh scripts/verify-deployment-vps-matrix.sh internal/deploy/templates/singbox-vless-reality.sh scripts/templates/singbox-vless-reality.sh internal/deploy/templates/probe-system.sh scripts/templates/probe-system.sh internal/deploy/templates/security-basic.sh scripts/templates/security-basic.sh scripts/runtime-cache/download-singbox.sh
 go test ./internal/deploy -run 'TestVerifyDeploymentVPSMatrix'
 git diff --check
@@ -145,7 +145,7 @@ Verification guidance:
 
 ```bash
 go test ./...
-npm --prefix web run build
+(cd web && pnpm install --frozen-lockfile && pnpm run build)
 bash -n scripts/verify-deployment-vps.sh scripts/verify-deployment-vps-matrix.sh scripts/package-deployment-assets.sh scripts/runtime-cache/download-singbox.sh scripts/templates/*.sh internal/deploy/templates/*.sh
 git diff --check
 go test ./internal/deploy -run 'TestVerifyDeploymentVPSMatrix'
