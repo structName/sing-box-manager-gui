@@ -180,6 +180,7 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 		if err := applyShadowsocksPluginToMihomo(proxy, extra); err != nil {
 			return nil, err
 		}
+		applyUDPOverTCPToMihomo(proxy, extra)
 
 	case "vmess":
 		proxy["type"] = "vmess"
@@ -466,15 +467,7 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 		if password, ok := extra["password"].(string); ok && password != "" {
 			proxy["password"] = password
 		}
-		// UDP over TCP (UoT) if configured
-		if uot, ok := extra["udp_over_tcp"].(map[string]interface{}); ok {
-			if enabled, ok := uot["enabled"].(bool); ok && enabled {
-				proxy["udp-over-tcp"] = true
-			}
-		} else if enabled, ok := extra["udp_over_tcp"].(bool); ok && enabled {
-			proxy["udp-over-tcp"] = true
-		}
-
+		applyUDPOverTCPToMihomo(proxy, extra)
 
 	default:
 		return nil, fmt.Errorf("不支持的协议类型: %s", node.Type)
@@ -533,6 +526,27 @@ func numberAsInt(raw interface{}) (int, bool) {
 		return int(value), true
 	default:
 		return 0, false
+	}
+}
+
+
+// applyUDPOverTCPToMihomo forwards sing-box Extra.udp_over_tcp to mihomo
+// udp-over-tcp / udp-over-tcp-version (SS and SOCKS).
+func applyUDPOverTCPToMihomo(proxy map[string]interface{}, extra map[string]interface{}) {
+	switch uot := extra["udp_over_tcp"].(type) {
+	case map[string]interface{}:
+		enabled, _ := uot["enabled"].(bool)
+		if !enabled {
+			return
+		}
+		proxy["udp-over-tcp"] = true
+		if version, ok := numberAsInt(uot["version"]); ok && version > 0 {
+			proxy["udp-over-tcp-version"] = version
+		}
+	case bool:
+		if uot {
+			proxy["udp-over-tcp"] = true
+		}
 	}
 }
 

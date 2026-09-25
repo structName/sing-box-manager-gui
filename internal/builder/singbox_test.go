@@ -1046,3 +1046,31 @@ func TestProxyChainDetourMixesSocksSSAndVLESS(t *testing.T) {
 		t.Fatalf("sing-box check failed: %v\n%s", err, output)
 	}
 }
+
+func TestNodeToOutboundPreservesShadowsocksUDPOverTCP(t *testing.T) {
+	builder := &ConfigBuilder{}
+	outbound, err := builder.nodeToOutbound(storage.Node{
+		Tag:        "ss-uot",
+		Type:       "shadowsocks",
+		Server:     "192.0.2.30",
+		ServerPort: 8388,
+		Extra: map[string]interface{}{
+			"method":   "aes-128-gcm",
+			"password": "secret",
+			"udp_over_tcp": map[string]interface{}{
+				"enabled": true,
+				"version": 2,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("nodeToOutbound error: %v", err)
+	}
+	uot, ok := outbound["udp_over_tcp"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("udp_over_tcp type = %T, want map", outbound["udp_over_tcp"])
+	}
+	if uot["enabled"] != true || uot["version"] != 2 {
+		t.Fatalf("udp_over_tcp = %#v, want enabled+version 2", uot)
+	}
+}
