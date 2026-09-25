@@ -1375,7 +1375,9 @@ func anyTLSDurationValue(raw interface{}) (string, bool) {
 
 func normalizeShadowsocksPlugin(plugin string, rawOpts interface{}) (string, string, error) {
 	switch strings.ToLower(plugin) {
-	case "obfs", "obfs-local":
+	case "obfs", "obfs-local", "simple-obfs", "simple_obfs":
+		// Clash Meta / older SS clients call the SIP003 simple-obfs plugin
+		// "simple-obfs"; sing-box expects the binary/plugin name "obfs-local".
 		opts, err := serializeSimpleObfsPluginOpts(rawOpts)
 		if err != nil {
 			return "", "", err

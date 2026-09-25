@@ -352,6 +352,38 @@ func TestNodeToOutboundNormalizesSimpleObfsPlugin(t *testing.T) {
 	}
 }
 
+func TestNodeToOutboundAcceptsSimpleObfsPluginAlias(t *testing.T) {
+	builder := &ConfigBuilder{}
+	for _, plugin := range []string{"simple-obfs", "simple_obfs"} {
+		t.Run(plugin, func(t *testing.T) {
+			outbound, err := builder.nodeToOutbound(storage.Node{
+				Tag:        "ss-" + plugin,
+				Type:       "shadowsocks",
+				Server:     "example.com",
+				ServerPort: 443,
+				Extra: map[string]interface{}{
+					"method":   "aes-128-gcm",
+					"password": "secret",
+					"plugin":   plugin,
+					"plugin_opts": map[string]interface{}{
+						"mode": "http",
+						"host": "cdn.example.com",
+					},
+				},
+			})
+			if err != nil {
+				t.Fatalf("nodeToOutbound error: %v", err)
+			}
+			if got := outbound["plugin"]; got != "obfs-local" {
+				t.Fatalf("plugin = %v, want obfs-local (Clash simple-obfs alias)", got)
+			}
+			if got := outbound["plugin_opts"]; got != "obfs=http;obfs-host=cdn.example.com" {
+				t.Fatalf("plugin_opts = %v, want obfs=http;obfs-host=cdn.example.com", got)
+			}
+		})
+	}
+}
+
 func TestNodeToOutboundRejectsUnsupportedShadowsocksPlugin(t *testing.T) {
 	builder := &ConfigBuilder{}
 	node := storage.Node{

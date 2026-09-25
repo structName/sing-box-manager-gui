@@ -557,7 +557,8 @@ func applyShadowsocksPluginToMihomo(proxy map[string]interface{}, extra map[stri
 
 func normalizeMihomoShadowsocksPluginName(plugin string) string {
 	switch strings.ToLower(plugin) {
-	case "obfs-local":
+	case "obfs-local", "simple-obfs", "simple_obfs", "obfs":
+		// mihomo only enables simple-obfs when plugin == "obfs"
 		return "obfs"
 	default:
 		return plugin
@@ -599,7 +600,7 @@ func parseShadowsocksPluginOptsString(plugin, raw string) map[string]interface{}
 		value = strings.TrimSpace(value)
 
 		switch pluginName {
-		case "obfs", "obfs-local":
+		case "obfs", "obfs-local", "simple-obfs", "simple_obfs":
 			switch key {
 			case "obfs":
 				parsed["mode"] = value

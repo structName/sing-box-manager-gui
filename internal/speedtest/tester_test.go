@@ -219,3 +219,69 @@ func TestNodeToMihomoProxySocksUDPOverTCP(t *testing.T) {
 		t.Fatalf("udp-over-tcp = %v, want true", proxy["udp-over-tcp"])
 	}
 }
+
+func TestNodeToMihomoProxySimpleObfsAlias(t *testing.T) {
+	for _, plugin := range []string{"simple-obfs", "simple_obfs", "obfs-local"} {
+		t.Run(plugin, func(t *testing.T) {
+			node := &models.Node{
+				Tag:        "ss-" + plugin,
+				Type:       "shadowsocks",
+				Server:     "example.com",
+				ServerPort: 8388,
+				Extra: models.JSONMap{
+					"method":   "aes-128-gcm",
+					"password": "secret",
+					"plugin":   plugin,
+					"plugin_opts": map[string]interface{}{
+						"mode": "http",
+						"host": "cdn.example.com",
+					},
+				},
+			}
+			proxy, err := nodeToMihomoProxy(node)
+			if err != nil {
+				t.Fatalf("nodeToMihomoProxy: %v", err)
+			}
+			if got := proxy["plugin"]; got != "obfs" {
+				t.Fatalf("plugin = %v, want obfs (mihomo simple-obfs name)", got)
+			}
+			opts, ok := proxy["plugin-opts"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("plugin-opts missing: %#v", proxy)
+			}
+			if opts["mode"] != "http" || opts["host"] != "cdn.example.com" {
+				t.Fatalf("plugin-opts = %#v", opts)
+			}
+		})
+	}
+}
+
+
+func TestNodeToMihomoProxySimpleObfsStringOpts(t *testing.T) {
+	node := &models.Node{
+		Tag:        "ss-str",
+		Type:       "shadowsocks",
+		Server:     "example.com",
+		ServerPort: 8388,
+		Extra: models.JSONMap{
+			"method":      "aes-128-gcm",
+			"password":    "secret",
+			"plugin":      "simple-obfs",
+			"plugin_opts": "obfs=tls;obfs-host=www.bing.com",
+		},
+	}
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy: %v", err)
+	}
+	if got := proxy["plugin"]; got != "obfs" {
+		t.Fatalf("plugin = %v, want obfs", got)
+	}
+	opts, ok := proxy["plugin-opts"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("plugin-opts missing: %#v", proxy)
+	}
+	if opts["mode"] != "tls" || opts["host"] != "www.bing.com" {
+		t.Fatalf("plugin-opts = %#v, want mode=tls host=www.bing.com", opts)
+	}
+}
