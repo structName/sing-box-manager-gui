@@ -1046,3 +1046,106 @@ func TestProxyChainDetourMixesSocksSSAndVLESS(t *testing.T) {
 		t.Fatalf("sing-box check failed: %v\n%s", err, output)
 	}
 }
+
+func TestNormalizeFilterMode(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"urltest", "urltest"},
+		{"URLTest", "urltest"},
+		{"selector", "selector"},
+		{"select", "selector"},
+		{"SELECT", "selector"},
+		{"", "selector"},
+		{"  ", "selector"},
+		{"bogus", "selector"},
+	}
+	for _, tc := range tests {
+		if got := normalizeFilterMode(tc.in); got != tc.want {
+			t.Fatalf("normalizeFilterMode(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestMatchFilterHonorsSubscriptionScope(t *testing.T) {
+	b := &ConfigBuilder{}
+	nodeA := storage.Node{Tag: "hk-a", Source: "sub-a", Country: "HK"}
+	nodeB := storage.Node{Tag: "hk-b", Source: "sub-b", Country: "HK"}
+	manual := storage.Node{Tag: "hk-manual", Source: "manual", Country: "HK"}
+
+	scoped := storage.Filter{
+		Name:          "HK-A-only",
+		AllNodes:      false,
+		Subscriptions: []string{"sub-a"},
+		Enabled:       true,
+	}
+	if !b.matchFilter(nodeA, scoped) {
+		t.Fatal("expected sub-a node to match scoped filter")
+	}
+	if b.matchFilter(nodeB, scoped) {
+		t.Fatal("expected sub-b node to be excluded from scoped filter")
+	}
+	if b.matchFilter(manual, scoped) {
+		t.Fatal("expected manual node to be excluded from scoped filter")
+	}
+
+	// AllNodes=true ignores Subscriptions list.
+	allNodes := storage.Filter{
+		Name:          "all",
+		AllNodes:      true,
+		Subscriptions: []string{"sub-a"},
+		Enabled:       true,
+	}
+	if !b.matchFilter(nodeB, allNodes) {
+		t.Fatal("AllNodes=true should include nodes outside Subscriptions")
+	}
+
+	// Empty Subscriptions keeps legacy "all sources" behavior even when AllNodes=false.
+	legacy := storage.Filter{
+		Name:          "legacy",
+		AllNodes:      false,
+		Subscriptions: nil,
+		Enabled:       true,
+	}
+	if !b.matchFilter(nodeB, legacy) || !b.matchFilter(manual, legacy) {
+		t.Fatal("empty Subscriptions should not restrict source")
+	}
+}
+
+func TestBuildOutboundsNormalizesSelectModeAndScopesFilter(t *testing.T) {
+	settings := storage.DefaultSettings()
+	nodes := []storage.Node{
+		{Tag: "n-a", Type: "socks", Server: "1.1.1.1", ServerPort: 1080, Source: "sub-a", Extra: map[string]interface{}{"version": "5"}},
+		{Tag: "n-b", Type: "socks", Server: "1.0.0.1", ServerPort: 1080, Source: "sub-b", Extra: map[string]interface{}{"version": "5"}},
+	}
+	filters := []storage.Filter{{
+		Name:          "OnlyA",
+		Mode:          "select", // legacy alias
+		AllNodes:      false,
+		Subscriptions: []string{"sub-a"},
+		Enabled:       true,
+	}}
+	b := NewConfigBuilder(settings, nodes, filters, nil, nil)
+	outbounds, err := b.buildOutbounds()
+	if err != nil {
+		t.Fatalf("buildOutbounds: %v", err)
+	}
+
+	var onlyA Outbound
+	for _, ob := range outbounds {
+		if tag, _ := ob["tag"].(string); tag == "OnlyA" {
+			onlyA = ob
+			break
+		}
+	}
+	if onlyA == nil {
+		t.Fatal("OnlyA filter outbound missing")
+	}
+	if typ, _ := onlyA["type"].(string); typ != "selector" {
+		t.Fatalf("OnlyA type = %q, want selector", typ)
+	}
+	outs, _ := onlyA["outbounds"].([]string)
+	if len(outs) != 1 || outs[0] != "n-a" {
+		t.Fatalf("OnlyA outbounds = %#v, want [n-a]", outs)
+	}
+}

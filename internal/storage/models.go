@@ -283,7 +283,7 @@ type Filter struct {
 	Exclude          []string       `json:"exclude"`           // 排除关键字
 	IncludeCountries []string       `json:"include_countries"` // 包含的国家代码
 	ExcludeCountries []string       `json:"exclude_countries"` // 排除的国家代码
-	Mode             string         `json:"mode"`              // urltest / select
+	Mode             string         `json:"mode"`              // urltest / selector (legacy alias: select)
 	URLTestConfig    *URLTestConfig `json:"urltest_config,omitempty"`
 	Subscriptions    []string       `json:"subscriptions"` // 适用的订阅ID，空表示全部
 	AllNodes         bool           `json:"all_nodes"`     // 是否应用于所有节点
