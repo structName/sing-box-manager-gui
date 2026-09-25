@@ -699,6 +699,112 @@ func TestBuildRouteDoesNotGenerateRuleSets(t *testing.T) {
 	}
 }
 
+
+func TestAppendHostOverrideRouteRulesUserBeatsSystem(t *testing.T) {
+	systemHosts := map[string][]string{
+		"example.internal": {"10.0.0.1", "10.0.0.2"},
+		"only-system.test": {"10.0.0.9"},
+	}
+	userHosts := []storage.HostEntry{
+		{ID: "u1", Domain: "example.internal", IPs: []string{"192.0.2.10", "192.0.2.11"}, Enabled: true},
+		{ID: "u2", Domain: "only-user.test", IPs: []string{"198.51.100.7"}, Enabled: true},
+		{ID: "u3", Domain: "disabled.test", IPs: []string{"203.0.113.1"}, Enabled: false},
+	}
+
+	rules := appendHostOverrideRouteRules(nil, systemHosts, userHosts)
+
+	ipByDomain := map[string]string{}
+	counts := map[string]int{}
+	for _, rule := range rules {
+		domains, _ := rule["domain"].([]string)
+		if len(domains) != 1 {
+			t.Fatalf("unexpected domains %#v", rule["domain"])
+		}
+		domain := domains[0]
+		counts[domain]++
+		ip, _ := rule["override_address"].(string)
+		ipByDomain[domain] = ip
+		if outbound, _ := rule["outbound"].(string); outbound != "DIRECT" {
+			t.Fatalf("outbound for %s = %q, want DIRECT", domain, outbound)
+		}
+	}
+
+	if counts["example.internal"] != 1 {
+		t.Fatalf("example.internal rule count = %d, want 1 (no duplicate system rule)", counts["example.internal"])
+	}
+	if ipByDomain["example.internal"] != "192.0.2.10" {
+		t.Fatalf("example.internal override = %q, want user IP 192.0.2.10", ipByDomain["example.internal"])
+	}
+	if ipByDomain["only-user.test"] != "198.51.100.7" {
+		t.Fatalf("only-user.test override = %q, want 198.51.100.7", ipByDomain["only-user.test"])
+	}
+	if ipByDomain["only-system.test"] != "10.0.0.9" {
+		t.Fatalf("only-system.test override = %q, want 10.0.0.9", ipByDomain["only-system.test"])
+	}
+	if _, ok := ipByDomain["disabled.test"]; ok {
+		t.Fatal("disabled user host must not emit a route rule")
+	}
+
+	// User rules must appear before remaining system rules so first-match cannot resurrect system IP.
+	var exampleIdx, onlySystemIdx = -1, -1
+	for i, rule := range rules {
+		domains, _ := rule["domain"].([]string)
+		if len(domains) == 0 {
+			continue
+		}
+		switch domains[0] {
+		case "example.internal":
+			exampleIdx = i
+		case "only-system.test":
+			onlySystemIdx = i
+		}
+	}
+	if exampleIdx < 0 || onlySystemIdx < 0 {
+		t.Fatalf("missing expected rules: example=%d system=%d", exampleIdx, onlySystemIdx)
+	}
+	if exampleIdx > onlySystemIdx {
+		t.Fatalf("user override rule index %d should precede leftover system rule index %d", exampleIdx, onlySystemIdx)
+	}
+}
+
+func TestBuildRouteHonorsUserHostOverSystemHost(t *testing.T) {
+	// Pick a domain present in this machine's /etc/hosts when available; otherwise
+	// synthesize by only asserting the user rule is present exactly once with user IP.
+	systemHosts := ParseSystemHosts()
+	var domain string
+	for d := range systemHosts {
+		domain = d
+		break
+	}
+	if domain == "" {
+		domain = "sbm-hosts-override.test"
+	}
+	wantIP := "192.0.2.55"
+	builder := &ConfigBuilder{
+		settings: &storage.Settings{
+			Hosts: []storage.HostEntry{
+				{ID: "override", Domain: domain, IPs: []string{wantIP}, Enabled: true},
+			},
+		},
+	}
+
+	route := builder.buildRoute()
+	matches := 0
+	for _, rule := range route.Rules {
+		domains, _ := rule["domain"].([]string)
+		if len(domains) != 1 || domains[0] != domain {
+			continue
+		}
+		matches++
+		if ip, _ := rule["override_address"].(string); ip != wantIP {
+			t.Fatalf("override_address = %q, want user IP %q", ip, wantIP)
+		}
+	}
+	if matches != 1 {
+		t.Fatalf("route rules for %q = %d, want exactly 1", domain, matches)
+	}
+}
+
 func TestBuildExperimentalIncludesClashAPISecret(t *testing.T) {
 	builder := &ConfigBuilder{
 		settings: &storage.Settings{
