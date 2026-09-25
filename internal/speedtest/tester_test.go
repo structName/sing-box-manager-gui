@@ -180,7 +180,6 @@ func TestNodeToMihomoProxySocks5URLAlias(t *testing.T) {
 	}
 }
 
-
 func TestNodeToMihomoProxySocksDefaultVersion(t *testing.T) {
 	node := &models.Node{
 		Tag:        "socks-default",
@@ -217,5 +216,167 @@ func TestNodeToMihomoProxySocksUDPOverTCP(t *testing.T) {
 	}
 	if proxy["udp-over-tcp"] != true {
 		t.Fatalf("udp-over-tcp = %v, want true", proxy["udp-over-tcp"])
+	}
+}
+
+func TestNodeToMihomoProxyVmessHTTPUpgradeTransportOpts(t *testing.T) {
+	node := &models.Node{
+		Tag:        "vmess-hu",
+		Type:       "vmess",
+		Server:     "edge.example.com",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"uuid":     "11111111-1111-1111-1111-111111111111",
+			"alter_id": 0,
+			"security": "auto",
+			"tls": map[string]interface{}{
+				"enabled":     true,
+				"server_name": "cdn.example.com",
+			},
+			"transport": map[string]interface{}{
+				"type": "httpupgrade",
+				"path": "/hu",
+				"host": "cdn.example.com",
+			},
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy: %v", err)
+	}
+	if proxy["network"] != "ws" {
+		t.Fatalf("network = %v, want ws (httpupgrade remapped)", proxy["network"])
+	}
+	opts, ok := proxy["ws-opts"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("ws-opts missing: %#v", proxy["ws-opts"])
+	}
+	if opts["path"] != "/hu" {
+		t.Fatalf("path = %v, want /hu", opts["path"])
+	}
+	if opts["v2ray-http-upgrade"] != true {
+		t.Fatalf("v2ray-http-upgrade = %v, want true", opts["v2ray-http-upgrade"])
+	}
+	headers, ok := opts["headers"].(map[string]string)
+	if !ok || headers["Host"] != "cdn.example.com" {
+		t.Fatalf("headers = %#v, want Host=cdn.example.com", opts["headers"])
+	}
+}
+
+func TestNodeToMihomoProxyVlessHTTPUpgradeClashHeaders(t *testing.T) {
+	node := &models.Node{
+		Tag:        "vless-hu",
+		Type:       "vless",
+		Server:     "edge.example.com",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"uuid": "22222222-2222-2222-2222-222222222222",
+			"tls": map[string]interface{}{
+				"enabled":     true,
+				"server_name": "cdn.example.com",
+			},
+			"transport": map[string]interface{}{
+				"type": "http_upgrade",
+				"path": "/upgrade",
+				"headers": map[string]string{
+					"Host": "cdn.example.com",
+				},
+			},
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy: %v", err)
+	}
+	if proxy["network"] != "ws" {
+		t.Fatalf("network = %v, want ws", proxy["network"])
+	}
+	opts, ok := proxy["ws-opts"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("ws-opts missing: %#v", proxy)
+	}
+	if opts["v2ray-http-upgrade"] != true {
+		t.Fatalf("v2ray-http-upgrade = %v", opts["v2ray-http-upgrade"])
+	}
+	if opts["path"] != "/upgrade" {
+		t.Fatalf("path = %v", opts["path"])
+	}
+	headers, ok := opts["headers"].(map[string]string)
+	if !ok || headers["Host"] != "cdn.example.com" {
+		t.Fatalf("headers = %#v", opts["headers"])
+	}
+}
+
+func TestNodeToMihomoProxyTrojanHTTPUpgradeTransportOpts(t *testing.T) {
+	node := &models.Node{
+		Tag:        "trojan-hu",
+		Type:       "trojan",
+		Server:     "edge.example.com",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"password": "secret",
+			"tls": map[string]interface{}{
+				"server_name": "cdn.example.com",
+			},
+			"transport": map[string]interface{}{
+				"type": "httpupgrade",
+				"path": "/trojan-hu",
+				"host": "cdn.example.com",
+			},
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy: %v", err)
+	}
+	if proxy["network"] != "ws" {
+		t.Fatalf("network = %v, want ws", proxy["network"])
+	}
+	opts, ok := proxy["ws-opts"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("ws-opts missing: %#v", proxy)
+	}
+	if opts["path"] != "/trojan-hu" {
+		t.Fatalf("path = %v", opts["path"])
+	}
+	if opts["v2ray-http-upgrade"] != true {
+		t.Fatalf("v2ray-http-upgrade = %v", opts["v2ray-http-upgrade"])
+	}
+	headers, ok := opts["headers"].(map[string]string)
+	if !ok || headers["Host"] != "cdn.example.com" {
+		t.Fatalf("headers = %#v", opts["headers"])
+	}
+}
+
+func TestNodeToMihomoProxyTrojanWSStillNetworkOnly(t *testing.T) {
+	// WS/gRPC/HTTP/H2 opts are owned by other open digs; do not invent them here.
+	node := &models.Node{
+		Tag:        "trojan-ws",
+		Type:       "trojan",
+		Server:     "edge.example.com",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"password": "secret",
+			"transport": map[string]interface{}{
+				"type": "ws",
+				"path": "/ws",
+				"headers": map[string]string{
+					"Host": "ws.example.com",
+				},
+			},
+		},
+	}
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy: %v", err)
+	}
+	if proxy["network"] != "ws" {
+		t.Fatalf("network = %v, want ws", proxy["network"])
+	}
+	if _, ok := proxy["ws-opts"]; ok {
+		t.Fatalf("ws-opts left to other dig; must not invent here, got %#v", proxy["ws-opts"])
 	}
 }
