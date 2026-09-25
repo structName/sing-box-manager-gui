@@ -1204,8 +1204,11 @@ func normalizeOutbound(outbound Outbound) error {
 // "unknown transport type: h2" while mihomo speedtest still wants network=h2
 // from the untouched Extra.
 //
-// Also coerces HTTP transport path from a list to a string — sing-box
-// V2RayHTTPOptions.path is a string (arrays fail decode).
+// Also coerces HTTP transport path lists to the first non-empty/non-whitespace
+// string — sing-box V2RayHTTPOptions.path is a string (arrays fail decode).
+// Path flattening is limited to transport.type == "http" (after h2/http2/http/2
+// → http mapping). []string and []interface{} share the same first-non-empty
+// contract.
 func normalizeTransportOutbound(outbound Outbound) {
 	transport, ok := outbound["transport"].(map[string]interface{})
 	if !ok || transport == nil {
@@ -1217,30 +1220,46 @@ func normalizeTransportOutbound(outbound Outbound) {
 			transport["type"] = "http"
 		}
 	}
-	switch path := transport["path"].(type) {
-	case []string:
-		if len(path) == 0 {
+	// V2RayHTTPOptions.path is a string; flatten list paths only after the
+	// alias map leaves type "http" (h2/http2/http/2 → http).
+	ttype, _ := transport["type"].(string)
+	if !strings.EqualFold(strings.TrimSpace(ttype), "http") {
+		return
+	}
+	if flat, isList := firstNonEmptyHTTPPath(transport["path"]); isList {
+		if flat == "" {
 			delete(transport, "path")
 		} else {
-			transport["path"] = path[0]
-		}
-	case []interface{}:
-		var first string
-		for _, item := range path {
-			if s, ok := item.(string); ok {
-				s = strings.TrimSpace(s)
-				if s != "" {
-					first = s
-					break
-				}
-			}
-		}
-		if first == "" {
-			delete(transport, "path")
-		} else {
-			transport["path"] = first
+			transport["path"] = flat
 		}
 	}
+}
+
+// firstNonEmptyHTTPPath returns the first non-empty/non-whitespace path from a
+// []string or []interface{} list. isList is false when path is not a list
+// (leave scalars untouched). Empty/whitespace-only lists yield ("", true).
+func firstNonEmptyHTTPPath(path interface{}) (flat string, isList bool) {
+	switch typed := path.(type) {
+	case []string:
+		isList = true
+		for _, item := range typed {
+			if s := strings.TrimSpace(item); s != "" {
+				return s, true
+			}
+		}
+	case []interface{}:
+		isList = true
+		for _, item := range typed {
+			s, ok := item.(string)
+			if !ok {
+				continue
+			}
+			if s = strings.TrimSpace(s); s != "" {
+				return s, true
+			}
+		}
+	}
+	return "", isList
 }
 
 // normalizeSocksOutbound ensures SOCKS outbounds have a usable version and
