@@ -21,22 +21,25 @@ func (p *VmessParser) Protocol() string {
 
 // vmessConfig VMess 配置结构
 type vmessConfig struct {
-	V    interface{} `json:"v"`                // 版本
-	Ps   string      `json:"ps"`               // 节点名称
-	Add  string      `json:"add"`              // 服务器地址
-	Port interface{} `json:"port"`             // 端口
-	ID   string      `json:"id"`               // UUID
-	Aid  interface{} `json:"aid"`              // Alter ID
-	Scy  string      `json:"scy"`              // 加密方式
-	Net  string      `json:"net"`              // 传输协议
-	Type string      `json:"type"`             // 伪装类型
-	Host string      `json:"host"`             // 伪装域名
-	Path string      `json:"path"`             // 路径
-	TLS  string      `json:"tls"`              // TLS
-	SNI  string      `json:"sni"`              // SNI
-	ALPN string      `json:"alpn"`             // ALPN
-	Fp   string      `json:"fp"`               // Fingerprint
-	Skip bool        `json:"skip-cert-verify"` // 跳过证书验证
+	V             interface{} `json:"v"`                // 版本
+	Ps            string      `json:"ps"`               // 节点名称
+	Add           string      `json:"add"`              // 服务器地址
+	Port          interface{} `json:"port"`             // 端口
+	ID            string      `json:"id"`               // UUID
+	Aid           interface{} `json:"aid"`              // Alter ID
+	Scy           string      `json:"scy"`              // 加密方式
+	Net           string      `json:"net"`              // 传输协议
+	Type          string      `json:"type"`             // 伪装类型
+	Host          string      `json:"host"`             // 伪装域名
+	Path          string      `json:"path"`             // 路径
+	TLS           interface{} `json:"tls"`              // TLS: "tls"/"true"/true/"reality"/…
+	SNI           string      `json:"sni"`              // SNI
+	ALPN          string      `json:"alpn"`             // ALPN
+	Fp            string      `json:"fp"`               // Fingerprint
+	Pbk           string      `json:"pbk"`              // Reality public key
+	Sid           string      `json:"sid"`              // Reality short id
+	Skip          interface{} `json:"skip-cert-verify"` // 跳过证书验证 (bool or string)
+	AllowInsecure interface{} `json:"allowInsecure"`    // 跳过证书验证别名
 }
 
 // Parse 解析 VMess URL
@@ -149,8 +152,10 @@ func (p *VmessParser) Parse(rawURL string) (*storage.Node, error) {
 		extra["transport"] = transport
 	}
 
-	// TLS 配置
-	if config.TLS == "tls" {
+	// TLS 配置 — accept common truthy variants emitted by converters:
+	// "tls", "true", "TLS", true, 1, "reality", …
+	tlsEnabled, tlsReality := vmessTLSEnabled(config.TLS)
+	if tlsEnabled {
 		tls := map[string]interface{}{
 			"enabled": true,
 		}
@@ -164,10 +169,29 @@ func (p *VmessParser) Parse(rawURL string) (*storage.Node, error) {
 			// 这是为了确保 TLS 握手时有正确的 SNI
 			tls["server_name"] = config.Add
 		}
-		if config.Skip {
+		if vmessTruthy(config.Skip) || vmessTruthy(config.AllowInsecure) {
 			tls["insecure"] = true
 		}
-		if config.Fp != "" {
+		if tlsReality {
+			reality := map[string]interface{}{
+				"enabled": true,
+			}
+			if config.Pbk != "" {
+				reality["public_key"] = config.Pbk
+			}
+			if config.Sid != "" {
+				reality["short_id"] = config.Sid
+			}
+			tls["reality"] = reality
+			fp := config.Fp
+			if fp == "" {
+				fp = "chrome"
+			}
+			tls["utls"] = map[string]interface{}{
+				"enabled":     true,
+				"fingerprint": fp,
+			}
+		} else if config.Fp != "" {
 			tls["utls"] = map[string]interface{}{
 				"enabled":     true,
 				"fingerprint": config.Fp,
@@ -188,4 +212,68 @@ func (p *VmessParser) Parse(rawURL string) (*storage.Node, error) {
 	}
 
 	return node, nil
+}
+
+// vmessTLSEnabled reports whether the VMess "tls" JSON field enables TLS, and
+// whether Reality should be configured. Converters commonly emit "true"/true/"TLS"
+// instead of the canonical "tls"; a boolean true previously failed JSON decode.
+func vmessTLSEnabled(v interface{}) (enabled bool, reality bool) {
+	switch t := v.(type) {
+	case nil:
+		return false, false
+	case bool:
+		return t, false
+	case string:
+		s := strings.ToLower(strings.TrimSpace(t))
+		switch s {
+		case "", "0", "false", "no", "none", "off":
+			return false, false
+		case "reality":
+			return true, true
+		case "tls", "true", "1", "yes", "on":
+			return true, false
+		default:
+			// Unknown non-empty value (e.g. legacy "xtls") — treat as TLS on.
+			return true, false
+		}
+	case float64:
+		return t != 0, false
+	case int:
+		return t != 0, false
+	case json.Number:
+		n, err := t.Int64()
+		if err != nil {
+			f, ferr := t.Float64()
+			return ferr == nil && f != 0, false
+		}
+		return n != 0, false
+	default:
+		return false, false
+	}
+}
+
+// vmessTruthy accepts bool or common string/number truthy forms used in VMess JSON.
+func vmessTruthy(v interface{}) bool {
+	switch t := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return t
+	case string:
+		s := strings.ToLower(strings.TrimSpace(t))
+		return s == "true" || s == "1" || s == "yes" || s == "on"
+	case float64:
+		return t != 0
+	case int:
+		return t != 0
+	case json.Number:
+		n, err := t.Int64()
+		if err != nil {
+			f, ferr := t.Float64()
+			return ferr == nil && f != 0
+		}
+		return n != 0
+	default:
+		return false
+	}
 }
