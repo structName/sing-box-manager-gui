@@ -224,6 +224,13 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 			extra["username"] = proxy.Username
 		}
 
+	case "socks4a":
+		nodeType = "socks"
+		extra["version"] = "4a"
+		if proxy.Username != "" {
+			extra["username"] = proxy.Username
+		}
+
 	case "anytls":
 		nodeType = "anytls"
 		extra["password"] = proxy.Password

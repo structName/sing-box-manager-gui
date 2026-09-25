@@ -36,8 +36,12 @@ func (p *SocksParser) Parse(rawURL string) (*storage.Node, error) {
 	idx := strings.Index(rawURL, "://")
 	if idx != -1 {
 		protocol := strings.ToLower(rawURL[:idx])
-		if protocol == "socks4" || protocol == "socks4a" {
+		switch protocol {
+		case "socks4":
 			version = "4"
+		case "socks4a":
+			// SOCKS4A keeps remote DNS; must not collapse to plain "4"
+			version = "4a"
 		}
 	}
 
