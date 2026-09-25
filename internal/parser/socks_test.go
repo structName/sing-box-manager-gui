@@ -66,6 +66,16 @@ func TestSocksParser_Parse(t *testing.T) {
 			wantErr:      false,
 		},
 		{
+			name:         "SOCKS4A keeps remote DNS version",
+			url:          "socks4a://user@example.com:1080#socks4a-test",
+			wantServer:   "example.com",
+			wantPort:     1080,
+			wantUsername: "user",
+			wantPassword: "",
+			wantVersion:  "4a",
+			wantErr:      false,
+		},
+		{
 			name:         "IPv6 address",
 			url:          "socks://user:pass@[::1]:1080#ipv6-test",
 			wantServer:   "::1",
