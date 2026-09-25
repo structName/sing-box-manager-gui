@@ -141,6 +141,48 @@ function createDefaultPortFormData() {
   };
 }
 
+
+type PortAuthFields = {
+  username: string;
+  password: string;
+};
+
+type ResolvePortAuthResult =
+  | { ok: true; auth?: PortAuthFields }
+  | { ok: false; error: string };
+
+/** Resolve inbound auth for create/update. PUT replaces the whole port, so omitting auth clears it. */
+function resolvePortAuth(options: {
+  username: string;
+  password: string;
+  existingAuth?: PortAuthFields;
+  clearAuth: boolean;
+}): ResolvePortAuthResult {
+  const username = options.username.trim();
+  const password = options.password.trim();
+  const hasUsername = Boolean(username);
+  const hasPassword = Boolean(password);
+
+  if (hasUsername !== hasPassword) {
+    return { ok: false, error: '用户名和密码需同时填写，或同时留空' };
+  }
+
+  if (hasUsername && hasPassword) {
+    return { ok: true, auth: { username, password } };
+  }
+
+  // Both blank: create without auth, or explicit clear on edit.
+  // Never silently drop existing credentials — require the clear-auth switch.
+  if (options.existingAuth && !options.clearAuth) {
+    return {
+      ok: false,
+      error: '请填写用户名和密码，或勾选「清除用户认证」以移除现有认证',
+    };
+  }
+
+  return { ok: true };
+}
+
 function getApiErrorMessage(error: unknown, fallback: string): string {
   const responseError = (error as { response?: { data?: { error?: string } } })?.response?.data?.error;
   return typeof responseError === 'string' && responseError ? responseError : fallback;
@@ -169,6 +211,7 @@ export default function InboundPorts() {
   const [nodeGroups, setNodeGroups] = useState<NodeGroup[]>([]);
   const { isOpen: isPortModalOpen, onOpen: onPortModalOpen, onClose: onPortModalClose } = useDisclosure();
   const [editingPort, setEditingPort] = useState<InboundPort | null>(null);
+  const [clearAuth, setClearAuth] = useState(false);
   const [portFormData, setPortFormData] = useState(createDefaultPortFormData);
   const [testingDraftPort, setTestingDraftPort] = useState(false);
   const [draftPortTest, setDraftPortTest] = useState<DraftPortTestResult | null>(null);
@@ -265,6 +308,7 @@ export default function InboundPorts() {
   // 入站端口处理函数
   const handleAddPort = () => {
     setEditingPort(null);
+    setClearAuth(false);
     setPortFormData(createDefaultPortFormData());
     setDraftPortTest(null);
     // 重置筛选状态
@@ -291,6 +335,7 @@ export default function InboundPorts() {
             : 'node';
 
     setEditingPort(port);
+    setClearAuth(false);
     setDraftPortTest(null);
     setPortFormData({
       name: port.name,
@@ -333,7 +378,18 @@ export default function InboundPorts() {
     }
   };
 
-  const buildPortPayload = (): InboundPortPayload & { id?: string } => {
+  const buildPortPayload = (): (InboundPortPayload & { id?: string }) | null => {
+    const authResult = resolvePortAuth({
+      username: portFormData.username,
+      password: portFormData.password,
+      existingAuth: editingPort?.auth,
+      clearAuth,
+    });
+    if (!authResult.ok) {
+      toast.error(authResult.error);
+      return null;
+    }
+
     const data: InboundPortPayload = {
       name: portFormData.name,
       type: portFormData.type,
@@ -345,12 +401,8 @@ export default function InboundPorts() {
       enabled: portFormData.enabled,
     };
 
-    // 如果有用户名和密码，添加认证
-    if (portFormData.username && portFormData.password) {
-      data.auth = {
-        username: portFormData.username,
-        password: portFormData.password,
-      };
+    if (authResult.auth) {
+      data.auth = authResult.auth;
     }
 
     return editingPort ? { ...data, id: editingPort.id } : data;
@@ -362,9 +414,14 @@ export default function InboundPorts() {
       return;
     }
 
+    const draftPayload = buildPortPayload();
+    if (!draftPayload) {
+      return;
+    }
+
     setTestingDraftPort(true);
     try {
-      const res = await inboundPortApi.testDraft(buildPortPayload());
+      const res = await inboundPortApi.testDraft(draftPayload);
       const result = res.data.data?.port;
       setDraftPortTest(result || null);
       if (result?.available) {
@@ -412,6 +469,9 @@ export default function InboundPorts() {
     }
 
     const data = buildPortPayload();
+    if (!data) {
+      return;
+    }
 
     try {
       if (editingPort) {
@@ -853,17 +913,49 @@ export default function InboundPorts() {
                   <div className="grid gap-4">
                     <Input
                       label="用户名"
-                      placeholder="留空表示无需认证"
+                      placeholder={editingPort?.auth && !clearAuth ? '与密码一并填写，或勾选下方清除' : '留空表示无需认证'}
                       value={portFormData.username}
-                      onChange={(e) => setPortFormData({ ...portFormData, username: e.target.value })}
+                      isDisabled={clearAuth}
+                      onChange={(e) => {
+                        setClearAuth(false);
+                        setPortFormData({ ...portFormData, username: e.target.value });
+                      }}
                     />
                     <Input
                       label="密码"
                       type="password"
-                      placeholder="留空表示无需认证"
+                      placeholder={editingPort?.auth && !clearAuth ? '与用户名一并填写，或勾选下方清除' : '留空表示无需认证'}
                       value={portFormData.password}
-                      onChange={(e) => setPortFormData({ ...portFormData, password: e.target.value })}
+                      isDisabled={clearAuth}
+                      onChange={(e) => {
+                        setClearAuth(false);
+                        setPortFormData({ ...portFormData, password: e.target.value });
+                      }}
                     />
+                    {editingPort?.auth && (
+                      <div className="flex items-center justify-between rounded-2xl border border-warning-200 bg-warning-50/60 p-4 dark:border-warning-400/40 dark:bg-warning-500/10">
+                        <div>
+                          <p className="font-medium text-default-900">清除用户认证</p>
+                          <p className="text-sm text-default-500">勾选后保存将移除现有用户名和密码，入站变为开放访问。</p>
+                        </div>
+                        <Switch
+                          color="warning"
+                          isSelected={clearAuth}
+                          onValueChange={(enabled) => {
+                            setClearAuth(enabled);
+                            if (enabled) {
+                              setPortFormData({ ...portFormData, username: '', password: '' });
+                            } else if (editingPort?.auth) {
+                              setPortFormData({
+                                ...portFormData,
+                                username: editingPort.auth.username || '',
+                                password: editingPort.auth.password || '',
+                              });
+                            }
+                          }}
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
 

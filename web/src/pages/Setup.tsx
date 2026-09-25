@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
+import type { FormEvent } from 'react';
 import { Button, Card, CardBody, CardHeader, Input } from '@nextui-org/react';
 import { ShieldCheck } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
@@ -18,24 +19,35 @@ export default function Setup() {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
 
-  const handleSubmit = async () => {
-    if (password.trim().length < MIN_PASSWORD_LENGTH) {
+  const handleSubmit = async (event?: FormEvent<HTMLFormElement>) => {
+    event?.preventDefault();
+    if (submittingRef.current) {
+      return;
+    }
+
+    const trimmedPassword = password.trim();
+    const trimmedConfirmPassword = confirmPassword.trim();
+
+    if (trimmedPassword.length < MIN_PASSWORD_LENGTH) {
       toast.error(`密码长度至少为 ${MIN_PASSWORD_LENGTH} 位`);
       return;
     }
-    if (password !== confirmPassword) {
+    if (trimmedPassword !== trimmedConfirmPassword) {
       toast.error('两次输入的密码不一致');
       return;
     }
 
+    submittingRef.current = true;
+    setSubmitting(true);
     try {
-      setSubmitting(true);
-      await bootstrap(password, confirmPassword);
+      await bootstrap(trimmedPassword, trimmedConfirmPassword);
       navigate('/', { replace: true });
     } catch (error) {
       toast.error(getApiErrorMessage(error, '初始化管理员密码失败'));
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
   };
@@ -55,15 +67,7 @@ export default function Setup() {
           </div>
         </CardHeader>
         <CardBody className="px-6 pb-6">
-          <form
-            className="space-y-5"
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (!submitting) {
-                void handleSubmit();
-              }
-            }}
-          >
+          <form className="space-y-5" onSubmit={handleSubmit}>
             <Input
               id="setup-password"
               name="password"
@@ -83,11 +87,6 @@ export default function Setup() {
               placeholder="再次输入管理员密码"
               value={confirmPassword}
               onChange={(event) => setConfirmPassword(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && !submitting) {
-                  void handleSubmit();
-                }
-              }}
             />
             <Button color="primary" type="submit" isLoading={submitting}>
               完成初始化

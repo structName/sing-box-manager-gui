@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
+import type { FormEvent } from 'react';
 import { Button, Card, CardBody, CardHeader, Input } from '@nextui-org/react';
 import { Activity } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -16,25 +17,34 @@ export default function Login() {
   const login = useAuthStore((state) => state.login);
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
 
   const redirectPath = useMemo(() => {
     const nextPath = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname;
     return nextPath || '/';
   }, [location.state]);
 
-  const handleSubmit = async () => {
-    if (!password.trim()) {
+  const handleSubmit = async (event?: FormEvent<HTMLFormElement>) => {
+    event?.preventDefault();
+    if (submittingRef.current) {
+      return;
+    }
+
+    const trimmedPassword = password.trim();
+    if (!trimmedPassword) {
       toast.error('请输入管理员密码');
       return;
     }
 
+    submittingRef.current = true;
+    setSubmitting(true);
     try {
-      setSubmitting(true);
-      await login(password);
+      await login(trimmedPassword);
       navigate(redirectPath, { replace: true });
     } catch (error) {
       toast.error(getApiErrorMessage(error, '登录失败'));
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
   };
@@ -54,15 +64,7 @@ export default function Login() {
           </div>
         </CardHeader>
         <CardBody className="px-6 pb-6">
-          <form
-            className="space-y-5"
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (!submitting) {
-                void handleSubmit();
-              }
-            }}
-          >
+          <form className="space-y-5" onSubmit={handleSubmit}>
             <Input
               id="login-password"
               name="password"
@@ -72,11 +74,6 @@ export default function Login() {
               placeholder="请输入已设置的密码"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && !submitting) {
-                  void handleSubmit();
-                }
-              }}
             />
             <Button color="primary" type="submit" isLoading={submitting}>
               登录
