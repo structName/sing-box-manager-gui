@@ -752,14 +752,15 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 		groupTag := filter.Name
 		filterGroupTags = append(filterGroupTags, groupTag)
 
+		mode := normalizeFilterMode(filter.Mode)
 		// 创建分组
 		group := Outbound{
 			"tag":       groupTag,
-			"type":      filter.Mode,
+			"type":      mode,
 			"outbounds": filteredTags,
 		}
 
-		if filter.Mode == "urltest" {
+		if mode == "urltest" {
 			if filter.URLTestConfig != nil {
 				group["url"] = filter.URLTestConfig.URL
 				group["interval"] = filter.URLTestConfig.Interval
@@ -1491,8 +1492,36 @@ func stringifyPluginOpt(value interface{}) string {
 	return text
 }
 
+// normalizeFilterMode maps stored filter modes to sing-box outbound types.
+// Legacy/docs alias "select" must become "selector"; empty defaults to selector.
+func normalizeFilterMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "urltest":
+		return "urltest"
+	case "selector", "select", "":
+		return "selector"
+	default:
+		return "selector"
+	}
+}
+
 // matchFilter 检查节点是否匹配过滤器
 func (b *ConfigBuilder) matchFilter(node storage.Node, filter storage.Filter) bool {
+	// 0. 来源范围：AllNodes 或空 Subscriptions 表示不限来源；
+	//    否则仅匹配 Source 落在 Subscriptions 中的节点（手动节点 Source=manual）。
+	if !filter.AllNodes && len(filter.Subscriptions) > 0 {
+		sourceMatched := false
+		for _, subID := range filter.Subscriptions {
+			if node.Source == subID {
+				sourceMatched = true
+				break
+			}
+		}
+		if !sourceMatched {
+			return false
+		}
+	}
+
 	name := strings.ToLower(node.Tag)
 
 	// 1. 检查国家包含条件
