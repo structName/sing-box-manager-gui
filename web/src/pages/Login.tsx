@@ -72,11 +72,6 @@ export default function Login() {
               placeholder="请输入已设置的密码"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && !submitting) {
-                  void handleSubmit();
-                }
-              }}
             />
             <Button color="primary" type="submit" isLoading={submitting}>
               登录

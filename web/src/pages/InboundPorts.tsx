@@ -170,6 +170,7 @@ export default function InboundPorts() {
   const { isOpen: isPortModalOpen, onOpen: onPortModalOpen, onClose: onPortModalClose } = useDisclosure();
   const [editingPort, setEditingPort] = useState<InboundPort | null>(null);
   const [portFormData, setPortFormData] = useState(createDefaultPortFormData);
+  const [confirmClearAuth, setConfirmClearAuth] = useState(false);
   const [testingDraftPort, setTestingDraftPort] = useState(false);
   const [draftPortTest, setDraftPortTest] = useState<DraftPortTestResult | null>(null);
   const [testingPorts, setTestingPorts] = useState<Record<string, boolean>>({});
@@ -266,6 +267,7 @@ export default function InboundPorts() {
   const handleAddPort = () => {
     setEditingPort(null);
     setPortFormData(createDefaultPortFormData());
+    setConfirmClearAuth(false);
     setDraftPortTest(null);
     // 重置筛选状态
     setOutboundType('basic');
@@ -292,6 +294,7 @@ export default function InboundPorts() {
 
     setEditingPort(port);
     setDraftPortTest(null);
+    setConfirmClearAuth(false);
     setPortFormData({
       name: port.name,
       type: port.type,
@@ -334,6 +337,8 @@ export default function InboundPorts() {
   };
 
   const buildPortPayload = (): InboundPortPayload & { id?: string } => {
+    const username = portFormData.username.trim();
+    const password = portFormData.password.trim();
     const data: InboundPortPayload = {
       name: portFormData.name,
       type: portFormData.type,
@@ -345,11 +350,11 @@ export default function InboundPorts() {
       enabled: portFormData.enabled,
     };
 
-    // 如果有用户名和密码，添加认证
-    if (portFormData.username && portFormData.password) {
+    // 仅在用户名+密码都填时附带 auth
+    if (username && password) {
       data.auth = {
-        username: portFormData.username,
-        password: portFormData.password,
+        username,
+        password,
       };
     }
 
@@ -408,6 +413,18 @@ export default function InboundPorts() {
     }
     if (portFormData.use_tor_exit && !portFormData.tor_chain_id) {
       toast.error('请选择 Tor 链路');
+      return;
+    }
+
+    const username = portFormData.username.trim();
+    const password = portFormData.password.trim();
+    const hadAuth = Boolean(editingPort?.auth);
+    if ((username && !password) || (!username && password)) {
+      toast.error('用户名和密码需同时填写，或同时留空');
+      return;
+    }
+    if (hadAuth && !username && !password && !confirmClearAuth) {
+      toast.error('清空认证会移除入站密码保护，请勾选「确认清除认证」后再保存');
       return;
     }
 
@@ -855,15 +872,29 @@ export default function InboundPorts() {
                       label="用户名"
                       placeholder="留空表示无需认证"
                       value={portFormData.username}
-                      onChange={(e) => setPortFormData({ ...portFormData, username: e.target.value })}
+                      onChange={(e) => {
+                        setConfirmClearAuth(false);
+                        setPortFormData({ ...portFormData, username: e.target.value });
+                      }}
                     />
                     <Input
                       label="密码"
                       type="password"
                       placeholder="留空表示无需认证"
                       value={portFormData.password}
-                      onChange={(e) => setPortFormData({ ...portFormData, password: e.target.value })}
+                      onChange={(e) => {
+                        setConfirmClearAuth(false);
+                        setPortFormData({ ...portFormData, password: e.target.value });
+                      }}
                     />
+                    {Boolean(editingPort?.auth) && !portFormData.username.trim() && !portFormData.password.trim() && (
+                      <Switch
+                        isSelected={confirmClearAuth}
+                        onValueChange={setConfirmClearAuth}
+                      >
+                        确认清除认证（保存后入站将不再需要密码）
+                      </Switch>
+                    )}
                   </div>
                 </div>
 
