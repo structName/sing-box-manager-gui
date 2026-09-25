@@ -70,6 +70,8 @@ func (p *VlessParser) Parse(rawURL string) (*storage.Node, error) {
 					"Host": host,
 				}
 			}
+		case "httpupgrade", "http_upgrade":
+			applyHTTPUpgradeFields(transport, params.Get("path"), params.Get("host"), nil)
 		case "http", "h2":
 			if path := params.Get("path"); path != "" {
 				transport["path"] = path

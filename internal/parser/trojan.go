@@ -71,6 +71,8 @@ func (p *TrojanParser) Parse(rawURL string) (*storage.Node, error) {
 					"Host": host,
 				}
 			}
+		case "httpupgrade", "http_upgrade":
+			applyHTTPUpgradeFields(transport, params.Get("path"), params.Get("host"), nil)
 		case "grpc":
 			if serviceName := params.Get("serviceName"); serviceName != "" {
 				transport["service_name"] = serviceName

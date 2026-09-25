@@ -64,10 +64,12 @@ type ClashProxy struct {
 
 // WSOpts WebSocket 选项
 type WSOpts struct {
-	Path                string            `yaml:"path,omitempty"`
-	Headers             map[string]string `yaml:"headers,omitempty"`
-	MaxEarlyData        int               `yaml:"max-early-data,omitempty"`
-	EarlyDataHeaderName string            `yaml:"early-data-header-name,omitempty"`
+	Path                     string            `yaml:"path,omitempty"`
+	Headers                  map[string]string `yaml:"headers,omitempty"`
+	MaxEarlyData             int               `yaml:"max-early-data,omitempty"`
+	EarlyDataHeaderName      string            `yaml:"early-data-header-name,omitempty"`
+	V2rayHTTPUpgrade         bool              `yaml:"v2ray-http-upgrade,omitempty"`
+	V2rayHTTPUpgradeFastOpen bool              `yaml:"v2ray-http-upgrade-fast-open,omitempty"`
 }
 
 // H2Opts HTTP/2 选项
@@ -289,6 +291,12 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 		switch network {
 		case "ws":
 			if proxy.WSOpts != nil {
+				// Clash Meta encodes HTTPUpgrade as network=ws + v2ray-http-upgrade,
+				// or as network=httpupgrade with the same ws-opts shape.
+				if proxy.WSOpts.V2rayHTTPUpgrade || proxy.WSOpts.V2rayHTTPUpgradeFastOpen {
+					applyHTTPUpgradeFields(transport, proxy.WSOpts.Path, "", proxy.WSOpts.Headers)
+					break
+				}
 				if proxy.WSOpts.Path != "" {
 					transport["path"] = proxy.WSOpts.Path
 				}
@@ -301,6 +309,10 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 				if proxy.WSOpts.EarlyDataHeaderName != "" {
 					transport["early_data_header_name"] = proxy.WSOpts.EarlyDataHeaderName
 				}
+			}
+		case "httpupgrade":
+			if proxy.WSOpts != nil {
+				applyHTTPUpgradeFields(transport, proxy.WSOpts.Path, "", proxy.WSOpts.Headers)
 			}
 		case "h2":
 			if proxy.H2Opts != nil {

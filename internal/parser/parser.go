@@ -222,3 +222,26 @@ func getParamInt(params url.Values, key string, defaultValue int) int {
 func secondsDurationString(seconds int) string {
 	return fmt.Sprintf("%ds", seconds)
 }
+
+// applyHTTPUpgradeFields sets sing-box httpupgrade transport path/host/headers.
+// Share links and Clash Meta put the authority in "host" query / Host header;
+// sing-box expects a top-level "host" string (headers remain optional extras).
+func applyHTTPUpgradeFields(transport map[string]interface{}, path, host string, headers map[string]string) {
+	transport["type"] = "httpupgrade"
+	if path != "" {
+		transport["path"] = path
+	}
+	if host != "" {
+		transport["host"] = host
+	}
+	if len(headers) > 0 {
+		transport["headers"] = headers
+		if host == "" {
+			if h := headers["Host"]; h != "" {
+				transport["host"] = h
+			} else if h := headers["host"]; h != "" {
+				transport["host"] = h
+			}
+		}
+	}
+}

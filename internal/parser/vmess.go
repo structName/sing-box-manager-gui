@@ -129,6 +129,8 @@ func (p *VmessParser) Parse(rawURL string) (*storage.Node, error) {
 					"Host": config.Host,
 				}
 			}
+		case "httpupgrade", "http_upgrade":
+			applyHTTPUpgradeFields(transport, config.Path, config.Host, nil)
 		case "http", "h2":
 			if config.Path != "" {
 				transport["path"] = config.Path
