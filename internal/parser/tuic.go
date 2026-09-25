@@ -67,7 +67,7 @@ func (p *TuicParser) Parse(rawURL string) (*storage.Node, error) {
 	}
 
 	// SNI (peer/host are Clash-style aliases)
-	if sni := firstNonEmptyParam(params, "sni", "peer", "host"); sni != "" {
+	if sni := FirstNonEmptyParam(params, "sni", "peer", "host"); sni != "" {
 		tls["server_name"] = sni
 	}
 
