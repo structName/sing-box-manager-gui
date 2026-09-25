@@ -1440,27 +1440,29 @@ func (s *Server) getSystemHosts(c *gin.Context) {
 // ==================== 配置 API ====================
 
 func (s *Server) generateConfig(c *gin.Context) {
-	configJSON, err := s.buildConfig()
+	result, err := s.buildConfig()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"data": configJSON})
+	resp := gin.H{"data": result.JSON}
+	applySkipFields(resp, result)
+	c.JSON(http.StatusOK, resp)
 }
 
 func (s *Server) previewConfig(c *gin.Context) {
-	configJSON, err := s.buildConfig()
+	result, err := s.buildConfig()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.String(http.StatusOK, configJSON)
+	c.String(http.StatusOK, result.JSON)
 }
 
 func (s *Server) applyConfig(c *gin.Context) {
-	configJSON, err := s.buildConfig()
+	result, err := s.buildConfig()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1468,7 +1470,7 @@ func (s *Server) applyConfig(c *gin.Context) {
 
 	// 保存配置文件
 	settings := s.store.GetSettings()
-	if err := s.saveConfigFile(s.resolvePath(settings.ConfigPath), configJSON); err != nil {
+	if err := s.saveConfigFile(s.resolvePath(settings.ConfigPath), result.JSON); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -1487,18 +1489,20 @@ func (s *Server) applyConfig(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "配置已应用"})
+	resp := gin.H{"message": "配置已应用"}
+	applySkipFields(resp, result)
+	c.JSON(http.StatusOK, resp)
 }
 
 func (s *Server) buildAndSaveCurrentConfig() error {
 	settings := s.store.GetSettings()
 
-	configJSON, err := s.buildConfig()
+	result, err := s.buildConfig()
 	if err != nil {
 		return err
 	}
 
-	return s.saveConfigFile(s.resolvePath(settings.ConfigPath), configJSON)
+	return s.saveConfigFile(s.resolvePath(settings.ConfigPath), result.JSON)
 }
 
 // PrepareRuntimeConfig 在自动恢复 sing-box 前重建并校验当前 Profile 配置。
@@ -1514,11 +1518,11 @@ func rebuildConfigAndRestart(build func() error, restart func() error) error {
 	return restart()
 }
 
-func (s *Server) buildConfig() (string, error) {
+func (s *Server) buildConfig() (*builder.ValidatedConfig, error) {
 	settings := s.store.GetSettings()
 	if settings.ClashUIEnabled {
 		if err := zashboard.EnsureEmbeddedUI(s.store.GetDataDir(), settings.ClashUIPath); err != nil {
-			return "", fmt.Errorf("准备内置 zashboard 资源失败: %w", err)
+			return nil, fmt.Errorf("准备内置 zashboard 资源失败: %w", err)
 		}
 	}
 
@@ -1536,15 +1540,59 @@ func (s *Server) buildConfig() (string, error) {
 	}
 	result, err := b.BuildValidatedJSON(validate)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	for _, skipped := range result.SkippedNodes {
 		logger.Warn("跳过无效代理节点 tag=%q type=%q: %s", skipped.Tag, skipped.Type, skipped.Reason)
 	}
-	if len(result.SkippedNodes) > 0 {
-		logger.Warn("配置生成完成，共跳过 %d 个无效代理节点", len(result.SkippedNodes))
+	for _, skipped := range result.SkippedChains {
+		logger.Warn("跳过代理链路 id=%q name=%q: %s", skipped.ID, skipped.Name, skipped.Reason)
 	}
-	return result.JSON, nil
+	if len(result.SkippedNodes) > 0 || len(result.SkippedChains) > 0 {
+		logger.Warn("配置生成完成，跳过 %d 个无效节点、%d 条链路", len(result.SkippedNodes), len(result.SkippedChains))
+	}
+	return result, nil
+}
+
+func formatConfigSkipWarning(result *builder.ValidatedConfig) string {
+	if result == nil {
+		return ""
+	}
+	parts := make([]string, 0, 2)
+	if n := len(result.SkippedNodes); n > 0 {
+		details := make([]string, 0, n)
+		for _, skipped := range result.SkippedNodes {
+			details = append(details, fmt.Sprintf("%s (%s)", skipped.Tag, skipped.Reason))
+		}
+		parts = append(parts, fmt.Sprintf("skipped %d node(s): %s", n, strings.Join(details, "; ")))
+	}
+	if n := len(result.SkippedChains); n > 0 {
+		details := make([]string, 0, n)
+		for _, skipped := range result.SkippedChains {
+			name := skipped.Name
+			if name == "" {
+				name = skipped.ID
+			}
+			details = append(details, fmt.Sprintf("%s (%s)", name, skipped.Reason))
+		}
+		parts = append(parts, fmt.Sprintf("skipped %d chain(s): %s", n, strings.Join(details, "; ")))
+	}
+	return strings.Join(parts, " | ")
+}
+
+func applySkipFields(dst gin.H, result *builder.ValidatedConfig) {
+	if result == nil {
+		return
+	}
+	if len(result.SkippedNodes) > 0 {
+		dst["skipped_nodes"] = result.SkippedNodes
+	}
+	if len(result.SkippedChains) > 0 {
+		dst["skipped_chains"] = result.SkippedChains
+	}
+	if warning := formatConfigSkipWarning(result); warning != "" {
+		dst["warning"] = warning
+	}
 }
 
 func (s *Server) saveConfigFile(path, content string) error {
@@ -1556,11 +1604,12 @@ func (s *Server) saveConfigFile(path, content string) error {
 
 // exportConfig 导出 sing-box 配置文件（下载）
 func (s *Server) exportConfig(c *gin.Context) {
-	configJSON, err := s.buildConfig()
+	result, err := s.buildConfig()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	configJSON := result.JSON
 
 	// 设置响应头，触发浏览器下载
 	c.Header("Content-Disposition", "attachment; filename=singbox-config.json")

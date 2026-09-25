@@ -134,25 +134,34 @@ type CacheFileConfig struct {
 
 // ConfigBuilder 配置生成器
 type ConfigBuilder struct {
-	settings     *storage.Settings
-	nodes        []storage.Node
-	filters      []storage.Filter
-	inboundPorts []storage.InboundPort
-	proxyChains  []storage.ProxyChain
-	dataDir      string // 数据目录路径
+	settings      *storage.Settings
+	nodes         []storage.Node
+	filters       []storage.Filter
+	inboundPorts  []storage.InboundPort
+	proxyChains   []storage.ProxyChain
+	dataDir       string // 数据目录路径
+	skippedChains []SkippedChain
 }
 
 // SkippedNode 被排除在运行配置之外的无效代理节点。
 type SkippedNode struct {
-	Tag    string
-	Type   string
-	Reason string
+	Tag    string `json:"tag"`
+	Type   string `json:"type"`
+	Reason string `json:"reason"`
+}
+
+// SkippedChain 因缺 hop / 空国家候选等原因未写入运行配置的代理链路。
+type SkippedChain struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
 }
 
 // ValidatedConfig 已通过内核校验的 sing-box 配置。
 type ValidatedConfig struct {
-	JSON         string
-	SkippedNodes []SkippedNode
+	JSON          string         `json:"-"`
+	SkippedNodes  []SkippedNode  `json:"skipped_nodes,omitempty"`
+	SkippedChains []SkippedChain `json:"skipped_chains,omitempty"`
 }
 
 // NewConfigBuilder 创建配置生成器
@@ -279,13 +288,14 @@ func (b *ConfigBuilder) BuildValidatedJSON(validate func(string) error) (*Valida
 		if err != nil {
 			return nil, err
 		}
+		chains := append([]SkippedChain(nil), candidate.skippedChains...)
 		if validate == nil {
-			return &ValidatedConfig{JSON: configJSON, SkippedNodes: skipped}, nil
+			return &ValidatedConfig{JSON: configJSON, SkippedNodes: skipped, SkippedChains: chains}, nil
 		}
 
 		validationErr := validate(configJSON)
 		if validationErr == nil {
-			return &ValidatedConfig{JSON: configJSON, SkippedNodes: skipped}, nil
+			return &ValidatedConfig{JSON: configJSON, SkippedNodes: skipped, SkippedChains: chains}, nil
 		}
 
 		outboundIndex, ok := outboundIndexFromError(validationErr)
@@ -587,6 +597,35 @@ func (b *ConfigBuilder) buildInbounds() []Inbound {
 }
 
 // buildOutbounds 构建出站配置
+
+func (b *ConfigBuilder) recordSkippedChain(chain storage.ProxyChain, reason string) {
+	b.skippedChains = append(b.skippedChains, SkippedChain{
+		ID:     chain.ID,
+		Name:   chain.Name,
+		Reason: reason,
+	})
+}
+
+func missingChainHopLabels(nodes []string, exists func(string) bool) []string {
+	var missing []string
+	for _, nodeTag := range nodes {
+		if exists(nodeTag) {
+			continue
+		}
+		if storage.IsChainCountryNodeTag(nodeTag) {
+			code := storage.ParseChainCountryNodeCode(nodeTag)
+			missing = append(missing, fmt.Sprintf("%s (no %s candidates)", nodeTag, code))
+			continue
+		}
+		if storage.IsChainAutoNodeTag(nodeTag) {
+			missing = append(missing, nodeTag+" (no candidates)")
+			continue
+		}
+		missing = append(missing, nodeTag)
+	}
+	return missing
+}
+
 func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 	outbounds := []Outbound{
 		{"type": "direct", "tag": "DIRECT"},
@@ -604,7 +643,7 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 		nodeMap[node.Tag] = node
 		allNodeTags = append(allNodeTags, node.Tag)
 
-		countryCode := node.Country
+		countryCode := strings.ToUpper(strings.TrimSpace(node.Country))
 		if countryCode == "" {
 			countryCode = "OTHER"
 		}
@@ -621,32 +660,37 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 	}
 
 	// 生成链路节点副本（独立的副本，不影响原始节点）
+	b.skippedChains = nil
 	chainCopyTags := make(map[string]bool) // 已创建的副本 Tag
 	activeTorChainIDs := b.activeTorChainIDs()
 	for _, chain := range b.proxyChains {
-		if !chain.Enabled || len(chain.Nodes) < 2 {
+		if !chain.Enabled {
+			continue
+		}
+		if len(chain.Nodes) < 2 {
+			b.recordSkippedChain(chain, "chain requires at least 2 hops")
 			continue
 		}
 		if storage.ChainContainsTor(chain.Nodes) {
 			if activeTorChainIDs[chain.ID] {
+				before := len(outbounds)
 				generated, err := b.appendTorChainOutbounds(outbounds, chainCopyTags, chain, nodeMap, countryNodes)
 				if err != nil {
 					return nil, err
 				}
+				if len(generated) == before {
+					b.recordSkippedChain(chain, "Tor chain incomplete (empty country/auto hop or missing entry)")
+				}
 				outbounds = generated
+			} else {
+				b.recordSkippedChain(chain, "Tor exit not bound to an enabled inbound (UseTorExit)")
 			}
 			continue
 		}
 
-		// 验证链路中的所有节点是否存在
-		allNodesExist := true
-		for _, nodeTag := range chain.Nodes {
-			if !chainNodeExists(nodeTag) {
-				allNodesExist = false
-				break
-			}
-		}
-		if !allNodesExist {
+		// 验证链路中的所有节点是否存在（含空国家候选）
+		if missing := missingChainHopLabels(chain.Nodes, chainNodeExists); len(missing) > 0 {
+			b.recordSkippedChain(chain, "missing hops: "+strings.Join(missing, ", "))
 			continue
 		}
 
