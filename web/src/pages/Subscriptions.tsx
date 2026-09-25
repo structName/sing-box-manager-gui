@@ -1539,13 +1539,39 @@ export default function Subscriptions() {
               <div className="flex items-center justify-between">
                 <div>
                   <span className="font-medium">应用于全部节点</span>
-                  <p className="text-xs text-gray-400">启用后将匹配所有订阅的节点</p>
+                  <p className="text-xs text-gray-400">启用后将匹配所有订阅与手动节点</p>
                 </div>
                 <Switch
                   isSelected={filterForm.all_nodes}
-                  onValueChange={(checked) => setFilterForm({ ...filterForm, all_nodes: checked })}
+                  onValueChange={(checked) => setFilterForm({
+                    ...filterForm,
+                    all_nodes: checked,
+                    // Turning scope back on clears a stale subscription allow-list.
+                    subscriptions: checked ? [] : filterForm.subscriptions,
+                  })}
                 />
               </div>
+
+              {!filterForm.all_nodes && (
+                <Select
+                  label="适用订阅"
+                  placeholder={subscriptions.length === 0 ? '暂无订阅可选择' : '选择要匹配的订阅（可多选）'}
+                  selectionMode="multiple"
+                  selectedKeys={filterForm.subscriptions}
+                  isDisabled={subscriptions.length === 0}
+                  description="未选择时仍匹配全部来源（兼容旧数据）；选择后仅包含所列订阅的节点。"
+                  onSelectionChange={(keys) => setFilterForm({
+                    ...filterForm,
+                    subscriptions: Array.from(keys) as string[],
+                  })}
+                >
+                  {subscriptions.map((sub) => (
+                    <SelectItem key={sub.id} value={sub.id}>
+                      {sub.name || sub.id}
+                    </SelectItem>
+                  ))}
+                </Select>
+              )}
 
               {/* 模式选择 */}
               <Select
