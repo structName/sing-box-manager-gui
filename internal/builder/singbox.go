@@ -587,6 +587,16 @@ func (b *ConfigBuilder) buildInbounds() []Inbound {
 }
 
 // buildOutbounds 构建出站配置
+
+func containsString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
 func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 	outbounds := []Outbound{
 		{"type": "direct", "tag": "DIRECT"},
@@ -879,11 +889,16 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 	fallbackOutbounds = append(fallbackOutbounds, countryGroupTags...) // 添加国家分组
 	fallbackOutbounds = append(fallbackOutbounds, filterGroupTags...)
 	fallbackOutbounds = append(fallbackOutbounds, chainGroupTags...) // 添加链路分组
+	finalDefault := strings.TrimSpace(b.settings.FinalOutbound)
+	if finalDefault == "" || !containsString(fallbackOutbounds, finalDefault) {
+		// Settings may still name a deleted chain/filter; keep selector valid.
+		finalDefault = "Proxy"
+	}
 	outbounds = append(outbounds, Outbound{
 		"tag":       "Final",
 		"type":      "selector",
 		"outbounds": fallbackOutbounds,
-		"default":   b.settings.FinalOutbound,
+		"default":   finalDefault,
 	})
 
 	return outbounds, nil

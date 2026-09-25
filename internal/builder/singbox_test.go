@@ -653,6 +653,45 @@ func TestNodeToOutboundNormalizesLegacyVLESSRealityShape(t *testing.T) {
 	}
 }
 
+func TestBuildClampsMissingFinalOutboundDefault(t *testing.T) {
+	builder := NewConfigBuilder(
+		&storage.Settings{FinalOutbound: "deleted-chain"},
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+
+	config, err := builder.Build()
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	for _, outbound := range config.Outbounds {
+		tag, _ := outbound["tag"].(string)
+		if tag != "Final" {
+			continue
+		}
+		def, _ := outbound["default"].(string)
+		if def == "deleted-chain" {
+			t.Fatalf("Final default kept deleted-chain; want clamp to available selector")
+		}
+		outs, _ := outbound["outbounds"].([]string)
+		found := false
+		for _, o := range outs {
+			if o == def {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("Final default %q not in outbounds %#v", def, outs)
+		}
+		return
+	}
+	t.Fatal("Final outbound selector not found")
+}
+
 func TestBuildRoutePrioritizesCustomInboundOutbound(t *testing.T) {
 	builder := &ConfigBuilder{
 		settings: &storage.Settings{},
