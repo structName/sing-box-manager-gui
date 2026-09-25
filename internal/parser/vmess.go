@@ -19,7 +19,7 @@ func (p *VmessParser) Protocol() string {
 	return "vmess"
 }
 
-// vmessConfig VMess 配置结构
+// vmessConfig VMess 配置结构 (v2rayN Base64 JSON)
 type vmessConfig struct {
 	V    interface{} `json:"v"`                // 版本
 	Ps   string      `json:"ps"`               // 节点名称
@@ -40,25 +40,37 @@ type vmessConfig struct {
 }
 
 // Parse 解析 VMess URL
-// 格式: vmess://BASE64(json)#name
+// 格式1 (v2rayN): vmess://BASE64(json)#name
+// 格式2 (VMessAEAD / Xray #716): vmess://uuid@server:port?params#name
 func (p *VmessParser) Parse(rawURL string) (*storage.Node, error) {
 	// 去除协议头
-	rawURL = strings.TrimPrefix(rawURL, "vmess://")
+	body := strings.TrimPrefix(rawURL, "vmess://")
 
 	// 分离 fragment (#name)
 	var fragmentName string
-	if idx := strings.Index(rawURL, "#"); idx != -1 {
-		fragmentName, _ = url.QueryUnescape(rawURL[idx+1:])
-		rawURL = rawURL[:idx]
+	if idx := strings.Index(body, "#"); idx != -1 {
+		fragmentName, _ = url.QueryUnescape(body[idx+1:])
+		body = body[:idx]
 	}
 
-	// Base64 解码
-	decoded, err := utils.DecodeBase64(rawURL)
+	// Prefer classic Base64 JSON; fall back to VMessAEAD URI when decode/JSON fails.
+	if node, err := p.parseBase64JSON(body, fragmentName); err == nil {
+		return node, nil
+	}
+
+	if strings.Contains(body, "@") {
+		return p.parseAEADURI(body, fragmentName)
+	}
+
+	return nil, fmt.Errorf("无效的 VMess URL 格式")
+}
+
+func (p *VmessParser) parseBase64JSON(body, fragmentName string) (*storage.Node, error) {
+	decoded, err := utils.DecodeBase64(body)
 	if err != nil {
 		return nil, fmt.Errorf("Base64 解码失败: %w", err)
 	}
 
-	// 解析 JSON
 	var config vmessConfig
 	if err := json.Unmarshal([]byte(decoded), &config); err != nil {
 		return nil, fmt.Errorf("JSON 解析失败: %w", err)
@@ -188,4 +200,158 @@ func (p *VmessParser) Parse(rawURL string) (*storage.Node, error) {
 	}
 
 	return node, nil
+}
+
+// parseAEADURI parses Xray VMessAEAD share links (Discussion #716):
+// vmess://uuid@host:port?encryption=auto&type=ws&security=tls&...#name
+func (p *VmessParser) parseAEADURI(body, fragmentName string) (*storage.Node, error) {
+	// Reassemble a synthetic URL so parseURLParams can split query/fragment.
+	// fragmentName was already stripped; attach query from body.
+	raw := "vmess://" + body
+	addressPart, params, name, err := parseURLParams(raw)
+	if err != nil {
+		return nil, err
+	}
+	if fragmentName != "" {
+		name = fragmentName
+	}
+
+	atIdx := strings.Index(addressPart, "@")
+	if atIdx == -1 {
+		return nil, fmt.Errorf("无效的 VMessAEAD URL 格式")
+	}
+
+	uuid, _ := url.QueryUnescape(addressPart[:atIdx])
+	serverPart := addressPart[atIdx+1:]
+	// Common form uses a trailing slash before '?'
+	serverPart = strings.TrimSuffix(serverPart, "/")
+
+	server, port, err := parseServerInfo(serverPart)
+	if err != nil {
+		return nil, fmt.Errorf("解析服务器地址失败: %w", err)
+	}
+	if uuid == "" {
+		return nil, fmt.Errorf("缺少 UUID")
+	}
+
+	if name == "" {
+		name = fmt.Sprintf("%s:%d", server, port)
+	}
+
+	securityMethod := getParamString(params, "encryption", "auto")
+	if securityMethod == "" {
+		securityMethod = "auto"
+	}
+
+	extra := map[string]interface{}{
+		"uuid":     uuid,
+		"alter_id": 0, // VMessAEAD always uses alterId 0
+		"security": securityMethod,
+	}
+
+	transportType := getParamString(params, "type", "tcp")
+	if transportType != "tcp" {
+		transport := map[string]interface{}{
+			"type": transportType,
+		}
+
+		switch transportType {
+		case "ws":
+			if path := params.Get("path"); path != "" {
+				transport["path"] = path
+			}
+			if host := params.Get("host"); host != "" {
+				transport["headers"] = map[string]string{
+					"Host": host,
+				}
+			}
+		case "httpupgrade", "http_upgrade":
+			transport["type"] = "httpupgrade"
+			if path := params.Get("path"); path != "" {
+				transport["path"] = path
+			}
+			if host := params.Get("host"); host != "" {
+				transport["host"] = host
+			}
+		case "http", "h2":
+			if path := params.Get("path"); path != "" {
+				transport["path"] = path
+			}
+			if host := params.Get("host"); host != "" {
+				transport["host"] = strings.Split(host, ",")
+			}
+		case "grpc":
+			if serviceName := params.Get("serviceName"); serviceName != "" {
+				transport["service_name"] = serviceName
+			} else if serviceName := params.Get("service_name"); serviceName != "" {
+				transport["service_name"] = serviceName
+			}
+			if mode := params.Get("mode"); mode != "" {
+				transport["mode"] = mode
+			}
+		case "quic":
+			if security := params.Get("quicSecurity"); security != "" {
+				transport["security"] = security
+			}
+		}
+
+		extra["transport"] = transport
+	}
+
+	security := getParamString(params, "security", "none")
+	if security != "none" {
+		tls := map[string]interface{}{
+			"enabled": true,
+		}
+
+		if sni := params.Get("sni"); sni != "" {
+			tls["server_name"] = sni
+		} else if host := params.Get("host"); host != "" {
+			tls["server_name"] = host
+		} else {
+			tls["server_name"] = server
+		}
+
+		if getParamBool(params, "allowInsecure") || getParamBool(params, "insecure") || getParamBool(params, "skip-cert-verify") {
+			tls["insecure"] = true
+		}
+
+		if alpn := params.Get("alpn"); alpn != "" {
+			tls["alpn"] = strings.Split(alpn, ",")
+		}
+
+		if security == "reality" {
+			reality := map[string]interface{}{
+				"enabled": true,
+			}
+			if pbk := params.Get("pbk"); pbk != "" {
+				reality["public_key"] = pbk
+			}
+			if sid := params.Get("sid"); sid != "" {
+				reality["short_id"] = sid
+			}
+			tls["reality"] = reality
+
+			fp := getParamString(params, "fp", "chrome")
+			tls["utls"] = map[string]interface{}{
+				"enabled":     true,
+				"fingerprint": fp,
+			}
+		} else if fp := params.Get("fp"); fp != "" {
+			tls["utls"] = map[string]interface{}{
+				"enabled":     true,
+				"fingerprint": fp,
+			}
+		}
+
+		extra["tls"] = tls
+	}
+
+	return &storage.Node{
+		Tag:        name,
+		Type:       "vmess",
+		Server:     server,
+		ServerPort: port,
+		Extra:      extra,
+	}, nil
 }
