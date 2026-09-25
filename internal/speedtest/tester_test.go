@@ -219,3 +219,72 @@ func TestNodeToMihomoProxySocksUDPOverTCP(t *testing.T) {
 		t.Fatalf("udp-over-tcp = %v, want true", proxy["udp-over-tcp"])
 	}
 }
+
+func TestNodeToMihomoProxyVlessPacketEncoding(t *testing.T) {
+	node := &models.Node{
+		Tag:        "vless-pe",
+		Type:       "vless",
+		Server:     "edge.example.com",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"uuid":             "11111111-1111-1111-1111-111111111111",
+			"packet_encoding":  "xudp",
+			"tls": map[string]interface{}{
+				"enabled":     true,
+				"server_name": "cdn.example.com",
+			},
+		},
+	}
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy: %v", err)
+	}
+	if got := proxy["packet-encoding"]; got != "xudp" {
+		t.Fatalf("packet-encoding = %#v, want xudp", got)
+	}
+}
+
+func TestNodeToMihomoProxyVmessPacketEncodingNone(t *testing.T) {
+	node := &models.Node{
+		Tag:        "vmess-pe-none",
+		Type:       "vmess",
+		Server:     "edge.example.com",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"uuid":            "22222222-2222-2222-2222-222222222222",
+			"alter_id":        0,
+			"security":        "auto",
+			"packet_encoding": "", // share-link "none"
+		},
+	}
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy: %v", err)
+	}
+	got, ok := proxy["packet-encoding"]
+	if !ok {
+		t.Fatal("packet-encoding missing for explicit disable")
+	}
+	if got != "" {
+		t.Fatalf("packet-encoding = %#v, want empty string", got)
+	}
+}
+
+func TestNodeToMihomoProxyVlessOmitsPacketEncodingWhenUnset(t *testing.T) {
+	node := &models.Node{
+		Tag:        "vless-plain",
+		Type:       "vless",
+		Server:     "edge.example.com",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"uuid": "33333333-3333-3333-3333-333333333333",
+		},
+	}
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy: %v", err)
+	}
+	if _, ok := proxy["packet-encoding"]; ok {
+		t.Fatalf("packet-encoding should be omitted when unset, got %#v", proxy["packet-encoding"])
+	}
+}

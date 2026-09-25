@@ -222,3 +222,51 @@ func getParamInt(params url.Values, key string, defaultValue int) int {
 func secondsDurationString(seconds int) string {
 	return fmt.Sprintf("%ds", seconds)
 }
+
+// normalizePacketEncoding maps share-link / Clash packet-encoding values onto
+// sing-box outbound packet_encoding. sing-box accepts "", "xudp", "packetaddr";
+// omitted means default xudp, while explicit "" disables encoding. Share links
+// often use "none" for disable — that must become "" (not omitted), otherwise
+// sing-box keeps the xudp default. Unknown values are dropped so we never emit
+// a string that panics outbound construction.
+func normalizePacketEncoding(raw string) (value string, set bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "none":
+		return "", true
+	case "xudp", "packetaddr":
+		return strings.ToLower(strings.TrimSpace(raw)), true
+	default:
+		return "", false
+	}
+}
+
+// applyPacketEncodingFromParams reads packetEncoding / packet-encoding /
+// packet_encoding from share-link query params into Extra["packet_encoding"].
+// An explicitly empty value (packetEncoding=) is treated as disable ("").
+func applyPacketEncodingFromParams(extra map[string]interface{}, params url.Values) {
+	if params == nil {
+		return
+	}
+	for _, key := range []string{"packetEncoding", "packet-encoding", "packet_encoding"} {
+		if _, present := params[key]; !present {
+			continue
+		}
+		raw := strings.TrimSpace(params.Get(key))
+		if raw == "" {
+			extra["packet_encoding"] = ""
+			return
+		}
+		if enc, ok := normalizePacketEncoding(raw); ok {
+			extra["packet_encoding"] = enc
+		}
+		return
+	}
+}
+
+// applyPacketEncodingValue sets Extra["packet_encoding"] from a Clash / VMess
+// JSON field when the value is recognized.
+func applyPacketEncodingValue(extra map[string]interface{}, raw string) {
+	if enc, ok := normalizePacketEncoding(raw); ok {
+		extra["packet_encoding"] = enc
+	}
+}

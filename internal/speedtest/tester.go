@@ -240,6 +240,7 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 				}
 			}
 		}
+		applyMihomoPacketEncoding(proxy, extra)
 
 	case "vless":
 		proxy["type"] = "vless"
@@ -313,6 +314,7 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 				}
 			}
 		}
+		applyMihomoPacketEncoding(proxy, extra)
 
 	case "trojan":
 		proxy["type"] = "trojan"
@@ -533,6 +535,26 @@ func numberAsInt(raw interface{}) (int, bool) {
 		return int(value), true
 	default:
 		return 0, false
+	}
+}
+
+// applyMihomoPacketEncoding forwards sing-box packet_encoding onto mihomo's
+// packet-encoding. Empty string (share-link "none") is forwarded so mihomo does
+// not keep a divergent UDP encoding default.
+func applyMihomoPacketEncoding(proxy map[string]interface{}, extra map[string]interface{}) {
+	raw, exists := extra["packet_encoding"]
+	if !exists {
+		return
+	}
+	s, ok := raw.(string)
+	if !ok {
+		return
+	}
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "none":
+		proxy["packet-encoding"] = ""
+	case "xudp", "packetaddr":
+		proxy["packet-encoding"] = strings.ToLower(strings.TrimSpace(s))
 	}
 }
 
