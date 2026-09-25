@@ -354,65 +354,24 @@ func TestNodeToMihomoProxyVlessHTTPTransportClashHeaders(t *testing.T) {
 }
 
 
-func TestNodeToMihomoProxyTrojanHTTPTransportOpts(t *testing.T) {
-	// Clash-style: path string + headers map[string][]string
+func TestNodeToMihomoProxyHTTPHeadersHostCanonicalLowercase(t *testing.T) {
+	// Lowercase "host" header must become canonical "Host" and must not block
+	// recognition (mihomo looks up Headers["Host"] exactly).
 	node := &models.Node{
-		Tag:        "trojan-http",
-		Type:       "trojan",
-		Server:     "edge.example.com",
+		Tag:        "vmess-http-host-lower",
+		Type:       "vmess",
+		Server:     "1.2.3.4",
 		ServerPort: 443,
 		Extra: models.JSONMap{
-			"password": "secret",
-			"tls": map[string]interface{}{
-				"server_name": "www.example.com",
-			},
-			"transport": map[string]interface{}{
-				"type":   "http",
-				"method": "GET",
-				"path":   "/trojan-http",
-				"headers": map[string][]string{
-					"Host": {"www.example.com"},
-				},
-			},
-		},
-	}
-	proxy, err := nodeToMihomoProxy(node)
-	if err != nil {
-		t.Fatalf("nodeToMihomoProxy trojan http error: %v", err)
-	}
-	if proxy["network"] != "http" {
-		t.Fatalf("network = %v, want http", proxy["network"])
-	}
-	opts, ok := proxy["http-opts"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("http-opts missing: %#v", proxy["http-opts"])
-	}
-	if opts["method"] != "GET" {
-		t.Fatalf("http-opts.method = %v, want GET", opts["method"])
-	}
-	paths, ok := opts["path"].([]string)
-	if !ok || len(paths) != 1 || paths[0] != "/trojan-http" {
-		t.Fatalf("http-opts.path = %#v, want [/trojan-http]", opts["path"])
-	}
-	headers, ok := opts["headers"].(map[string][]string)
-	if !ok || len(headers["Host"]) != 1 || headers["Host"][0] != "www.example.com" {
-		t.Fatalf("http-opts.headers = %#v, want Host=[www.example.com]", opts["headers"])
-	}
-}
-
-func TestNodeToMihomoProxyTrojanHTTPTransportHostList(t *testing.T) {
-	// URL-style: authority in transport["host"] list (no headers)
-	node := &models.Node{
-		Tag:        "trojan-http-host",
-		Type:       "trojan",
-		Server:     "edge.example.com",
-		ServerPort: 443,
-		Extra: models.JSONMap{
-			"password": "secret",
+			"uuid":     "11111111-1111-1111-1111-111111111111",
+			"alter_id": 0,
+			"security": "auto",
 			"transport": map[string]interface{}{
 				"type": "http",
-				"path": "/http",
-				"host": []string{"www.example.com"},
+				"path": "/api",
+				"headers": map[string][]string{
+					"host": {"cdn.example.com"},
+				},
 			},
 		},
 	}
@@ -425,63 +384,34 @@ func TestNodeToMihomoProxyTrojanHTTPTransportHostList(t *testing.T) {
 		t.Fatalf("http-opts missing: %#v", proxy)
 	}
 	headers, ok := opts["headers"].(map[string][]string)
-	if !ok || len(headers["Host"]) != 1 || headers["Host"][0] != "www.example.com" {
-		t.Fatalf("http-opts.headers Host from transport.host = %#v", opts["headers"])
-	}
-}
-
-func TestNodeToMihomoProxyTrojanH2TransportOpts(t *testing.T) {
-	node := &models.Node{
-		Tag:        "trojan-h2",
-		Type:       "trojan",
-		Server:     "edge.example.com",
-		ServerPort: 443,
-		Extra: models.JSONMap{
-			"password": "secret",
-			"tls": map[string]interface{}{
-				"server_name": "cdn.example.com",
-			},
-			"transport": map[string]interface{}{
-				"type": "h2",
-				"path": "/h2",
-				"host": []string{"cdn.example.com", "www.example.com"},
-			},
-		},
-	}
-	proxy, err := nodeToMihomoProxy(node)
-	if err != nil {
-		t.Fatalf("nodeToMihomoProxy trojan h2 error: %v", err)
-	}
-	if proxy["network"] != "h2" {
-		t.Fatalf("network = %v, want h2", proxy["network"])
-	}
-	opts, ok := proxy["h2-opts"].(map[string]interface{})
 	if !ok {
-		t.Fatalf("h2-opts missing: %#v", proxy["h2-opts"])
+		t.Fatalf("headers type = %T", opts["headers"])
 	}
-	if opts["path"] != "/h2" {
-		t.Fatalf("h2-opts.path = %v, want /h2", opts["path"])
+	if _, bad := headers["host"]; bad {
+		t.Fatalf("lowercase host key must be canonicalized away, got %#v", headers)
 	}
-	host, ok := opts["host"].([]string)
-	if !ok || len(host) != 2 || host[0] != "cdn.example.com" || host[1] != "www.example.com" {
-		t.Fatalf("h2-opts.host = %#v, want [cdn.example.com www.example.com]", opts["host"])
+	if len(headers["Host"]) != 1 || headers["Host"][0] != "cdn.example.com" {
+		t.Fatalf("Host = %#v, want [cdn.example.com]", headers["Host"])
 	}
 }
 
-func TestNodeToMihomoProxyTrojanWSStillNetworkOnly(t *testing.T) {
-	// WS/gRPC opts are owned by #104; ensure HTTP/H2 fold still sets network and does not invent empty http-opts/ws-opts.
+func TestNodeToMihomoProxyHTTPHeadersHostBackfillDespiteLowercaseEmpty(t *testing.T) {
+	// Empty lowercase "host" header must not block backfill from transport["host"].
 	node := &models.Node{
-		Tag:        "trojan-ws",
-		Type:       "trojan",
-		Server:     "edge.example.com",
+		Tag:        "vmess-http-host-backfill",
+		Type:       "vmess",
+		Server:     "1.2.3.4",
 		ServerPort: 443,
 		Extra: models.JSONMap{
-			"password": "secret",
+			"uuid":     "11111111-1111-1111-1111-111111111111",
+			"alter_id": 0,
+			"security": "auto",
 			"transport": map[string]interface{}{
-				"type": "ws",
-				"path": "/ws",
-				"headers": map[string]string{
-					"Host": "ws.example.com",
+				"type": "http",
+				"path": "/api",
+				"host": []string{"cdn.example.com"},
+				"headers": map[string][]string{
+					"host": {""},
 				},
 			},
 		},
@@ -490,13 +420,71 @@ func TestNodeToMihomoProxyTrojanWSStillNetworkOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("nodeToMihomoProxy: %v", err)
 	}
-	if proxy["network"] != "ws" {
-		t.Fatalf("network = %v, want ws", proxy["network"])
+	opts := proxy["http-opts"].(map[string]interface{})
+	headers := opts["headers"].(map[string][]string)
+	if _, bad := headers["host"]; bad {
+		t.Fatalf("empty lowercase host must be dropped, got %#v", headers)
 	}
-	if _, ok := proxy["http-opts"]; ok {
-		t.Fatalf("ws must not set http-opts, got %#v", proxy["http-opts"])
+	if len(headers["Host"]) != 1 || headers["Host"][0] != "cdn.example.com" {
+		t.Fatalf("Host backfill = %#v, want [cdn.example.com]", headers["Host"])
 	}
-	if _, ok := proxy["ws-opts"]; ok {
-		t.Fatalf("ws-opts left to #104; must not invent here, got %#v", proxy["ws-opts"])
+}
+
+func TestNodeToMihomoProxyHTTPHeadersEmptyParityTypedVsJSON(t *testing.T) {
+	// Typed map[string][]string with blank values must filter like JSON-decoded maps.
+	mk := func(headers interface{}) *models.Node {
+		return &models.Node{
+			Tag:        "vless-http-empty",
+			Type:       "vless",
+			Server:     "edge.example.com",
+			ServerPort: 443,
+			Extra: models.JSONMap{
+				"uuid": "22222222-2222-2222-2222-222222222222",
+				"transport": map[string]interface{}{
+					"type":    "http",
+					"path":    "/",
+					"headers": headers,
+				},
+			},
+		}
+	}
+
+	typed, err := nodeToMihomoProxy(mk(map[string][]string{
+		"Host":       {""},
+		"User-Agent": {"", "Mozilla/5.0", ""},
+		"X-Empty":    {""},
+	}))
+	if err != nil {
+		t.Fatalf("typed: %v", err)
+	}
+	jsonLike, err := nodeToMihomoProxy(mk(map[string]interface{}{
+		"Host":       []interface{}{""},
+		"User-Agent": []interface{}{"", "Mozilla/5.0", ""},
+		"X-Empty":    []interface{}{""},
+	}))
+	if err != nil {
+		t.Fatalf("json: %v", err)
+	}
+
+	th := typed["http-opts"].(map[string]interface{})["headers"].(map[string][]string)
+	jh := jsonLike["http-opts"].(map[string]interface{})["headers"].(map[string][]string)
+
+	if _, ok := th["Host"]; ok {
+		t.Fatalf("typed Host empty must be dropped, got %#v", th)
+	}
+	if _, ok := jh["Host"]; ok {
+		t.Fatalf("json Host empty must be dropped, got %#v", jh)
+	}
+	if _, ok := th["X-Empty"]; ok {
+		t.Fatalf("typed X-Empty must be dropped, got %#v", th)
+	}
+	if _, ok := jh["X-Empty"]; ok {
+		t.Fatalf("json X-Empty must be dropped, got %#v", jh)
+	}
+	if len(th["User-Agent"]) != 1 || th["User-Agent"][0] != "Mozilla/5.0" {
+		t.Fatalf("typed User-Agent = %#v", th["User-Agent"])
+	}
+	if len(jh["User-Agent"]) != 1 || jh["User-Agent"][0] != "Mozilla/5.0" {
+		t.Fatalf("json User-Agent = %#v", jh["User-Agent"])
 	}
 }
