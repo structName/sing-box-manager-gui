@@ -114,7 +114,20 @@ func (p *VmessParser) Parse(rawURL string) (*storage.Node, error) {
 	}
 
 	// 构建传输配置
-	if network != "tcp" || config.Type == "http" {
+	// VMess share links encode HTTP header obfuscation as net=tcp + type=http
+	// (V2Ray JSON). That must become sing-box transport.type=http, not type=tcp.
+	if network == "tcp" && strings.EqualFold(config.Type, "http") {
+		transport := map[string]interface{}{
+			"type": "http",
+		}
+		if config.Path != "" {
+			transport["path"] = config.Path
+		}
+		if config.Host != "" {
+			transport["host"] = strings.Split(config.Host, ",")
+		}
+		extra["transport"] = transport
+	} else if network != "tcp" {
 		transport := map[string]interface{}{
 			"type": network,
 		}
