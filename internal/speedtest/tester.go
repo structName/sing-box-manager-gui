@@ -352,6 +352,24 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 			if insecure, ok := tls["insecure"].(bool); ok {
 				proxy["skip-cert-verify"] = insecure
 			}
+			if alpn, ok := tls["alpn"].([]interface{}); ok {
+				alpnStrs := make([]string, 0, len(alpn))
+				for _, a := range alpn {
+					if s, ok := a.(string); ok && s != "" {
+						alpnStrs = append(alpnStrs, s)
+					}
+				}
+				if len(alpnStrs) > 0 {
+					proxy["alpn"] = alpnStrs
+				}
+			} else if alpn, ok := tls["alpn"].([]string); ok && len(alpn) > 0 {
+				proxy["alpn"] = alpn
+			}
+			if utls, ok := tls["utls"].(map[string]interface{}); ok {
+				if fp, ok := utls["fingerprint"].(string); ok && fp != "" {
+					proxy["client-fingerprint"] = fp
+				}
+			}
 		}
 		// Obfs
 		if obfs, ok := extra["obfs"].(map[string]interface{}); ok {

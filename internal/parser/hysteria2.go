@@ -82,6 +82,18 @@ func (p *Hysteria2Parser) Parse(rawURL string) (*storage.Node, error) {
 		tls["alpn"] = strings.Split(alpn, ",")
 	}
 
+	// uTLS fingerprint (Clash Meta / sing-box share links use fp or fingerprint)
+	fp := params.Get("fp")
+	if fp == "" {
+		fp = params.Get("fingerprint")
+	}
+	if fp != "" {
+		tls["utls"] = map[string]interface{}{
+			"enabled":     true,
+			"fingerprint": fp,
+		}
+	}
+
 	extra["tls"] = tls
 
 	// 混淆配置
