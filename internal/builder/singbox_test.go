@@ -1046,3 +1046,105 @@ func TestProxyChainDetourMixesSocksSSAndVLESS(t *testing.T) {
 		t.Fatalf("sing-box check failed: %v\n%s", err, output)
 	}
 }
+
+func TestNodeToOutboundNormalizesHysteria2PortsAndBandwidth(t *testing.T) {
+	builder := &ConfigBuilder{}
+
+	t.Run("share-link ports and up/down become server_ports and mbps", func(t *testing.T) {
+		outbound, err := builder.nodeToOutbound(storage.Node{
+			Tag:        "hy2-hop",
+			Type:       "hysteria2",
+			Server:     "hy2.example.com",
+			ServerPort: 443,
+			Extra: map[string]interface{}{
+				"password":     "secret",
+				"ports":        "20000-50000,60000",
+				"up":           "100 Mbps",
+				"down":         "200",
+				"hop_interval": 30,
+				"tls": map[string]interface{}{
+					"enabled":     true,
+					"server_name": "hy2.example.com",
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("nodeToOutbound error: %v", err)
+		}
+		if outbound["type"] != "hysteria2" {
+			t.Fatalf("type = %v, want hysteria2", outbound["type"])
+		}
+		if _, still := outbound["ports"]; still {
+			t.Fatalf("legacy ports key should be removed, got %v", outbound["ports"])
+		}
+		ports, ok := outbound["server_ports"].([]string)
+		if !ok {
+			t.Fatalf("server_ports type = %T (%v), want []string", outbound["server_ports"], outbound["server_ports"])
+		}
+		if len(ports) != 2 || ports[0] != "20000-50000" || ports[1] != "60000" {
+			t.Fatalf("server_ports = %#v, want [20000-50000 60000]", ports)
+		}
+		if outbound["up_mbps"] != 100 {
+			t.Fatalf("up_mbps = %v, want 100", outbound["up_mbps"])
+		}
+		if outbound["down_mbps"] != 200 {
+			t.Fatalf("down_mbps = %v, want 200", outbound["down_mbps"])
+		}
+		if outbound["hop_interval"] != "30s" {
+			t.Fatalf("hop_interval = %v, want 30s", outbound["hop_interval"])
+		}
+		if _, still := outbound["up"]; still {
+			t.Fatalf("legacy up key should be removed")
+		}
+		if _, still := outbound["down"]; still {
+			t.Fatalf("legacy down key should be removed")
+		}
+	})
+
+	t.Run("hy2 alias and existing up_mbps preserved", func(t *testing.T) {
+		outbound, err := builder.nodeToOutbound(storage.Node{
+			Tag:        "hy2-alias",
+			Type:       "hy2",
+			Server:     "hy2.example.com",
+			ServerPort: 443,
+			Extra: map[string]interface{}{
+				"password": "secret",
+				"up_mbps":  50,
+				"down":     "80 Mbps",
+			},
+		})
+		if err != nil {
+			t.Fatalf("nodeToOutbound error: %v", err)
+		}
+		if outbound["type"] != "hysteria2" {
+			t.Fatalf("type = %v, want hysteria2", outbound["type"])
+		}
+		if outbound["up_mbps"] != 50 {
+			t.Fatalf("up_mbps = %v, want 50 (already-normalized)", outbound["up_mbps"])
+		}
+		if outbound["down_mbps"] != 80 {
+			t.Fatalf("down_mbps = %v, want 80", outbound["down_mbps"])
+		}
+	})
+
+	t.Run("plain hy2 without hopping unchanged", func(t *testing.T) {
+		outbound, err := builder.nodeToOutbound(storage.Node{
+			Tag:        "hy2-plain",
+			Type:       "hysteria2",
+			Server:     "hy2.example.com",
+			ServerPort: 443,
+			Extra: map[string]interface{}{
+				"password": "secret",
+			},
+		})
+		if err != nil {
+			t.Fatalf("nodeToOutbound error: %v", err)
+		}
+		if _, has := outbound["server_ports"]; has {
+			t.Fatalf("unexpected server_ports: %v", outbound["server_ports"])
+		}
+		if _, has := outbound["up_mbps"]; has {
+			t.Fatalf("unexpected up_mbps: %v", outbound["up_mbps"])
+		}
+	})
+}

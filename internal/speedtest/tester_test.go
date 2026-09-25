@@ -219,3 +219,78 @@ func TestNodeToMihomoProxySocksUDPOverTCP(t *testing.T) {
 		t.Fatalf("udp-over-tcp = %v, want true", proxy["udp-over-tcp"])
 	}
 }
+
+func TestNodeToMihomoProxyHysteria2PortsAlpnHopInterval(t *testing.T) {
+	node := &models.Node{
+		Tag:        "hy2-hop",
+		Type:       "hysteria2",
+		Server:     "hy2.example.com",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"password":     "secret",
+			"ports":        "20000-50000",
+			"hop_interval": "30s",
+			"tls": map[string]interface{}{
+				"enabled":     true,
+				"server_name": "hy2.example.com",
+				"alpn":        []interface{}{"h3"},
+				"insecure":    true,
+			},
+			"obfs": map[string]interface{}{
+				"type":     "salamander",
+				"password": "obfs-secret",
+			},
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy error: %v", err)
+	}
+	if proxy["type"] != "hysteria2" {
+		t.Fatalf("type = %v, want hysteria2", proxy["type"])
+	}
+	if proxy["ports"] != "20000-50000" {
+		t.Fatalf("ports = %v, want 20000-50000", proxy["ports"])
+	}
+	if proxy["hop-interval"] != 30 {
+		t.Fatalf("hop-interval = %v, want 30", proxy["hop-interval"])
+	}
+	if proxy["sni"] != "hy2.example.com" {
+		t.Fatalf("sni = %v", proxy["sni"])
+	}
+	if proxy["skip-cert-verify"] != true {
+		t.Fatalf("skip-cert-verify = %v", proxy["skip-cert-verify"])
+	}
+	alpn, ok := proxy["alpn"].([]string)
+	if !ok || len(alpn) != 1 || alpn[0] != "h3" {
+		t.Fatalf("alpn = %#v, want [h3]", proxy["alpn"])
+	}
+	if proxy["obfs"] != "salamander" || proxy["obfs-password"] != "obfs-secret" {
+		t.Fatalf("obfs = %v / %v", proxy["obfs"], proxy["obfs-password"])
+	}
+}
+
+func TestNodeToMihomoProxyHysteria2ServerPortsList(t *testing.T) {
+	node := &models.Node{
+		Tag:        "hy2-sp",
+		Type:       "hy2",
+		Server:     "hy2.example.com",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"password":     "secret",
+			"server_ports": []string{"1000-2000", "3000"},
+			"hop_interval": 10,
+		},
+	}
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy error: %v", err)
+	}
+	if proxy["ports"] != "1000-2000,3000" {
+		t.Fatalf("ports = %v, want 1000-2000,3000", proxy["ports"])
+	}
+	if proxy["hop-interval"] != 10 {
+		t.Fatalf("hop-interval = %v, want 10", proxy["hop-interval"])
+	}
+}

@@ -48,6 +48,8 @@ type ClashProxy struct {
 	ObfsPassword string `yaml:"obfs-password,omitempty"`
 	Up           string `yaml:"up,omitempty"`
 	Down         string `yaml:"down,omitempty"`
+	Ports        string `yaml:"ports,omitempty"`        // 端口跳跃，如 "20000-50000"
+	HopInterval  int    `yaml:"hop-interval,omitempty"` // 跳跃间隔（秒）
 	// TUIC 特有
 	CongestionController string `yaml:"congestion-controller,omitempty"`
 	UDPRelayMode         string `yaml:"udp-relay-mode,omitempty"`
@@ -174,6 +176,12 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 		}
 		if proxy.Down != "" {
 			extra["down"] = proxy.Down
+		}
+		if proxy.Ports != "" {
+			extra["ports"] = proxy.Ports
+		}
+		if proxy.HopInterval > 0 {
+			extra["hop_interval"] = proxy.HopInterval
 		}
 
 	case "tuic":
