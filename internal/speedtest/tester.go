@@ -225,6 +225,14 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 					}
 					if headers, ok := transport["headers"].(map[string]interface{}); ok {
 						wsOpts["headers"] = headers
+					} else if headers, ok := transport["headers"].(map[string]string); ok {
+						wsOpts["headers"] = headers
+					}
+					if v, ok := transport["max_early_data"]; ok {
+						wsOpts["max-early-data"] = v
+					}
+					if v, ok := transport["early_data_header_name"].(string); ok && v != "" {
+						wsOpts["early-data-header-name"] = v
 					}
 					if len(wsOpts) > 0 {
 						proxy["ws-opts"] = wsOpts
@@ -298,6 +306,14 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 					}
 					if headers, ok := transport["headers"].(map[string]interface{}); ok {
 						wsOpts["headers"] = headers
+					} else if headers, ok := transport["headers"].(map[string]string); ok {
+						wsOpts["headers"] = headers
+					}
+					if v, ok := transport["max_early_data"]; ok {
+						wsOpts["max-early-data"] = v
+					}
+					if v, ok := transport["early_data_header_name"].(string); ok && v != "" {
+						wsOpts["early-data-header-name"] = v
 					}
 					if len(wsOpts) > 0 {
 						proxy["ws-opts"] = wsOpts

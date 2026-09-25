@@ -62,7 +62,9 @@ func (p *VlessParser) Parse(rawURL string) (*storage.Node, error) {
 
 		switch transportType {
 		case "ws":
-			if path := params.Get("path"); path != "" {
+			path := params.Get("path")
+			path = applyWebSocketEarlyData(transport, path, params)
+			if path != "" {
 				transport["path"] = path
 			}
 			if host := params.Get("host"); host != "" {

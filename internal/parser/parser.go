@@ -195,6 +195,71 @@ func parseURLParams(rawURL string) (addressPart string, params url.Values, name 
 	return addressPart, params, name, nil
 }
 
+
+// applyWebSocketEarlyData maps share-link WS early-data onto sing-box transport
+// fields (max_early_data / early_data_header_name). Accepts:
+//   - query params ed / eh (and earlyDataHeaderName alias)
+//   - path-embedded "?ed=N" (common v2rayN convention), which is stripped from path
+// params may be nil (e.g. VMess JSON). Returns the cleaned path.
+func applyWebSocketEarlyData(transport map[string]interface{}, path string, params url.Values) string {
+	ed := 0
+	eh := ""
+	if params != nil {
+		ed = getParamInt(params, "ed", 0)
+		eh = params.Get("eh")
+		if eh == "" {
+			eh = params.Get("earlyDataHeaderName")
+		}
+	}
+
+	// Path-embedded ?ed=N (and optional &eh=...) — only when query ed absent.
+	if ed <= 0 {
+		if idx := strings.Index(path, "?"); idx != -1 {
+			q := path[idx+1:]
+			path = path[:idx]
+			if path == "" {
+				path = "/"
+			}
+			if values, err := url.ParseQuery(q); err == nil {
+				ed = getParamInt(values, "ed", 0)
+				if eh == "" {
+					eh = values.Get("eh")
+					if eh == "" {
+						eh = values.Get("earlyDataHeaderName")
+					}
+				}
+			}
+		}
+	} else {
+		// Query ed won; still strip a redundant ?ed= from path if present.
+		if idx := strings.Index(path, "?"); idx != -1 {
+			q := path[idx+1:]
+			if values, err := url.ParseQuery(q); err == nil {
+				if values.Get("ed") != "" {
+					path = path[:idx]
+					if path == "" {
+						path = "/"
+					}
+					if eh == "" {
+						eh = values.Get("eh")
+						if eh == "" {
+							eh = values.Get("earlyDataHeaderName")
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if ed > 0 {
+		transport["max_early_data"] = ed
+	}
+	if eh != "" {
+		transport["early_data_header_name"] = eh
+	}
+	return path
+}
+
 // getParamString 获取字符串参数
 func getParamString(params url.Values, key string, defaultValue string) string {
 	if v := params.Get(key); v != "" {
