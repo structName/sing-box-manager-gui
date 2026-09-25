@@ -379,14 +379,25 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 			if insecure, ok := tls["insecure"].(bool); ok {
 				proxy["skip-cert-verify"] = insecure
 			}
+			// Share-link / Clash parsers store typed []string; JSON reload yields []interface{}.
 			if alpn, ok := tls["alpn"].([]interface{}); ok {
-				alpnStrs := make([]string, len(alpn))
-				for i, a := range alpn {
-					if s, ok := a.(string); ok {
-						alpnStrs[i] = s
+				alpnStrs := make([]string, 0, len(alpn))
+				for _, a := range alpn {
+					if s, ok := a.(string); ok && s != "" {
+						alpnStrs = append(alpnStrs, s)
 					}
 				}
-				proxy["alpn"] = alpnStrs
+				if len(alpnStrs) > 0 {
+					proxy["alpn"] = alpnStrs
+				}
+			} else if alpn, ok := tls["alpn"].([]string); ok && len(alpn) > 0 {
+				proxy["alpn"] = alpn
+			}
+			// Clash client-fingerprint / fingerprint land in tls.utls (same as AnyTLS).
+			if utls, ok := tls["utls"].(map[string]interface{}); ok {
+				if fp, ok := utls["fingerprint"].(string); ok && fp != "" {
+					proxy["client-fingerprint"] = fp
+				}
 			}
 		}
 		if congestion, ok := extra["congestion_control"].(string); ok {
