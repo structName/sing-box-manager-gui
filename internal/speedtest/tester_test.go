@@ -219,3 +219,49 @@ func TestNodeToMihomoProxySocksUDPOverTCP(t *testing.T) {
 		t.Fatalf("udp-over-tcp = %v, want true", proxy["udp-over-tcp"])
 	}
 }
+
+func TestNodeToMihomoProxyVlessWSEarlyData(t *testing.T) {
+	node := &models.Node{
+		Tag:        "vless-ed",
+		Type:       "vless",
+		Server:     "edge.example.com",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"uuid": "11111111-1111-1111-1111-111111111111",
+			"tls": map[string]interface{}{
+				"enabled":     true,
+				"server_name": "cdn.example.com",
+			},
+			"transport": map[string]interface{}{
+				"type":                     "ws",
+				"path":                     "/ws",
+				"max_early_data":           2048,
+				"early_data_header_name":   "Sec-WebSocket-Protocol",
+				"headers": map[string]string{
+					"Host": "cdn.example.com",
+				},
+			},
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy: %v", err)
+	}
+	if proxy["network"] != "ws" {
+		t.Fatalf("network = %#v, want ws", proxy["network"])
+	}
+	wsOpts, ok := proxy["ws-opts"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("ws-opts missing: %#v", proxy)
+	}
+	if wsOpts["max-early-data"] != 2048 {
+		t.Fatalf("max-early-data = %#v, want 2048", wsOpts["max-early-data"])
+	}
+	if wsOpts["early-data-header-name"] != "Sec-WebSocket-Protocol" {
+		t.Fatalf("early-data-header-name = %#v", wsOpts["early-data-header-name"])
+	}
+	if wsOpts["path"] != "/ws" {
+		t.Fatalf("path = %#v, want /ws", wsOpts["path"])
+	}
+}

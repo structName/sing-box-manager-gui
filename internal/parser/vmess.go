@@ -121,8 +121,9 @@ func (p *VmessParser) Parse(rawURL string) (*storage.Node, error) {
 
 		switch network {
 		case "ws":
-			if config.Path != "" {
-				transport["path"] = config.Path
+			path := applyWebSocketEarlyData(transport, config.Path, nil)
+			if path != "" {
+				transport["path"] = path
 			}
 			if config.Host != "" {
 				transport["headers"] = map[string]string{
