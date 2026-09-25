@@ -348,9 +348,21 @@ func (s *Server) updateSubscriptionSchedule(sub storage.Subscription) {
 					s.taskManager.StartTask(task.ID)
 				}
 
+				var previousTags []string
+				if existing := s.subService.Get(subID); existing != nil {
+					previousTags = collectNodeTags(existing.Nodes)
+				}
+
 				if err := s.subService.Refresh(subID); err != nil {
 					if task != nil {
 						s.taskManager.FailTask(task.ID, err.Error())
+					}
+					return
+				}
+				if _, err := s.disableInboundPortsForRemovedNodeTags(previousTags); err != nil {
+					logger.Warn("定时订阅刷新后级联停用入站失败: %v", err)
+					if task != nil {
+						s.taskManager.FailTask(task.ID, "刷新成功，但级联停用入站失败: "+err.Error())
 					}
 					return
 				}
@@ -927,6 +939,7 @@ func (s *Server) updateSubscription(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+		var previousTags []string
 		if content != "" {
 			nodes, err := parser.ParseSubscriptionContent(content)
 			if err != nil {
@@ -938,6 +951,7 @@ func (s *Server) updateSubscription(c *gin.Context) {
 				return
 			}
 
+			previousTags = collectNodeTags(existing.Nodes)
 			autoUpdate := false
 			next.URL = fileName
 			next.Type = "local"
@@ -965,6 +979,10 @@ func (s *Server) updateSubscription(c *gin.Context) {
 					c.JSON(http.StatusInternalServerError, gin.H{"error": "同步链路节点失败: " + err.Error()})
 					return
 				}
+			}
+			if _, err := s.disableInboundPortsForRemovedNodeTags(previousTags); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "更新成功，但级联停用入站失败: " + err.Error()})
+				return
 			}
 			nodeIDs := s.syncNodesToSQLiteAndGetIDs()
 			if s.eventTrigger != nil {
@@ -1068,11 +1086,13 @@ func (s *Server) deleteSubscription(c *gin.Context) {
 func (s *Server) refreshSubscription(c *gin.Context) {
 	id := c.Param("id")
 
-	// 获取订阅信息用于任务名称
+	// 获取订阅信息用于任务名称；刷新前记录节点 Tag，供入站 Outbound 级联停用
 	sub := s.subService.Get(id)
 	subName := "订阅"
+	var previousTags []string
 	if sub != nil {
 		subName = sub.Name
+		previousTags = collectNodeTags(sub.Nodes)
 	}
 
 	// 创建任务记录
@@ -1088,6 +1108,21 @@ func (s *Server) refreshSubscription(c *gin.Context) {
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+
+	var cascadeMessages []string
+	// 刷新可能删掉旧 Tag：链路已由 Refresh→SyncChainNodesForSubscription 剪枝，
+	// 入站直选节点 Tag 需对称停用，避免路由指向幽灵 outbound。
+	disabledPorts, err := s.disableInboundPortsForRemovedNodeTags(previousTags)
+	if err != nil {
+		if task != nil {
+			s.taskManager.FailTask(task.ID, "刷新成功，但级联停用入站失败: "+err.Error())
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "刷新成功，但级联停用入站失败: " + err.Error()})
+		return
+	}
+	if len(disabledPorts) > 0 {
+		cascadeMessages = append(cascadeMessages, fmt.Sprintf("已停用 %d 个关联入站", len(disabledPorts)))
 	}
 
 	// 同步节点到 SQLite（用于测速模块）
@@ -1108,14 +1143,32 @@ func (s *Server) refreshSubscription(c *gin.Context) {
 
 	// 自动应用配置
 	if err := s.autoApplyConfig(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"message": "刷新成功，但自动应用配置失败: " + err.Error()})
+		resp := gin.H{"message": "刷新成功，但自动应用配置失败: " + err.Error()}
+		if len(cascadeMessages) > 0 {
+			resp["cascade"] = cascadeMessages
+		}
+		c.JSON(http.StatusOK, resp)
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "刷新成功"})
+	message := "刷新成功"
+	if len(cascadeMessages) > 0 {
+		message = "刷新成功，" + strings.Join(cascadeMessages, "，")
+	}
+	resp := gin.H{"message": message}
+	if len(cascadeMessages) > 0 {
+		resp["cascade"] = cascadeMessages
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 func (s *Server) refreshAllSubscriptions(c *gin.Context) {
+	// 刷新前收集全部订阅节点 Tag，供入站 Outbound 级联停用
+	var previousTags []string
+	for _, sub := range s.store.GetSubscriptions() {
+		previousTags = append(previousTags, collectNodeTags(sub.Nodes)...)
+	}
+
 	// 创建任务记录
 	var task *models.Task
 	if s.taskManager != nil {
@@ -1129,6 +1182,19 @@ func (s *Server) refreshAllSubscriptions(c *gin.Context) {
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+
+	var cascadeMessages []string
+	disabledPorts, err := s.disableInboundPortsForRemovedNodeTags(previousTags)
+	if err != nil {
+		if task != nil {
+			s.taskManager.FailTask(task.ID, "刷新成功，但级联停用入站失败: "+err.Error())
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "刷新成功，但级联停用入站失败: " + err.Error()})
+		return
+	}
+	if len(disabledPorts) > 0 {
+		cascadeMessages = append(cascadeMessages, fmt.Sprintf("已停用 %d 个关联入站", len(disabledPorts)))
 	}
 
 	// 同步节点到 SQLite（用于测速模块）
@@ -1148,11 +1214,23 @@ func (s *Server) refreshAllSubscriptions(c *gin.Context) {
 
 	// 自动应用配置
 	if err := s.autoApplyConfig(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"message": "刷新成功，但自动应用配置失败: " + err.Error()})
+		resp := gin.H{"message": "刷新成功，但自动应用配置失败: " + err.Error()}
+		if len(cascadeMessages) > 0 {
+			resp["cascade"] = cascadeMessages
+		}
+		c.JSON(http.StatusOK, resp)
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "刷新成功"})
+	message := "刷新成功"
+	if len(cascadeMessages) > 0 {
+		message = "刷新成功，" + strings.Join(cascadeMessages, "，")
+	}
+	resp := gin.H{"message": message}
+	if len(cascadeMessages) > 0 {
+		resp["cascade"] = cascadeMessages
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // ==================== 过滤器 API ====================
@@ -3174,6 +3252,61 @@ func (s *Server) deleteProxyChain(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": message})
+}
+
+// collectNodeTags returns unique non-empty node tags (stable-ish insertion order).
+func collectNodeTags(nodes []storage.Node) []string {
+	seen := make(map[string]struct{}, len(nodes))
+	tags := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		tag := strings.TrimSpace(node.Tag)
+		if tag == "" {
+			continue
+		}
+		if _, ok := seen[tag]; ok {
+			continue
+		}
+		seen[tag] = struct{}{}
+		tags = append(tags, tag)
+	}
+	return tags
+}
+
+// disableInboundPortsForRemovedNodeTags stops inbounds whose Outbound equals a
+// tag that vanished from a subscription refresh/replace and is no longer present
+// in GetAllNodes() (another subscription/manual node may still own the same Tag).
+func (s *Server) disableInboundPortsForRemovedNodeTags(previousTags []string) ([]storage.InboundPort, error) {
+	if len(previousTags) == 0 {
+		return nil, nil
+	}
+	alive := make(map[string]struct{})
+	for _, node := range s.store.GetAllNodes() {
+		tag := strings.TrimSpace(node.Tag)
+		if tag != "" {
+			alive[tag] = struct{}{}
+		}
+	}
+	disabled := make([]storage.InboundPort, 0)
+	seen := make(map[string]struct{}, len(previousTags))
+	for _, tag := range previousTags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" {
+			continue
+		}
+		if _, ok := seen[tag]; ok {
+			continue
+		}
+		seen[tag] = struct{}{}
+		if _, still := alive[tag]; still {
+			continue
+		}
+		ports, err := s.disableInboundPortsForOutbound(tag)
+		if err != nil {
+			return disabled, err
+		}
+		disabled = append(disabled, ports...)
+	}
+	return disabled, nil
 }
 
 func (s *Server) updateInboundPortsOutbound(oldOutbound, newOutbound string) ([]storage.InboundPort, error) {
