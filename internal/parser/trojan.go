@@ -25,7 +25,7 @@ func (p *TrojanParser) Parse(rawURL string) (*storage.Node, error) {
 	}
 
 	// 分离 password 和服务器信息
-	atIdx := strings.Index(addressPart, "@")
+	atIdx := strings.LastIndex(addressPart, "@")
 	if atIdx == -1 {
 		return nil, fmt.Errorf("无效的 Trojan URL 格式")
 	}
