@@ -78,7 +78,8 @@ func (p *VlessParser) Parse(rawURL string) (*storage.Node, error) {
 				transport["host"] = strings.Split(host, ",")
 			}
 		case "grpc":
-			if serviceName := params.Get("serviceName"); serviceName != "" {
+			// Xray-style serviceName and snake_case service_name both appear in the wild.
+			if serviceName := firstNonEmptyParam(params, "serviceName", "service_name"); serviceName != "" {
 				transport["service_name"] = serviceName
 			}
 			if mode := params.Get("mode"); mode != "" {
@@ -101,14 +102,12 @@ func (p *VlessParser) Parse(rawURL string) (*storage.Node, error) {
 		}
 
 		// SNI
-		if sni := params.Get("sni"); sni != "" {
+		if sni := firstNonEmptyParam(params, "sni", "host", "peer"); sni != "" {
 			tls["server_name"] = sni
-		} else if host := params.Get("host"); host != "" {
-			tls["server_name"] = host
 		}
 
-		// 跳过证书验证
-		if getParamBool(params, "allowInsecure") || getParamBool(params, "insecure") {
+		// 跳过证书验证 (allow_insecure appears in some share-link generators)
+		if getParamBoolAny(params, "allowInsecure", "allow_insecure", "insecure") {
 			tls["insecure"] = true
 		}
 

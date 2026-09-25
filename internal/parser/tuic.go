@@ -72,7 +72,7 @@ func (p *TuicParser) Parse(rawURL string) (*storage.Node, error) {
 	}
 
 	// 跳过证书验证
-	if getParamBool(params, "insecure") || getParamBool(params, "allowInsecure") || getParamBool(params, "skip-cert-verify") {
+	if getParamBoolAny(params, "insecure", "allowInsecure", "allow_insecure", "skip-cert-verify") {
 		tls["insecure"] = true
 	}
 

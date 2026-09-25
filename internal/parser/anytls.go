@@ -64,7 +64,7 @@ func (p *AnyTLSParser) Parse(rawURL string) (*storage.Node, error) {
 	}
 
 	// 跳过证书验证
-	if getParamBool(params, "insecure") || getParamBool(params, "allowInsecure") {
+	if getParamBoolAny(params, "insecure", "allowInsecure", "allow_insecure") {
 		tls["insecure"] = true
 	}
 
