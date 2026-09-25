@@ -1943,8 +1943,10 @@ func (s *Server) restartService(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "服务已重启"})
 }
 
+// reloadService rebuilds the current profile config to disk, then SIGHUP.
+// Reload = rebuild+SIGHUP (hot); Restart = stop+start (ports/TUN full cycle).
 func (s *Server) reloadService(c *gin.Context) {
-	if err := s.processManager.Reload(); err != nil {
+	if err := rebuildConfigAndRestart(s.buildAndSaveCurrentConfig, s.processManager.Reload); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
