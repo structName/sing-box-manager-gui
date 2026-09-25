@@ -88,10 +88,58 @@ type GrpcOpts struct {
 	GrpcServiceName string `yaml:"grpc-service-name,omitempty"`
 }
 
-// RealityOpts Reality 选项
+// RealityOpts Reality 选项.
+// Clash Meta canonical keys are public-key / short-id; some generators emit
+// camelCase (publicKey/shortId) or snake_case (public_key/short_id).
 type RealityOpts struct {
 	PublicKey string `yaml:"public-key,omitempty"`
 	ShortID   string `yaml:"short-id,omitempty"`
+}
+
+// UnmarshalYAML accepts kebab/camel/snake Reality key aliases.
+func (r *RealityOpts) UnmarshalYAML(value *yaml.Node) error {
+	if value == nil || (value.Kind == yaml.ScalarNode && (value.Tag == "!!null" || value.Value == "" || value.Value == "null")) {
+		return nil
+	}
+	var raw map[string]interface{}
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	r.PublicKey = firstNonEmptyString(
+		rawString(raw, "public-key"),
+		rawString(raw, "publicKey"),
+		rawString(raw, "public_key"),
+		rawString(raw, "pbk"),
+	)
+	r.ShortID = firstNonEmptyString(
+		rawString(raw, "short-id"),
+		rawString(raw, "shortId"),
+		rawString(raw, "short_id"),
+		rawString(raw, "sid"),
+	)
+	return nil
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func rawString(raw map[string]interface{}, key string) string {
+	v, ok := raw[key]
+	if !ok || v == nil {
+		return ""
+	}
+	switch s := v.(type) {
+	case string:
+		return s
+	default:
+		return fmt.Sprint(s)
+	}
 }
 
 // ParseClashYAML 解析 Clash YAML 配置
