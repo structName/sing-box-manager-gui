@@ -67,8 +67,8 @@ func (p *Hysteria2Parser) Parse(rawURL string) (*storage.Node, error) {
 		"enabled": true,
 	}
 
-	// SNI
-	if sni := params.Get("sni"); sni != "" {
+	// SNI (peer/host are hysteria-v1 / Clash-style aliases)
+	if sni := FirstNonEmptyParam(params, "sni", "peer", "host"); sni != "" {
 		tls["server_name"] = sni
 	}
 
