@@ -58,9 +58,11 @@ func (p *AnyTLSParser) Parse(rawURL string) (*storage.Node, error) {
 		"enabled": true,
 	}
 
-	// SNI
+	// SNI：未指定时回落到 server（与 Clash 转换路径一致；分享链接常省略 sni=server）
 	if sni := params.Get("sni"); sni != "" {
 		tls["server_name"] = sni
+	} else if strings.TrimSpace(server) != "" {
+		tls["server_name"] = server
 	}
 
 	// 跳过证书验证
