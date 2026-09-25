@@ -329,10 +329,16 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 				proxy["skip-cert-verify"] = insecure
 			}
 		}
-		// Transport
+		// Transport (HTTP/H2 need opts; WS/gRPC path/service covered by other digs)
 		if transport, ok := extra["transport"].(map[string]interface{}); ok {
 			if tType, ok := transport["type"].(string); ok {
 				proxy["network"] = tType
+				switch tType {
+				case "http":
+					applyTrojanHTTPTransportToMihomo(proxy, transport)
+				case "h2":
+					applyTrojanH2TransportToMihomo(proxy, transport)
+				}
 			}
 		}
 
@@ -475,7 +481,6 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 			proxy["udp-over-tcp"] = true
 		}
 
-
 	default:
 		return nil, fmt.Errorf("不支持的协议类型: %s", node.Type)
 	}
@@ -534,6 +539,154 @@ func numberAsInt(raw interface{}) (int, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// applyTrojanHTTPTransportToMihomo maps Extra.transport type=http into mihomo http-opts.
+// Clash YAML already stores method/path/headers; share-link parsers store path + host list.
+// Without this, delay/speed tests set network=http but dial with empty path/Host.
+func applyTrojanHTTPTransportToMihomo(proxy map[string]interface{}, transport map[string]interface{}) {
+	httpOpts := map[string]interface{}{}
+	if method, ok := transport["method"].(string); ok && method != "" {
+		httpOpts["method"] = method
+	}
+	if paths := trojanMihomoHTTPPaths(transport["path"]); len(paths) > 0 {
+		httpOpts["path"] = paths
+	}
+	if headers := trojanMihomoHTTPHeaders(transport); len(headers) > 0 {
+		httpOpts["headers"] = headers
+	}
+	if len(httpOpts) > 0 {
+		proxy["http-opts"] = httpOpts
+	}
+}
+
+// applyTrojanH2TransportToMihomo maps Extra.transport type=h2 into mihomo h2-opts.
+func applyTrojanH2TransportToMihomo(proxy map[string]interface{}, transport map[string]interface{}) {
+	h2Opts := map[string]interface{}{}
+	if path, ok := transport["path"].(string); ok && path != "" {
+		h2Opts["path"] = path
+	}
+	if host := trojanMihomoHostList(transport["host"]); len(host) > 0 {
+		h2Opts["host"] = host
+	}
+	if len(h2Opts) > 0 {
+		proxy["h2-opts"] = h2Opts
+	}
+}
+
+func trojanMihomoHTTPPaths(raw interface{}) []string {
+	switch v := raw.(type) {
+	case string:
+		if v != "" {
+			return []string{v}
+		}
+	case []string:
+		out := make([]string, 0, len(v))
+		for _, p := range v {
+			if p != "" {
+				out = append(out, p)
+			}
+		}
+		return out
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+func trojanMihomoHostList(raw interface{}) []string {
+	switch v := raw.(type) {
+	case string:
+		if v != "" {
+			return []string{v}
+		}
+	case []string:
+		out := make([]string, 0, len(v))
+		for _, h := range v {
+			if h != "" {
+				out = append(out, h)
+			}
+		}
+		return out
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// trojanMihomoHTTPHeaders builds mihomo http-opts headers (map[string][]string).
+// Clash stores headers on transport; URL-style imports put authority in transport["host"].
+func trojanMihomoHTTPHeaders(transport map[string]interface{}) map[string][]string {
+	headers := map[string][]string{}
+
+	switch h := transport["headers"].(type) {
+	case map[string][]string:
+		for k, vals := range h {
+			if len(vals) > 0 {
+				headers[k] = append([]string{}, vals...)
+			}
+		}
+	case map[string]string:
+		for k, v := range h {
+			if v != "" {
+				headers[k] = []string{v}
+			}
+		}
+	case map[string]interface{}:
+		for k, raw := range h {
+			switch v := raw.(type) {
+			case string:
+				if v != "" {
+					headers[k] = []string{v}
+				}
+			case []string:
+				vals := make([]string, 0, len(v))
+				for _, s := range v {
+					if s != "" {
+						vals = append(vals, s)
+					}
+				}
+				if len(vals) > 0 {
+					headers[k] = vals
+				}
+			case []interface{}:
+				vals := make([]string, 0, len(v))
+				for _, item := range v {
+					if s, ok := item.(string); ok && s != "" {
+						vals = append(vals, s)
+					}
+				}
+				if len(vals) > 0 {
+					headers[k] = vals
+				}
+			}
+		}
+	}
+
+	if _, hasHost := headers["Host"]; !hasHost {
+		if _, hasHost = headers["host"]; !hasHost {
+			if host := trojanMihomoHostList(transport["host"]); len(host) > 0 {
+				headers["Host"] = host
+			}
+		}
+	}
+
+	if len(headers) == 0 {
+		return nil
+	}
+	return headers
 }
 
 func applyShadowsocksPluginToMihomo(proxy map[string]interface{}, extra map[string]interface{}) error {
