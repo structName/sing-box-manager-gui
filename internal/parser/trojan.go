@@ -24,19 +24,30 @@ func (p *TrojanParser) Parse(rawURL string) (*storage.Node, error) {
 		return nil, err
 	}
 
-	// 分离 password 和服务器信息
-	atIdx := strings.Index(addressPart, "@")
-	if atIdx == -1 {
-		return nil, fmt.Errorf("无效的 Trojan URL 格式")
+	var password, server string
+	var port int
+
+	// 格式1: password@server:port
+	// 格式2: server:port (password 在查询参数 password= 中)
+	if atIdx := strings.Index(addressPart, "@"); atIdx != -1 {
+		password, _ = url.QueryUnescape(addressPart[:atIdx])
+		server, port, err = parseServerInfo(addressPart[atIdx+1:])
+		if err != nil {
+			return nil, fmt.Errorf("解析服务器地址失败: %w", err)
+		}
+	} else {
+		server, port, err = parseServerInfo(addressPart)
+		if err != nil {
+			return nil, fmt.Errorf("解析服务器地址失败: %w", err)
+		}
 	}
 
-	password, _ := url.QueryUnescape(addressPart[:atIdx])
-	serverPart := addressPart[atIdx+1:]
-
-	// 解析服务器地址
-	server, port, err := parseServerInfo(serverPart)
-	if err != nil {
-		return nil, fmt.Errorf("解析服务器地址失败: %w", err)
+	// Clash Meta / some panels emit ?password= with empty or omitted userinfo
+	if password == "" {
+		password = params.Get("password")
+	}
+	if password == "" {
+		return nil, fmt.Errorf("缺少认证密码")
 	}
 
 	// 设置默认名称
