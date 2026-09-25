@@ -855,7 +855,6 @@ func TestBuildExperimentalUsesGithubProxyForCustomExternalUIDownloadURL(t *testi
 	}
 }
 
-
 func TestNodeToOutboundNormalizesSocks(t *testing.T) {
 	builder := &ConfigBuilder{}
 
@@ -1044,5 +1043,264 @@ func TestProxyChainDetourMixesSocksSSAndVLESS(t *testing.T) {
 	output, err := exec.Command(singBoxPath, "check", "-c", configPath).CombinedOutput()
 	if err != nil {
 		t.Fatalf("sing-box check failed: %v\n%s", err, output)
+	}
+}
+
+func TestNodeToOutboundNormalizesH2TransportToHTTP(t *testing.T) {
+	b := &ConfigBuilder{}
+	out, err := b.nodeToOutbound(storage.Node{
+		Tag:        "vmess-h2",
+		Type:       "vmess",
+		Server:     "192.0.2.10",
+		ServerPort: 443,
+		Extra: map[string]interface{}{
+			"uuid":     "11111111-1111-1111-1111-111111111111",
+			"alter_id": 0,
+			"security": "auto",
+			"transport": map[string]interface{}{
+				"type": "h2",
+				"path": "/h2",
+				"host": []string{"cdn.example.com"},
+			},
+			"tls": map[string]interface{}{
+				"enabled":     true,
+				"server_name": "cdn.example.com",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("nodeToOutbound error: %v", err)
+	}
+	tr, ok := out["transport"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("transport type = %T, want map", out["transport"])
+	}
+	if tr["type"] != "http" {
+		t.Fatalf("transport.type = %v, want http (sing-box rejects h2)", tr["type"])
+	}
+	if tr["path"] != "/h2" {
+		t.Fatalf("path = %v, want /h2", tr["path"])
+	}
+}
+
+func TestNodeToOutboundNormalizesHTTP2AliasesAndPathList(t *testing.T) {
+	b := &ConfigBuilder{}
+	for _, alias := range []string{"http2", "HTTP/2", "H2"} {
+		out, err := b.nodeToOutbound(storage.Node{
+			Tag:        "vless-" + alias,
+			Type:       "vless",
+			Server:     "192.0.2.11",
+			ServerPort: 443,
+			Extra: map[string]interface{}{
+				"uuid": "11111111-1111-1111-1111-111111111111",
+				"transport": map[string]interface{}{
+					"type": alias,
+					"path": []interface{}{"/a", "/b"},
+					"host": []string{"cdn.example.com"},
+				},
+				"tls": map[string]interface{}{
+					"enabled":     true,
+					"server_name": "cdn.example.com",
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("alias %q: nodeToOutbound error: %v", alias, err)
+		}
+		tr := out["transport"].(map[string]interface{})
+		if tr["type"] != "http" {
+			t.Fatalf("alias %q: type = %v, want http", alias, tr["type"])
+		}
+		if tr["path"] != "/a" {
+			t.Fatalf("alias %q: path = %v, want first list element /a", alias, tr["path"])
+		}
+	}
+}
+
+func TestNodeToOutboundHTTPPathListSkipsEmptyStringElements(t *testing.T) {
+	b := &ConfigBuilder{}
+	out, err := b.nodeToOutbound(storage.Node{
+		Tag:        "vmess-h2-path-list",
+		Type:       "vmess",
+		Server:     "192.0.2.14",
+		ServerPort: 443,
+		Extra: map[string]interface{}{
+			"uuid":     "11111111-1111-1111-1111-111111111111",
+			"alter_id": 0,
+			"security": "auto",
+			"transport": map[string]interface{}{
+				"type": "h2",
+				"path": []string{"", "/h2"},
+				"host": []string{"cdn.example.com"},
+			},
+			"tls": map[string]interface{}{
+				"enabled":     true,
+				"server_name": "cdn.example.com",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("nodeToOutbound error: %v", err)
+	}
+	tr, ok := out["transport"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("transport type = %T, want map", out["transport"])
+	}
+	if tr["type"] != "http" {
+		t.Fatalf("transport.type = %v, want http", tr["type"])
+	}
+	if tr["path"] != "/h2" {
+		t.Fatalf("path = %#v, want first non-empty \"/h2\" (not empty string)", tr["path"])
+	}
+
+	// []interface{} empty-then-value must agree with []string contract.
+	out2, err := b.nodeToOutbound(storage.Node{
+		Tag:        "vmess-h2-path-iface",
+		Type:       "vmess",
+		Server:     "192.0.2.15",
+		ServerPort: 443,
+		Extra: map[string]interface{}{
+			"uuid":     "11111111-1111-1111-1111-111111111111",
+			"alter_id": 0,
+			"security": "auto",
+			"transport": map[string]interface{}{
+				"type": "http2",
+				"path": []interface{}{"", "  ", "/h2"},
+				"host": []string{"cdn.example.com"},
+			},
+			"tls": map[string]interface{}{
+				"enabled":     true,
+				"server_name": "cdn.example.com",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("iface path nodeToOutbound error: %v", err)
+	}
+	tr2 := out2["transport"].(map[string]interface{})
+	if tr2["path"] != "/h2" {
+		t.Fatalf("[]interface{} path = %#v, want \"/h2\"", tr2["path"])
+	}
+}
+
+func TestNodeToOutboundLeavesWSAndHTTPTransportUntouched(t *testing.T) {
+	b := &ConfigBuilder{}
+	out, err := b.nodeToOutbound(storage.Node{
+		Tag:        "trojan-ws",
+		Type:       "trojan",
+		Server:     "192.0.2.12",
+		ServerPort: 443,
+		Extra: map[string]interface{}{
+			"password": "secret",
+			"transport": map[string]interface{}{
+				"type": "ws",
+				"path": "/ws",
+				"headers": map[string]string{
+					"Host": "cdn.example.com",
+				},
+			},
+			"tls": map[string]interface{}{
+				"enabled":     true,
+				"server_name": "cdn.example.com",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("nodeToOutbound error: %v", err)
+	}
+	tr := out["transport"].(map[string]interface{})
+	if tr["type"] != "ws" {
+		t.Fatalf("ws type mutated: %v", tr["type"])
+	}
+
+	outHTTP, err := b.nodeToOutbound(storage.Node{
+		Tag:        "vmess-http",
+		Type:       "vmess",
+		Server:     "192.0.2.13",
+		ServerPort: 80,
+		Extra: map[string]interface{}{
+			"uuid":     "11111111-1111-1111-1111-111111111111",
+			"alter_id": 0,
+			"security": "auto",
+			"transport": map[string]interface{}{
+				"type": "http",
+				"path": "/",
+				"host": []string{"example.com"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("http nodeToOutbound error: %v", err)
+	}
+	trHTTP := outHTTP["transport"].(map[string]interface{})
+	if trHTTP["type"] != "http" || trHTTP["path"] != "/" {
+		t.Fatalf("plain http transport mutated: %#v", trHTTP)
+	}
+}
+
+func TestNodeToOutboundH2PassesSingBoxCheck(t *testing.T) {
+	singBoxPath := os.Getenv("SING_BOX_PATH")
+	if singBoxPath == "" {
+		if _, err := os.Stat("/workspace/sbm-test/bin/sing-box"); err == nil {
+			singBoxPath = "/workspace/sbm-test/bin/sing-box"
+		}
+	}
+	if singBoxPath == "" {
+		t.Skip("sing-box binary not available")
+	}
+
+	settings := storage.DefaultSettings()
+	settings.AutoApply = false
+	b := NewConfigBuilder(settings, []storage.Node{{
+		Tag:        "vmess-h2",
+		Type:       "vmess",
+		Server:     "127.0.0.1",
+		ServerPort: 443,
+		Extra: map[string]interface{}{
+			"uuid":     "11111111-1111-1111-1111-111111111111",
+			"alter_id": 0,
+			"security": "auto",
+			"transport": map[string]interface{}{
+				"type": "h2",
+				"path": "/h2",
+				"host": []string{"cdn.example.com"},
+			},
+			"tls": map[string]interface{}{
+				"enabled":     true,
+				"server_name": "cdn.example.com",
+			},
+		},
+	}}, nil, nil, nil)
+
+	config, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	ob := outboundByTag(config.Outbounds, "vmess-h2")
+	if ob == nil {
+		t.Fatal("missing outbound tag vmess-h2")
+	}
+	tr, ok := ob["transport"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("vmess-h2 transport type = %T, want map", ob["transport"])
+	}
+	if tr["type"] != "http" {
+		t.Fatalf("vmess-h2 transport.type = %v, want http", tr["type"])
+	}
+	if tr["path"] != "/h2" {
+		t.Fatalf("vmess-h2 transport.path = %v, want /h2", tr["path"])
+	}
+
+	configJSON, err := marshalConfigJSON(config)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	configPath := filepath.Join(t.TempDir(), "h2-normalize.json")
+	if err := os.WriteFile(configPath, []byte(configJSON), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	output, err := exec.Command(singBoxPath, "check", "-c", configPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("sing-box check failed: %v\n%s\nconfig:\n%s", err, output, configJSON)
 	}
 }

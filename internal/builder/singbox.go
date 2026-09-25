@@ -1179,21 +1179,87 @@ func isNodeMetadataField(key string) bool {
 
 func normalizeOutbound(outbound Outbound) error {
 	outboundType, _ := outbound["type"].(string)
+	var err error
 	switch outboundType {
 	case "shadowsocks":
-		return normalizeShadowsocksOutbound(outbound)
+		err = normalizeShadowsocksOutbound(outbound)
 	case "socks", "socks5", "socks4", "socks4a":
 		normalizeSocksOutbound(outbound)
-		return nil
 	case "vless":
 		normalizeVLESSOutbound(outbound)
-		return nil
 	case "anytls":
 		normalizeAnyTLSOutbound(outbound)
-		return nil
-	default:
-		return nil
 	}
+	if err != nil {
+		return err
+	}
+	normalizeTransportOutbound(outbound)
+	return nil
+}
+
+// normalizeTransportOutbound maps Clash/share-link transport.type aliases that
+// built-in sing-box rejects onto canonical names. HTTP/2 over TLS is type
+// "http" in sing-box; Clash Meta and many share links store "h2" (and sometimes
+// "http2" / "http/2"). Leaving those unmapped makes apply/check fail with
+// "unknown transport type: h2" while mihomo speedtest still wants network=h2
+// from the untouched Extra.
+//
+// Also coerces HTTP transport path lists to the first non-empty/non-whitespace
+// string — sing-box V2RayHTTPOptions.path is a string (arrays fail decode).
+// Path flattening is limited to transport.type == "http" (after h2/http2/http/2
+// → http mapping). []string and []interface{} share the same first-non-empty
+// contract.
+func normalizeTransportOutbound(outbound Outbound) {
+	transport, ok := outbound["transport"].(map[string]interface{})
+	if !ok || transport == nil {
+		return
+	}
+	if t, ok := transport["type"].(string); ok {
+		switch strings.ToLower(strings.TrimSpace(t)) {
+		case "h2", "http2", "http/2":
+			transport["type"] = "http"
+		}
+	}
+	// V2RayHTTPOptions.path is a string; flatten list paths only after the
+	// alias map leaves type "http" (h2/http2/http/2 → http).
+	ttype, _ := transport["type"].(string)
+	if !strings.EqualFold(strings.TrimSpace(ttype), "http") {
+		return
+	}
+	if flat, isList := firstNonEmptyHTTPPath(transport["path"]); isList {
+		if flat == "" {
+			delete(transport, "path")
+		} else {
+			transport["path"] = flat
+		}
+	}
+}
+
+// firstNonEmptyHTTPPath returns the first non-empty/non-whitespace path from a
+// []string or []interface{} list. isList is false when path is not a list
+// (leave scalars untouched). Empty/whitespace-only lists yield ("", true).
+func firstNonEmptyHTTPPath(path interface{}) (flat string, isList bool) {
+	switch typed := path.(type) {
+	case []string:
+		isList = true
+		for _, item := range typed {
+			if s := strings.TrimSpace(item); s != "" {
+				return s, true
+			}
+		}
+	case []interface{}:
+		isList = true
+		for _, item := range typed {
+			s, ok := item.(string)
+			if !ok {
+				continue
+			}
+			if s = strings.TrimSpace(s); s != "" {
+				return s, true
+			}
+		}
+	}
+	return "", isList
 }
 
 // normalizeSocksOutbound ensures SOCKS outbounds have a usable version and
