@@ -85,7 +85,12 @@ func (p *Hysteria2Parser) Parse(rawURL string) (*storage.Node, error) {
 	extra["tls"] = tls
 
 	// 混淆配置
-	if obfsPassword := params.Get("obfs-password"); obfsPassword != "" {
+	// obfsPassword is a common camelCase alias from JS/Clash converters.
+	obfsPassword := params.Get("obfs-password")
+	if obfsPassword == "" {
+		obfsPassword = params.Get("obfsPassword")
+	}
+	if obfsPassword != "" {
 		obfs := map[string]interface{}{
 			"type":     getParamString(params, "obfs", "salamander"),
 			"password": obfsPassword,
@@ -106,8 +111,12 @@ func (p *Hysteria2Parser) Parse(rawURL string) (*storage.Node, error) {
 		extra["down"] = down
 	}
 
-	// 端口跳跃
-	if ports := params.Get("mport"); ports != "" {
+	// 端口跳跃 (mport is the official HY2 URI key; ports is Clash Meta / converter alias)
+	ports := params.Get("mport")
+	if ports == "" {
+		ports = params.Get("ports")
+	}
+	if ports != "" {
 		extra["ports"] = ports
 	}
 
