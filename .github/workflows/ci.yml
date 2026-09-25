@@ -45,3 +45,19 @@ jobs:
       - name: Build backend
         run: |
           CGO_ENABLED=0 go build -buildvcs=false -o sbm ./cmd/sbm/
+
+  # Named regression gate for #23 / v0.2.22 (issue #63). Lightweight: no frontend build.
+  socks-rename-gate:
+    name: Socks mihomo + rename-cascade gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Socks/rename regression (make test-socks-rename-gate)
+        run: make test-socks-rename-gate
+
