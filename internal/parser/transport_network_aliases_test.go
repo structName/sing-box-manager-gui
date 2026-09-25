@@ -21,14 +21,13 @@ func TestNormalizeTransportNetworkAliases(t *testing.T) {
 	}{
 		{"websocket", "ws"},
 		{"WebSocket", "ws"},
-		{"http2", "h2"},
-		{"HTTP/2", "h2"},
-		{"http/2", "h2"},
 		{"gun", "grpc"},
 		{"GUN", "grpc"},
 		{"ws", "ws"},
 		{"grpc", "grpc"},
 		{"h2", "h2"},
+		{"http2", "http2"}, // HTTP/2 aliases deferred; leave raw
+		{"http/2", "http/2"},
 		{"tcp", "tcp"},
 		{"  websocket  ", "ws"},
 	}
@@ -56,26 +55,6 @@ func TestVLESSURLWebsocketAliasCopiesPathHost(t *testing.T) {
 	headers, _ := tr["headers"].(map[string]string)
 	if headers["Host"] != "cdn.example.com" {
 		t.Fatalf("transport.headers.Host = %#v, want cdn.example.com", headers["Host"])
-	}
-}
-
-func TestVLESSURLHTTP2AliasCopiesPathHost(t *testing.T) {
-	raw := "vless://11111111-1111-1111-1111-111111111111@edge.example.com:443" +
-		"?type=http2&path=/h2&host=h2.example.com&security=tls&sni=h2.example.com#vless-h2"
-	node, err := ParseURL(raw)
-	if err != nil {
-		t.Fatalf("ParseURL: %v", err)
-	}
-	tr := transportOf(t, node.Extra)
-	if tr["type"] != "h2" {
-		t.Fatalf("transport.type = %#v, want h2", tr["type"])
-	}
-	if tr["path"] != "/h2" {
-		t.Fatalf("transport.path = %#v, want /h2", tr["path"])
-	}
-	host, ok := tr["host"].([]string)
-	if !ok || len(host) != 1 || host[0] != "h2.example.com" {
-		t.Fatalf("transport.host = %#v, want [h2.example.com]", tr["host"])
 	}
 }
 
@@ -163,20 +142,6 @@ func TestVMessURLNetAliases(t *testing.T) {
 			t.Fatalf("headers.Host = %#v, want cdn.example.com", headers["Host"])
 		}
 	})
-	t.Run("http2", func(t *testing.T) {
-		node, err := ParseURL(mk("http2", "/h2", "h2.example.com", "vmess-h2"))
-		if err != nil {
-			t.Fatalf("ParseURL: %v", err)
-		}
-		tr := transportOf(t, node.Extra)
-		if tr["type"] != "h2" {
-			t.Fatalf("transport.type = %#v, want h2", tr["type"])
-		}
-		host, ok := tr["host"].([]string)
-		if !ok || len(host) != 1 || host[0] != "h2.example.com" {
-			t.Fatalf("transport.host = %#v, want [h2.example.com]", tr["host"])
-		}
-	})
 	t.Run("gun", func(t *testing.T) {
 		node, err := ParseURL(mk("gun", "GunService", "", "vmess-gun"))
 		if err != nil {
@@ -218,27 +183,6 @@ proxies:
 			wantType: "ws",
 			wantPath: "/ray",
 			wantHost: "cdn.example.com",
-		},
-		{
-			name: "http2",
-			yaml: `
-proxies:
-  - name: clash-h2-alias
-    type: vmess
-    server: example.com
-    port: 443
-    uuid: 11111111-1111-4111-8111-111111111111
-    alterId: 0
-    cipher: auto
-    tls: true
-    network: http2
-    h2-opts:
-      path: /h2
-      host:
-        - h2.example.com
-`,
-			wantType: "h2",
-			wantPath: "/h2",
 		},
 		{
 			name: "gun",
