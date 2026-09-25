@@ -81,6 +81,18 @@ func (p *TuicParser) Parse(rawURL string) (*storage.Node, error) {
 		tls["alpn"] = strings.Split(alpn, ",")
 	}
 
+	// uTLS fingerprint (fp= preferred over fingerprint=; Clash YAML already maps these)
+	fp := params.Get("fp")
+	if fp == "" {
+		fp = params.Get("fingerprint")
+	}
+	if fp != "" {
+		tls["utls"] = map[string]interface{}{
+			"enabled":     true,
+			"fingerprint": fp,
+		}
+	}
+
 	// 禁用 SNI
 	if getParamBool(params, "disable-sni") {
 		tls["disable_sni"] = true
