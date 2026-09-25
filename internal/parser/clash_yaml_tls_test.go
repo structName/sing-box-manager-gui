@@ -91,3 +91,42 @@ proxies:
 		t.Fatalf("parsed node tags = %q, %q", nodes[0].Tag, nodes[1].Tag)
 	}
 }
+
+func TestClashYAMLMapsHysteria2PortsAndHopInterval(t *testing.T) {
+	yaml := `
+proxies:
+  - name: hy2-hop
+    type: hysteria2
+    server: hy2.example.com
+    port: 443
+    password: secret
+    sni: hy2.example.com
+    ports: 20000-50000
+    hop-interval: 15
+    up: 100 Mbps
+    down: 200
+`
+	nodes, err := ParseClashYAML(yaml)
+	if err != nil {
+		t.Fatalf("ParseClashYAML error: %v", err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("got %d nodes, want 1", len(nodes))
+	}
+	n := nodes[0]
+	if n.Type != "hysteria2" {
+		t.Fatalf("type = %q, want hysteria2", n.Type)
+	}
+	if got, _ := n.Extra["ports"].(string); got != "20000-50000" {
+		t.Fatalf("ports = %v, want 20000-50000", n.Extra["ports"])
+	}
+	if got := n.Extra["hop_interval"]; got != 15 {
+		t.Fatalf("hop_interval = %v (%T), want 15", got, got)
+	}
+	if got, _ := n.Extra["up"].(string); got != "100 Mbps" {
+		t.Fatalf("up = %v, want 100 Mbps", n.Extra["up"])
+	}
+	if got, _ := n.Extra["down"].(string); got != "200" {
+		t.Fatalf("down = %v, want 200", n.Extra["down"])
+	}
+}

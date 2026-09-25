@@ -1191,6 +1191,9 @@ func normalizeOutbound(outbound Outbound) error {
 	case "anytls":
 		normalizeAnyTLSOutbound(outbound)
 		return nil
+	case "hysteria2", "hy2":
+		normalizeHysteria2Outbound(outbound)
+		return nil
 	default:
 		return nil
 	}
@@ -1311,6 +1314,134 @@ func normalizeAnyTLSOutbound(outbound Outbound) {
 		} else {
 			delete(outbound, field)
 		}
+	}
+}
+
+// normalizeHysteria2Outbound maps share-link / Clash Meta field names onto
+// sing-box hysteria2 outbound keys. Share URLs and Clash store port hopping as
+// a string "ports" (and bandwidth as "up"/"down"); sing-box expects
+// server_ports (string list) and up_mbps/down_mbps (ints). Without this,
+// hopping and brutal bandwidth are silently dropped (unknown JSON fields).
+func normalizeHysteria2Outbound(outbound Outbound) {
+	outbound["type"] = "hysteria2"
+
+	if _, has := outbound["server_ports"]; !has {
+		if ports := hysteria2ServerPortsList(outbound["ports"]); len(ports) > 0 {
+			outbound["server_ports"] = ports
+		}
+	} else if ports := hysteria2ServerPortsList(outbound["server_ports"]); len(ports) > 0 {
+		outbound["server_ports"] = ports
+	}
+	delete(outbound, "ports")
+
+	if _, has := outbound["up_mbps"]; !has {
+		if mbps, ok := parseMbpsValue(outbound["up"]); ok {
+			outbound["up_mbps"] = mbps
+		}
+	}
+	delete(outbound, "up")
+
+	if _, has := outbound["down_mbps"]; !has {
+		if mbps, ok := parseMbpsValue(outbound["down"]); ok {
+			outbound["down_mbps"] = mbps
+		}
+	}
+	delete(outbound, "down")
+
+	if value, ok := anyTLSDurationValue(outbound["hop_interval"]); ok {
+		outbound["hop_interval"] = value
+	} else {
+		delete(outbound, "hop_interval")
+	}
+}
+
+func hysteria2ServerPortsList(raw interface{}) []string {
+	switch value := raw.(type) {
+	case nil:
+		return nil
+	case string:
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return nil
+		}
+		parts := strings.Split(value, ",")
+		out := make([]string, 0, len(parts))
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				out = append(out, part)
+			}
+		}
+		return out
+	case []string:
+		out := make([]string, 0, len(value))
+		for _, part := range value {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				out = append(out, part)
+			}
+		}
+		return out
+	case []interface{}:
+		out := make([]string, 0, len(value))
+		for _, item := range value {
+			if s, ok := item.(string); ok {
+				s = strings.TrimSpace(s)
+				if s != "" {
+					out = append(out, s)
+				}
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func parseMbpsValue(raw interface{}) (int, bool) {
+	switch value := raw.(type) {
+	case nil:
+		return 0, false
+	case int:
+		if value > 0 {
+			return value, true
+		}
+		return 0, false
+	case int64:
+		if value > 0 {
+			return int(value), true
+		}
+		return 0, false
+	case float64:
+		if value > 0 {
+			return int(value), true
+		}
+		return 0, false
+	case json.Number:
+		n, err := value.Int64()
+		if err != nil || n <= 0 {
+			return 0, false
+		}
+		return int(n), true
+	case string:
+		s := strings.TrimSpace(value)
+		if s == "" {
+			return 0, false
+		}
+		lower := strings.ToLower(s)
+		for _, suffix := range []string{"mbps", "mbit/s", "mb/s"} {
+			if strings.HasSuffix(lower, suffix) {
+				s = strings.TrimSpace(s[:len(s)-len(suffix)])
+				break
+			}
+		}
+		n, err := strconv.Atoi(s)
+		if err != nil || n <= 0 {
+			return 0, false
+		}
+		return n, true
+	default:
+		return 0, false
 	}
 }
 
