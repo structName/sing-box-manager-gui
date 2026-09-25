@@ -23,3 +23,15 @@ func GetParamBoolAny(params url.Values, keys ...string) bool {
 	}
 	return false
 }
+
+// shareLinkUTLSFingerprint returns the uTLS fingerprint from share-link query
+// params. Xray-style links use fp=; some panels/Clash exporters emit fingerprint=.
+// When required is true and neither is set, defaults to chrome (Reality / AnyTLS).
+// Canonical helper (owned by fix/sharelink-fingerprint-alias-for-fp / PR #135).
+func shareLinkUTLSFingerprint(params url.Values, required bool) string {
+	fp := FirstNonEmptyParam(params, "fp", "fingerprint")
+	if fp == "" && required {
+		return "chrome"
+	}
+	return fp
+}
