@@ -76,13 +76,21 @@ type ChainHealthConfig struct {
 	AutoSwitch   bool   `json:"auto_switch"`   // 自动切换
 }
 
+// Probe mode values for chain health / speed checks.
+const (
+	ProbeModeChain      = "chain"       // measured via Clash copyTag or chain-bound inbound
+	ProbeModeExitDirect = "exit-direct" // measured via mihomo against exit node only (not full detour path)
+)
+
 // ChainHealthStatus 链路健康状态
 type ChainHealthStatus struct {
-	ChainID      string             `json:"chain_id"`
-	LastCheck    time.Time          `json:"last_check"`
-	Status       string             `json:"status"`  // "healthy" | "degraded" | "unhealthy"
-	Latency      int                `json:"latency"` // 总延迟 (ms)
-	NodeStatuses []NodeHealthStatus `json:"node_statuses"`
+	ChainID        string             `json:"chain_id"`
+	LastCheck      time.Time          `json:"last_check"`
+	Status         string             `json:"status"`  // "healthy" | "degraded" | "unhealthy"
+	Latency        int                `json:"latency"` // 总延迟 (ms)
+	NodeStatuses   []NodeHealthStatus `json:"node_statuses"`
+	ProbeMode      string             `json:"probe_mode,omitempty"`      // "chain" | "exit-direct"
+	DegradedReason string             `json:"degraded_reason,omitempty"` // why status is not fully trustworthy
 }
 
 // NodeHealthStatus 节点健康状态
@@ -95,11 +103,13 @@ type NodeHealthStatus struct {
 
 // ChainSpeedResult 链路速度测试结果
 type ChainSpeedResult struct {
-	ChainID    string    `json:"chain_id"`
-	TestTime   time.Time `json:"test_time"`
-	SpeedMbps  float64   `json:"speed_mbps"`  // 下载速度 Mbps
-	BytesTotal int64     `json:"bytes_total"` // 下载字节数
-	Duration   int64     `json:"duration"`    // 耗时 ms
+	ChainID        string    `json:"chain_id"`
+	TestTime       time.Time `json:"test_time"`
+	SpeedMbps      float64   `json:"speed_mbps"`  // 下载速度 Mbps
+	BytesTotal     int64     `json:"bytes_total"` // 下载字节数
+	Duration       int64     `json:"duration"`    // 耗时 ms
+	ProbeMode      string    `json:"probe_mode,omitempty"`      // "chain" | "exit-direct"
+	DegradedReason string    `json:"degraded_reason,omitempty"`
 }
 
 // GenerateChainNodeCopyTag 生成链路节点副本 Tag
