@@ -30,7 +30,7 @@ type ClashProxy struct {
 	SkipCertVerify    bool                   `yaml:"skip-cert-verify,omitempty"`
 	SNI               string                 `yaml:"sni,omitempty"`
 	Servername        string                 `yaml:"servername,omitempty"` // Clash 格式的 SNI 字段
-	ALPN              []string               `yaml:"alpn,omitempty"`
+	ALPN              flexibleStringSlice    `yaml:"alpn,omitempty"`
 	Fingerprint       string                 `yaml:"fingerprint,omitempty"`
 	ClientFingerprint string                 `yaml:"client-fingerprint,omitempty"`
 	Flow              string                 `yaml:"flow,omitempty"`
@@ -72,15 +72,15 @@ type WSOpts struct {
 
 // H2Opts HTTP/2 选项
 type H2Opts struct {
-	Path string   `yaml:"path,omitempty"`
-	Host []string `yaml:"host,omitempty"`
+	Path string              `yaml:"path,omitempty"`
+	Host flexibleStringSlice `yaml:"host,omitempty"`
 }
 
 // HTTPOpts HTTP 选项
 type HTTPOpts struct {
-	Method  string              `yaml:"method,omitempty"`
-	Path    []string            `yaml:"path,omitempty"`
-	Headers map[string][]string `yaml:"headers,omitempty"`
+	Method  string                         `yaml:"method,omitempty"`
+	Path    flexibleStringSlice            `yaml:"path,omitempty"`
+	Headers map[string]flexibleStringSlice `yaml:"headers,omitempty"`
 }
 
 // GrpcOpts gRPC 选项
@@ -92,6 +92,46 @@ type GrpcOpts struct {
 type RealityOpts struct {
 	PublicKey string `yaml:"public-key,omitempty"`
 	ShortID   string `yaml:"short-id,omitempty"`
+}
+
+// flexibleStringSlice accepts a YAML string or list of strings.
+// Clash subscriptions often write alpn / h2 host / http path as scalars
+// (alpn: h3) or comma-joined values; a plain []string field fails Decode
+// and silently drops the whole proxy.
+type flexibleStringSlice []string
+
+func (f *flexibleStringSlice) UnmarshalYAML(value *yaml.Node) error {
+	if value == nil || value.Tag == "!!null" {
+		*f = nil
+		return nil
+	}
+	switch value.Kind {
+	case yaml.ScalarNode:
+		s := strings.TrimSpace(value.Value)
+		if s == "" {
+			*f = nil
+			return nil
+		}
+		parts := strings.Split(s, ",")
+		out := make([]string, 0, len(parts))
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				out = append(out, p)
+			}
+		}
+		*f = out
+		return nil
+	case yaml.SequenceNode:
+		var asList []string
+		if err := value.Decode(&asList); err != nil {
+			return err
+		}
+		*f = asList
+		return nil
+	default:
+		return fmt.Errorf("invalid string list value")
+	}
 }
 
 // ParseClashYAML 解析 Clash YAML 配置
@@ -243,7 +283,7 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 			tls["insecure"] = true
 		}
 		if len(proxy.ALPN) > 0 {
-			tls["alpn"] = proxy.ALPN
+			tls["alpn"] = []string(proxy.ALPN)
 		}
 
 		// uTLS fingerprint
@@ -308,7 +348,7 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 					transport["path"] = proxy.H2Opts.Path
 				}
 				if len(proxy.H2Opts.Host) > 0 {
-					transport["host"] = proxy.H2Opts.Host
+					transport["host"] = []string(proxy.H2Opts.Host)
 				}
 			}
 		case "http":
@@ -320,7 +360,11 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 					transport["path"] = proxy.HTTPOpts.Path[0]
 				}
 				if len(proxy.HTTPOpts.Headers) > 0 {
-					transport["headers"] = proxy.HTTPOpts.Headers
+					headers := make(map[string][]string, len(proxy.HTTPOpts.Headers))
+					for k, v := range proxy.HTTPOpts.Headers {
+						headers[k] = []string(v)
+					}
+					transport["headers"] = headers
 				}
 			}
 		case "grpc":
@@ -353,7 +397,7 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 		}
 
 		if len(proxy.ALPN) > 0 {
-			tls["alpn"] = proxy.ALPN
+			tls["alpn"] = []string(proxy.ALPN)
 		}
 
 		// Reality 配置
