@@ -488,3 +488,97 @@ func TestNodeToMihomoProxyHTTPHeadersEmptyParityTypedVsJSON(t *testing.T) {
 		t.Fatalf("json User-Agent = %#v", jh["User-Agent"])
 	}
 }
+
+func TestNodeToMihomoProxyHTTPHeadersEmptyNameRejected(t *testing.T) {
+	// Empty header names must be dropped for typed and JSON-decoded maps alike.
+	mk := func(headers interface{}) *models.Node {
+		return &models.Node{
+			Tag:        "vless-http-empty-name",
+			Type:       "vless",
+			Server:     "edge.example.com",
+			ServerPort: 443,
+			Extra: models.JSONMap{
+				"uuid": "33333333-3333-3333-3333-333333333333",
+				"transport": map[string]interface{}{
+					"type":    "http",
+					"path":    "/",
+					"headers": headers,
+				},
+			},
+		}
+	}
+
+	typed, err := nodeToMihomoProxy(mk(map[string][]string{
+		"":           {"should-drop"},
+		"User-Agent": {"Mozilla/5.0"},
+	}))
+	if err != nil {
+		t.Fatalf("typed: %v", err)
+	}
+	jsonLike, err := nodeToMihomoProxy(mk(map[string]interface{}{
+		"":           []interface{}{"should-drop"},
+		"User-Agent": []interface{}{"Mozilla/5.0"},
+	}))
+	if err != nil {
+		t.Fatalf("json: %v", err)
+	}
+
+	th := typed["http-opts"].(map[string]interface{})["headers"].(map[string][]string)
+	jh := jsonLike["http-opts"].(map[string]interface{})["headers"].(map[string][]string)
+
+	if _, ok := th[""]; ok {
+		t.Fatalf("typed empty-name header must be dropped, got %#v", th)
+	}
+	if _, ok := jh[""]; ok {
+		t.Fatalf("json empty-name header must be dropped, got %#v", jh)
+	}
+	if len(th["User-Agent"]) != 1 || th["User-Agent"][0] != "Mozilla/5.0" {
+		t.Fatalf("typed User-Agent = %#v", th["User-Agent"])
+	}
+	if len(jh["User-Agent"]) != 1 || jh["User-Agent"][0] != "Mozilla/5.0" {
+		t.Fatalf("json User-Agent = %#v", jh["User-Agent"])
+	}
+}
+
+func TestNormalizeMihomoHTTPHeadersEmptyNameTypedAndJSON(t *testing.T) {
+	// Direct unit coverage: typed map[string][]string{"": {"value"}} and same-shape JSON maps.
+	typed := normalizeMihomoHTTPHeaders(map[string]interface{}{
+		"headers": map[string][]string{
+			"":      {"value"},
+			"X-Keep": {"ok"},
+		},
+	})
+	if _, ok := typed[""]; ok {
+		t.Fatalf("typed empty key must not remain, got %#v", typed)
+	}
+	if len(typed["X-Keep"]) != 1 || typed["X-Keep"][0] != "ok" {
+		t.Fatalf("typed keep = %#v", typed)
+	}
+
+	jsonLike := normalizeMihomoHTTPHeaders(map[string]interface{}{
+		"headers": map[string]interface{}{
+			"":      []interface{}{"value"},
+			"X-Keep": "ok",
+		},
+	})
+	if _, ok := jsonLike[""]; ok {
+		t.Fatalf("json empty key must not remain, got %#v", jsonLike)
+	}
+	if len(jsonLike["X-Keep"]) != 1 || jsonLike["X-Keep"][0] != "ok" {
+		t.Fatalf("json keep = %#v", jsonLike)
+	}
+
+	// map[string]string shape also drops empty names.
+	strMap := normalizeMihomoHTTPHeaders(map[string]interface{}{
+		"headers": map[string]string{
+			"":      "value",
+			"X-Keep": "ok",
+		},
+	})
+	if _, ok := strMap[""]; ok {
+		t.Fatalf("string-map empty key must not remain, got %#v", strMap)
+	}
+	if len(strMap["X-Keep"]) != 1 || strMap["X-Keep"][0] != "ok" {
+		t.Fatalf("string-map keep = %#v", strMap)
+	}
+}

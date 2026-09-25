@@ -628,11 +628,14 @@ func filterNonEmptyStrings(vals []string) []string {
 
 // normalizeMihomoHTTPHeaders builds mihomo http-opts headers (map[string][]string).
 // Clash stores headers directly; URL parsers put authority in transport["host"].
-// Host is always the canonical key; empty values are dropped on every input shape.
+// Host is always the canonical key; empty names and empty values are dropped on every input shape.
 func normalizeMihomoHTTPHeaders(transport map[string]interface{}) map[string][]string {
 	headers := map[string][]string{}
 
 	add := func(k string, vals []string) {
+		if k == "" {
+			return
+		}
 		vals = filterNonEmptyStrings(vals)
 		if len(vals) == 0 {
 			return
