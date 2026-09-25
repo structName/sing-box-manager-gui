@@ -67,14 +67,14 @@ func (p *TrojanParser) Parse(rawURL string) (*storage.Node, error) {
 				transport["path"] = path
 			}
 			// host is preferred; peer is a common Clash/trojan-go alias for WS Host.
-			if host := firstNonEmptyParam(params, "host", "peer"); host != "" {
+			if host := FirstNonEmptyParam(params, "host", "peer"); host != "" {
 				transport["headers"] = map[string]string{
 					"Host": host,
 				}
 			}
 		case "grpc":
 			// Xray-style serviceName and snake_case service_name both appear in the wild.
-			if serviceName := firstNonEmptyParam(params, "serviceName", "service_name"); serviceName != "" {
+			if serviceName := FirstNonEmptyParam(params, "serviceName", "service_name"); serviceName != "" {
 				transport["service_name"] = serviceName
 			}
 		}
@@ -90,12 +90,12 @@ func (p *TrojanParser) Parse(rawURL string) (*storage.Node, error) {
 		}
 
 		// SNI (peer is a Clash/trojan-go alias when sni/host omitted)
-		if sni := firstNonEmptyParam(params, "sni", "host", "peer"); sni != "" {
+		if sni := FirstNonEmptyParam(params, "sni", "host", "peer"); sni != "" {
 			tls["server_name"] = sni
 		}
 
 		// 跳过证书验证 (allow_insecure appears in some share-link generators)
-		if getParamBoolAny(params, "allowInsecure", "allow_insecure", "insecure") {
+		if GetParamBoolAny(params, "allowInsecure", "allow_insecure", "insecure") {
 			tls["insecure"] = true
 		}
 

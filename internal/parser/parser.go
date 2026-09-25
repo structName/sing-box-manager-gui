@@ -222,24 +222,3 @@ func getParamInt(params url.Values, key string, defaultValue int) int {
 func secondsDurationString(seconds int) string {
 	return fmt.Sprintf("%ds", seconds)
 }
-
-// getParamBoolAny returns true if any of the keys is a truthy bool param.
-func getParamBoolAny(params url.Values, keys ...string) bool {
-	for _, key := range keys {
-		if getParamBool(params, key) {
-			return true
-		}
-	}
-	return false
-}
-
-// firstNonEmptyParam returns the first non-empty query value among keys.
-func firstNonEmptyParam(params url.Values, keys ...string) string {
-	for _, key := range keys {
-		if v := params.Get(key); v != "" {
-			return v
-		}
-	}
-	return ""
-}
-

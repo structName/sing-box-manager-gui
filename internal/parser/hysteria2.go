@@ -73,7 +73,7 @@ func (p *Hysteria2Parser) Parse(rawURL string) (*storage.Node, error) {
 	}
 
 	// 跳过证书验证
-	if getParamBoolAny(params, "insecure", "allowInsecure", "allow_insecure") {
+	if GetParamBoolAny(params, "insecure", "allowInsecure", "allow_insecure") {
 		tls["insecure"] = true
 	}
 
