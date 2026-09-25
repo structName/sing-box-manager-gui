@@ -66,9 +66,14 @@ func (p *TuicParser) Parse(rawURL string) (*storage.Node, error) {
 		"enabled": true,
 	}
 
-	// SNI
-	if sni := params.Get("sni"); sni != "" {
+	// SNI：未指定时回落到 server（与 Clash 转换 / trojan·vless 的缺省行为对齐）
+	// disable-sni 时不写入 server_name，避免覆盖显式禁用
+	if getParamBool(params, "disable-sni") {
+		tls["disable_sni"] = true
+	} else if sni := params.Get("sni"); sni != "" {
 		tls["server_name"] = sni
+	} else if strings.TrimSpace(server) != "" {
+		tls["server_name"] = server
 	}
 
 	// 跳过证书验证
@@ -81,10 +86,6 @@ func (p *TuicParser) Parse(rawURL string) (*storage.Node, error) {
 		tls["alpn"] = strings.Split(alpn, ",")
 	}
 
-	// 禁用 SNI
-	if getParamBool(params, "disable-sni") {
-		tls["disable_sni"] = true
-	}
 
 	extra["tls"] = tls
 
