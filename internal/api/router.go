@@ -1189,6 +1189,12 @@ func (s *Server) addFilter(c *gin.Context) {
 func (s *Server) updateFilter(c *gin.Context) {
 	id := c.Param("id")
 
+	oldFilter := s.store.GetFilter(id)
+	if oldFilter == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "过滤器不存在"})
+		return
+	}
+
 	var filter storage.Filter
 	if err := c.ShouldBindJSON(&filter); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -1196,6 +1202,34 @@ func (s *Server) updateFilter(c *gin.Context) {
 	}
 
 	filter.ID = id
+
+	var cascadeMessages []string
+
+	// 改名：过滤器 Name 即 outbound tag，入站可直接绑定 → 级联改写出站引用
+	if oldFilter.Name != filter.Name {
+		renamed, err := s.updateInboundPortsOutbound(oldFilter.Name, filter.Name)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if len(renamed) > 0 {
+			cascadeMessages = append(cascadeMessages, fmt.Sprintf("已更新 %d 个关联入站端口", len(renamed)))
+		}
+	}
+
+	// 停用：builder 不再发出该分组 → 停用仍指向该 Name 的入站，避免幽灵路由
+	// （若同时改名，上一步已把入站 Outbound 改到新 Name）
+	if oldFilter.Enabled && !filter.Enabled {
+		disabled, err := s.disableInboundPortsForOutbound(filter.Name)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if len(disabled) > 0 {
+			cascadeMessages = append(cascadeMessages, fmt.Sprintf("已停用 %d 个关联入站端口", len(disabled)))
+		}
+	}
+
 	if err := s.store.UpdateFilter(filter); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1207,11 +1241,27 @@ func (s *Server) updateFilter(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "更新成功"})
+	message := "更新成功"
+	if len(cascadeMessages) > 0 {
+		message = "更新成功，" + strings.Join(cascadeMessages, "，")
+	}
+	c.JSON(http.StatusOK, gin.H{"message": message})
 }
 
 func (s *Server) deleteFilter(c *gin.Context) {
 	id := c.Param("id")
+
+	filter := s.store.GetFilter(id)
+	if filter == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "过滤器不存在"})
+		return
+	}
+
+	disabledPorts, err := s.disableInboundPortsForOutbound(filter.Name)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
 	if err := s.store.DeleteFilter(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1224,7 +1274,12 @@ func (s *Server) deleteFilter(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "删除成功"})
+	message := "删除成功"
+	if len(disabledPorts) > 0 {
+		message = fmt.Sprintf("删除成功，已停用 %d 个关联入站", len(disabledPorts))
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": message})
 }
 
 // ==================== 设置 API ====================
