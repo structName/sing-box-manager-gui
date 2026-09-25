@@ -341,8 +341,8 @@ func TestWorkflowsRunGoTestsWithSupportedToolchain(t *testing.T) {
 			t.Fatalf("read workflow %s: %v", workflowName, err)
 		}
 		text := string(workflow)
-		if !strings.Contains(text, "go-version: '1.24'") {
-			t.Fatalf("%s does not use the documented Go 1.24 toolchain", workflowName)
+		if !strings.Contains(text, "go-version: '1.25'") {
+			t.Fatalf("%s does not use the documented Go 1.25 toolchain", workflowName)
 		}
 	}
 
