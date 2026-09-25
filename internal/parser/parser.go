@@ -222,3 +222,13 @@ func getParamInt(params url.Values, key string, defaultValue int) int {
 func secondsDurationString(seconds int) string {
 	return fmt.Sprintf("%ds", seconds)
 }
+
+// firstNonEmptyParam returns the first non-empty query value among keys.
+func firstNonEmptyParam(params url.Values, keys ...string) string {
+	for _, key := range keys {
+		if v := params.Get(key); v != "" {
+			return v
+		}
+	}
+	return ""
+}
