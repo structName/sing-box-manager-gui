@@ -604,7 +604,7 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 		nodeMap[node.Tag] = node
 		allNodeTags = append(allNodeTags, node.Tag)
 
-		countryCode := node.Country
+		countryCode := strings.ToUpper(strings.TrimSpace(node.Country))
 		if countryCode == "" {
 			countryCode = "OTHER"
 		}
@@ -654,13 +654,18 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 		// 链路顺序: [入口, 中间..., 出口]
 		// detour 方向: 出口节点的 detour 指向前一个节点
 		// 流量路径: 客户端 → 入口 → 中间... → 出口 → 目标
+		// 空国家候选时中止整链并回滚，避免 prevCopyTag 不推进导致 detour 断裂（#26）
+		chainStart := len(outbounds)
+		copyTagSnapshot := cloneBoolMap(chainCopyTags)
 		var prevCopyTag string
+		aborted := false
 		for hopIndex, nodeTag := range chain.Nodes {
 			if storage.IsChainCountryNodeTag(nodeTag) {
 				countryCode := storage.ParseChainCountryNodeCode(nodeTag)
 				candidateTags := countryNodes[countryCode]
 				if len(candidateTags) == 0 {
-					continue
+					aborted = true
+					break
 				}
 
 				groupCopyTag := reserveChainCopyTag(chainCopyTags, storage.GenerateChainNodeCopyTag(chain.Name, nodeTag, hopIndex))
@@ -705,6 +710,11 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 
 			outbounds = append(outbounds, copyOutbound)
 			prevCopyTag = copyTag
+		}
+		if aborted {
+			outbounds = outbounds[:chainStart]
+			restoreBoolMap(chainCopyTags, copyTagSnapshot)
+			continue
 		}
 	}
 
@@ -879,6 +889,26 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 	return outbounds, nil
 }
 
+
+func cloneBoolMap(src map[string]bool) map[string]bool {
+	dst := make(map[string]bool, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
+}
+
+func restoreBoolMap(dst, snapshot map[string]bool) {
+	for key := range dst {
+		if !snapshot[key] {
+			delete(dst, key)
+		}
+	}
+	for key, value := range snapshot {
+		dst[key] = value
+	}
+}
+
 func (b *ConfigBuilder) activeTorChainIDs() map[string]bool {
 	active := make(map[string]bool)
 	for _, port := range b.inboundPorts {
@@ -914,6 +944,13 @@ func (b *ConfigBuilder) appendTorChainOutbounds(
 		return outbounds, nil
 	}
 
+	chainStart := len(outbounds)
+	copyTagSnapshot := cloneBoolMap(chainCopyTags)
+	rollback := func() ([]Outbound, error) {
+		restoreBoolMap(chainCopyTags, copyTagSnapshot)
+		return outbounds[:chainStart], nil
+	}
+
 	var prevCopyTag string
 	for hopIndex, nodeTag := range chain.Nodes[:torIndex] {
 		generated, copyTag, ok, err := b.appendTorChainHopOutbounds(outbounds, chainCopyTags, chain, nodeTag, hopIndex, prevCopyTag, nodeMap, countryNodes)
@@ -921,13 +958,14 @@ func (b *ConfigBuilder) appendTorChainOutbounds(
 			return nil, err
 		}
 		if !ok {
-			return generated, nil
+			// 空国家/自动候选时中止整链并回滚，避免留下断裂 detour 的半成品（#26）
+			return rollback()
 		}
 		outbounds = generated
 		prevCopyTag = copyTag
 	}
 	if prevCopyTag == "" {
-		return outbounds, nil
+		return rollback()
 	}
 
 	torTag := storage.GenerateChainTorOutboundTag(chain.ID)
@@ -943,7 +981,7 @@ func (b *ConfigBuilder) appendTorChainOutbounds(
 			return nil, err
 		}
 		if !ok {
-			return generated, nil
+			return rollback()
 		}
 		outbounds = generated
 		exitTag = copyTag
