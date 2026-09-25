@@ -157,6 +157,11 @@ VERSION=1.0.0 ./build.sh all         # Custom version
 
 After starting, open `http://localhost:19090` in your browser.
 
+**Ops / troubleshooting**
+
+- [Daemon / sing-box port-conflict recovery](docs/daemon-port-conflict-recovery.md) — diagnose inbound or Web port clashes (e.g. foreign `sing-box-socks` on 1080); do **not** auto-kill user-owned listeners.
+
+
 ### Configuration
 
 **Data Directory Structure:**
@@ -381,6 +386,11 @@ VERSION=1.0.0 ./build.sh all         # 自定义版本号
 | `-swagger-out` | - | 导出 OpenAPI JSON 规范到文件 |
 
 启动后，在浏览器中打开 `http://localhost:19090`。
+
+**运维 / 排障**
+
+- [守护进程 / sing-box 端口冲突恢复](docs/daemon-port-conflict-recovery.md) — 诊断入站或 Web 端口占用（例如用户自建 `sing-box-socks` 占 1080）；**勿**自动杀掉非面板托管进程。
+
 
 ### 配置
 
