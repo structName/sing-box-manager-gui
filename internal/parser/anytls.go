@@ -73,8 +73,8 @@ func (p *AnyTLSParser) Parse(rawURL string) (*storage.Node, error) {
 		tls["alpn"] = strings.Split(alpn, ",")
 	}
 
-	// uTLS fingerprint（默认 chrome，与 trojan 一致）
-	fp := getParamString(params, "fp", "chrome")
+	// uTLS fingerprint（fp= / fingerprint=；默认 chrome，与 trojan 一致）
+	fp := shareLinkUTLSFingerprint(params, true)
 	tls["utls"] = map[string]interface{}{
 		"enabled":     true,
 		"fingerprint": fp,

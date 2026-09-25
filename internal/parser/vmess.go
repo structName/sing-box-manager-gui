@@ -35,7 +35,8 @@ type vmessConfig struct {
 	TLS  string      `json:"tls"`              // TLS
 	SNI  string      `json:"sni"`              // SNI
 	ALPN string      `json:"alpn"`             // ALPN
-	Fp   string      `json:"fp"`               // Fingerprint
+	Fp          string `json:"fp"`                    // Fingerprint (Xray-style)
+	Fingerprint string `json:"fingerprint"`           // Fingerprint alias used by some exporters
 	Skip bool        `json:"skip-cert-verify"` // 跳过证书验证
 }
 
@@ -167,10 +168,14 @@ func (p *VmessParser) Parse(rawURL string) (*storage.Node, error) {
 		if config.Skip {
 			tls["insecure"] = true
 		}
-		if config.Fp != "" {
+		fp := config.Fp
+		if fp == "" {
+			fp = config.Fingerprint
+		}
+		if fp != "" {
 			tls["utls"] = map[string]interface{}{
 				"enabled":     true,
-				"fingerprint": config.Fp,
+				"fingerprint": fp,
 			}
 		}
 		if config.ALPN != "" {
