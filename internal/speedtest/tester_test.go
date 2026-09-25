@@ -336,3 +336,183 @@ func TestNodeToMihomoProxyVmessOmitsAlpnWhenUnset(t *testing.T) {
 		t.Fatalf("client-fingerprint should be omitted when unset, got %#v", proxy["client-fingerprint"])
 	}
 }
+
+func TestNodeToMihomoProxyTuicTLSAlpnTypedAndFingerprint(t *testing.T) {
+	node := &models.Node{
+		Tag:        "tuic-tls-alpn",
+		Type:       "tuic",
+		Server:     "tuic.example.com",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"uuid":     "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+			"password": "pw",
+			"tls": map[string]interface{}{
+				"server_name": "cdn.example.com",
+				"insecure":    true,
+				// URL/Clash parsers store typed []string (strings.Split / yaml)
+				"alpn": []string{" h3 ", "", "h3-29"},
+				"utls": map[string]interface{}{
+					"fingerprint": " safari ",
+				},
+			},
+			"congestion_control": "bbr",
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy returned error: %v", err)
+	}
+	if got := proxy["type"]; got != "tuic" {
+		t.Fatalf("type = %v, want tuic", got)
+	}
+	if got := proxy["sni"]; got != "cdn.example.com" {
+		t.Fatalf("sni = %v, want cdn.example.com", got)
+	}
+	alpn, ok := proxy["alpn"].([]string)
+	if !ok {
+		t.Fatalf("alpn type = %T, want []string", proxy["alpn"])
+	}
+	if len(alpn) != 2 || alpn[0] != "h3" || alpn[1] != "h3-29" {
+		t.Fatalf("alpn = %#v, want [h3 h3-29] (trimmed, blanks dropped)", alpn)
+	}
+	if got := proxy["client-fingerprint"]; got != "safari" {
+		t.Fatalf("client-fingerprint = %v, want safari", got)
+	}
+}
+
+func TestNodeToMihomoProxyTuicTLSAlpnJSONInterfaceSlice(t *testing.T) {
+	node := &models.Node{
+		Tag:        "tuic-tls-alpn-json",
+		Type:       "tuic",
+		Server:     "tuic.example.com",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"uuid": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+			"tls": map[string]interface{}{
+				"server_name": "tuic.example.com",
+				// JSON round-trip shape from SQLite / JSONStore
+				"alpn": []interface{}{" h3 ", "", "http/1.1"},
+			},
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy returned error: %v", err)
+	}
+	alpn, ok := proxy["alpn"].([]string)
+	if !ok {
+		t.Fatalf("alpn type = %T, want []string", proxy["alpn"])
+	}
+	if len(alpn) != 2 || alpn[0] != "h3" || alpn[1] != "http/1.1" {
+		t.Fatalf("alpn = %#v, want [h3 http/1.1]", alpn)
+	}
+	if _, ok := proxy["client-fingerprint"]; ok {
+		t.Fatalf("client-fingerprint should be omitted when unset, got %#v", proxy["client-fingerprint"])
+	}
+}
+
+func TestNodeToMihomoProxyAnyTLSTLSAlpnAndFingerprint(t *testing.T) {
+	node := &models.Node{
+		Tag:        "anytls-tls-alpn",
+		Type:       "anytls",
+		Server:     "anytls.example.com",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"password": "secret",
+			"tls": map[string]interface{}{
+				"server_name": "cdn.example.com",
+				"insecure":    true,
+				"alpn":        []string{" h2 ", "http/1.1", " "},
+				"utls": map[string]interface{}{
+					"enabled":     true,
+					"fingerprint": " firefox ",
+				},
+			},
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy returned error: %v", err)
+	}
+	if got := proxy["type"]; got != "anytls" {
+		t.Fatalf("type = %v, want anytls", got)
+	}
+	alpn, ok := proxy["alpn"].([]string)
+	if !ok {
+		t.Fatalf("alpn type = %T, want []string", proxy["alpn"])
+	}
+	if len(alpn) != 2 || alpn[0] != "h2" || alpn[1] != "http/1.1" {
+		t.Fatalf("alpn = %#v, want [h2 http/1.1]", alpn)
+	}
+	if got := proxy["client-fingerprint"]; got != "firefox" {
+		t.Fatalf("client-fingerprint = %v, want firefox", got)
+	}
+}
+
+func TestNodeToMihomoProxyAnyTLSTLSAlpnJSONAndTypedFingerprint(t *testing.T) {
+	node := &models.Node{
+		Tag:        "anytls-tls-json",
+		Type:       "anytls",
+		Server:     "anytls.example.com",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"password": "secret",
+			"tls": map[string]interface{}{
+				"server_name": "anytls.example.com",
+				"alpn":        []interface{}{"h2", " http/1.1 "},
+				// typed map[string]string utls (defensive shape)
+				"utls": map[string]string{
+					"fingerprint": " chrome ",
+				},
+			},
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy returned error: %v", err)
+	}
+	alpn, ok := proxy["alpn"].([]string)
+	if !ok {
+		t.Fatalf("alpn type = %T, want []string", proxy["alpn"])
+	}
+	if len(alpn) != 2 || alpn[0] != "h2" || alpn[1] != "http/1.1" {
+		t.Fatalf("alpn = %#v, want [h2 http/1.1]", alpn)
+	}
+	if got := proxy["client-fingerprint"]; got != "chrome" {
+		t.Fatalf("client-fingerprint = %v, want chrome", got)
+	}
+}
+
+func TestNodeToMihomoProxyTuicOmitsAlpnWhenBlank(t *testing.T) {
+	node := &models.Node{
+		Tag:        "tuic-blank-alpn",
+		Type:       "tuic",
+		Server:     "tuic.example.com",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"uuid": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+			"tls": map[string]interface{}{
+				"server_name": "tuic.example.com",
+				"alpn":        []string{"", "  "},
+				"utls": map[string]interface{}{
+					"fingerprint": "   ",
+				},
+			},
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy returned error: %v", err)
+	}
+	if _, ok := proxy["alpn"]; ok {
+		t.Fatalf("alpn should be omitted when blank-only, got %#v", proxy["alpn"])
+	}
+	if _, ok := proxy["client-fingerprint"]; ok {
+		t.Fatalf("client-fingerprint should be omitted when blank, got %#v", proxy["client-fingerprint"])
+	}
+}

@@ -2,9 +2,11 @@ package speedtest
 
 import "strings"
 
-// applyMihomoTLSAlpn maps Extra.tls.alpn ([]string or []interface{}) onto the
-// mihomo proxy "alpn" field used by delay/speed checks.
-// Canonical helper (owned by fix/vmess-vless-speedtest-tls-alpn-fp / PR #109).
+// Owned by PR #109 (fix/vmess-vless-speedtest-tls-alpn-fp). Call sites only — do not fork.
+
+// applyMihomoTLSAlpn maps Extra.tls.alpn onto the mihomo proxy "alpn" field
+// used by delay/speed checks. Accepts typed []string, JSON []interface{}, or
+// a single comma-separated string; trims and drops blanks.
 func applyMihomoTLSAlpn(proxy map[string]interface{}, tls map[string]interface{}) {
 	if alpn := tlsAlpnList(tls["alpn"]); len(alpn) > 0 {
 		proxy["alpn"] = alpn
@@ -13,37 +15,34 @@ func applyMihomoTLSAlpn(proxy map[string]interface{}, tls map[string]interface{}
 
 // applyMihomoClientFingerprint maps Extra.tls.utls.fingerprint onto the mihomo
 // proxy "client-fingerprint" field (overrides Reality's chrome default when set).
-// Canonical helper (owned by fix/vmess-vless-speedtest-tls-alpn-fp / PR #109).
+// Accepts JSON map[string]interface{} or typed map[string]string utls; trims blanks.
 func applyMihomoClientFingerprint(proxy map[string]interface{}, tls map[string]interface{}) {
-	utls, ok := tls["utls"].(map[string]interface{})
-	if !ok {
-		return
-	}
-	fp, ok := utls["fingerprint"].(string)
-	if !ok {
-		return
-	}
-	fp = strings.TrimSpace(fp)
+	fp := tlsClientFingerprint(tls["utls"])
 	if fp == "" {
 		return
 	}
 	proxy["client-fingerprint"] = fp
 }
 
-// tlsAlpnList normalizes Extra.tls.alpn from JSON ([]interface{}) or typed
-// ([]string) into a non-empty []string for mihomo.
-// Canonical helper (owned by fix/vmess-vless-speedtest-tls-alpn-fp / PR #109).
+// tlsClientFingerprint extracts a trimmed non-empty fingerprint from utls.
+func tlsClientFingerprint(raw interface{}) string {
+	switch utls := raw.(type) {
+	case map[string]interface{}:
+		fp, _ := utls["fingerprint"].(string)
+		return strings.TrimSpace(fp)
+	case map[string]string:
+		return strings.TrimSpace(utls["fingerprint"])
+	default:
+		return ""
+	}
+}
+
+// tlsAlpnList normalizes Extra.tls.alpn from typed ([]string), JSON
+// ([]interface{}), or a comma-separated string into a non-empty []string.
 func tlsAlpnList(raw interface{}) []string {
 	switch value := raw.(type) {
 	case []string:
-		out := make([]string, 0, len(value))
-		for _, item := range value {
-			item = strings.TrimSpace(item)
-			if item != "" {
-				out = append(out, item)
-			}
-		}
-		return out
+		return trimNonEmptyStrings(value)
 	case []interface{}:
 		out := make([]string, 0, len(value))
 		for _, item := range value {
@@ -55,7 +54,21 @@ func tlsAlpnList(raw interface{}) []string {
 			}
 		}
 		return out
+	case string:
+		parts := strings.Split(value, ",")
+		return trimNonEmptyStrings(parts)
 	default:
 		return nil
 	}
+}
+
+func trimNonEmptyStrings(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, item := range in {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
 }
