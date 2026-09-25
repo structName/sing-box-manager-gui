@@ -1041,6 +1041,23 @@ func (s *Server) updateSubscription(c *gin.Context) {
 func (s *Server) deleteSubscription(c *gin.Context) {
 	id := c.Param("id")
 
+	// 删除前收集节点 Tag，用于链路剪枝与入站 Outbound 级联停用
+	var deletedTags []string
+	if existing := s.subService.Get(id); existing != nil {
+		seen := make(map[string]struct{}, len(existing.Nodes))
+		for _, node := range existing.Nodes {
+			tag := strings.TrimSpace(node.Tag)
+			if tag == "" {
+				continue
+			}
+			if _, ok := seen[tag]; ok {
+				continue
+			}
+			seen[tag] = struct{}{}
+			deletedTags = append(deletedTags, tag)
+		}
+	}
+
 	if err := s.subService.Delete(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1051,6 +1068,30 @@ func (s *Server) deleteSubscription(c *gin.Context) {
 		s.unifiedScheduler.RemoveSchedule(service.ScheduleTypeSubUpdate, id)
 	}
 
+	var cascadeMessages []string
+
+	// 与删除手动节点对称：剪掉链路中已失效的订阅节点引用
+	if s.chainSyncSvc != nil {
+		if err := s.chainSyncSvc.SyncChainNodes(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "删除订阅成功，但同步链路失败: " + err.Error()})
+			return
+		}
+	}
+
+	// 入站端口可直选订阅节点 Tag；删除后停用仍绑定旧 Tag 的入站，避免路由指向幽灵 outbound
+	disabledCount := 0
+	for _, tag := range deletedTags {
+		disabledPorts, err := s.disableInboundPortsForOutbound(tag)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "删除订阅成功，但级联停用入站失败: " + err.Error()})
+			return
+		}
+		disabledCount += len(disabledPorts)
+	}
+	if disabledCount > 0 {
+		cascadeMessages = append(cascadeMessages, fmt.Sprintf("已停用 %d 个关联入站", disabledCount))
+	}
+
 	// 同步节点到 SQLite（用于测速模块）
 	if err := s.syncNodesToSQLite(); err != nil {
 		logger.Warn("同步节点到 SQLite 失败: %v", err)
@@ -1058,11 +1099,23 @@ func (s *Server) deleteSubscription(c *gin.Context) {
 
 	// 自动应用配置
 	if err := s.autoApplyConfig(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"message": "删除成功，但自动应用配置失败: " + err.Error()})
+		resp := gin.H{"message": "删除成功，但自动应用配置失败: " + err.Error()}
+		if len(cascadeMessages) > 0 {
+			resp["cascade"] = cascadeMessages
+		}
+		c.JSON(http.StatusOK, resp)
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "删除成功"})
+	message := "删除成功"
+	if len(cascadeMessages) > 0 {
+		message = "删除成功，" + strings.Join(cascadeMessages, "，")
+	}
+	resp := gin.H{"message": message}
+	if len(cascadeMessages) > 0 {
+		resp["cascade"] = cascadeMessages
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 func (s *Server) refreshSubscription(c *gin.Context) {
@@ -2699,13 +2752,24 @@ func (s *Server) updateManualNode(c *gin.Context) {
 	var cascadeMessages []string
 	oldTag := strings.TrimSpace(oldNode.Node.Tag)
 	newTag := strings.TrimSpace(node.Node.Tag)
-	// 仅在 Tag 实际变更时改写链路引用；禁用/启用不调用 SyncChainNodes，避免误剪枝
-	if oldTag != "" && oldTag != newTag && s.chainSyncSvc != nil {
-		if err := s.chainSyncSvc.RetargetNodeTag(oldTag, newTag); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "更新节点成功，但级联更新链路失败: " + err.Error()})
+	// 仅在 Tag 实际变更时改写链路/入站引用；禁用/启用不调用 SyncChainNodes，避免误剪枝
+	if oldTag != "" && oldTag != newTag {
+		if s.chainSyncSvc != nil {
+			if err := s.chainSyncSvc.RetargetNodeTag(oldTag, newTag); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "更新节点成功，但级联更新链路失败: " + err.Error()})
+				return
+			}
+			cascadeMessages = append(cascadeMessages, fmt.Sprintf("已更新链路中的节点引用: %s → %s", oldTag, newTag))
+		}
+		// 入站端口可直选单独节点 Tag 作为 Outbound；与链路改名级联保持对称
+		renamedPorts, err := s.updateInboundPortsOutbound(oldTag, newTag)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "更新节点成功，但级联更新入站失败: " + err.Error()})
 			return
 		}
-		cascadeMessages = append(cascadeMessages, fmt.Sprintf("已更新链路中的节点引用: %s → %s", oldTag, newTag))
+		if len(renamedPorts) > 0 {
+			cascadeMessages = append(cascadeMessages, fmt.Sprintf("已更新 %d 个关联入站端口", len(renamedPorts)))
+		}
 	}
 
 	// 自动应用配置
@@ -2729,10 +2793,20 @@ func (s *Server) updateManualNode(c *gin.Context) {
 func (s *Server) deleteManualNode(c *gin.Context) {
 	id := c.Param("id")
 
+	var deletedTag string
+	for _, mn := range s.store.GetManualNodes() {
+		if mn.ID == id {
+			deletedTag = strings.TrimSpace(mn.Node.Tag)
+			break
+		}
+	}
+
 	if err := s.store.DeleteManualNode(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	var cascadeMessages []string
 
 	// 节点已真正删除：同步链路，剪掉失效的 OriginalTag 引用
 	if s.chainSyncSvc != nil {
@@ -2742,13 +2816,37 @@ func (s *Server) deleteManualNode(c *gin.Context) {
 		}
 	}
 
+	// 入站端口可直选单独节点 Tag；与链路删除级联停用保持对称
+	if deletedTag != "" {
+		disabledPorts, err := s.disableInboundPortsForOutbound(deletedTag)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "删除节点成功，但级联停用入站失败: " + err.Error()})
+			return
+		}
+		if len(disabledPorts) > 0 {
+			cascadeMessages = append(cascadeMessages, fmt.Sprintf("已停用 %d 个关联入站", len(disabledPorts)))
+		}
+	}
+
 	// 自动应用配置
 	if err := s.autoApplyConfig(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"message": "删除成功，但自动应用配置失败: " + err.Error()})
+		resp := gin.H{"message": "删除成功，但自动应用配置失败: " + err.Error()}
+		if len(cascadeMessages) > 0 {
+			resp["cascade"] = cascadeMessages
+		}
+		c.JSON(http.StatusOK, resp)
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "删除成功"})
+	message := "删除成功"
+	if len(cascadeMessages) > 0 {
+		message = "删除成功，" + strings.Join(cascadeMessages, "，")
+	}
+	resp := gin.H{"message": message}
+	if len(cascadeMessages) > 0 {
+		resp["cascade"] = cascadeMessages
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // ==================== 内核管理 API ====================
