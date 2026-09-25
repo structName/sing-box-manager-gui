@@ -66,13 +66,15 @@ func (p *TrojanParser) Parse(rawURL string) (*storage.Node, error) {
 			if path := params.Get("path"); path != "" {
 				transport["path"] = path
 			}
-			if host := params.Get("host"); host != "" {
+			// host is preferred; peer is a common Clash/trojan-go alias for WS Host.
+			if host := FirstNonEmptyParam(params, "host", "peer"); host != "" {
 				transport["headers"] = map[string]string{
 					"Host": host,
 				}
 			}
 		case "grpc":
-			if serviceName := params.Get("serviceName"); serviceName != "" {
+			// Xray-style serviceName and snake_case service_name both appear in the wild.
+			if serviceName := FirstNonEmptyParam(params, "serviceName", "service_name"); serviceName != "" {
 				transport["service_name"] = serviceName
 			}
 		}
@@ -87,15 +89,13 @@ func (p *TrojanParser) Parse(rawURL string) (*storage.Node, error) {
 			"enabled": true,
 		}
 
-		// SNI
-		if sni := params.Get("sni"); sni != "" {
+		// SNI (peer is a Clash/trojan-go alias when sni/host omitted)
+		if sni := FirstNonEmptyParam(params, "sni", "host", "peer"); sni != "" {
 			tls["server_name"] = sni
-		} else if host := params.Get("host"); host != "" {
-			tls["server_name"] = host
 		}
 
-		// 跳过证书验证
-		if getParamBool(params, "allowInsecure") || getParamBool(params, "insecure") {
+		// 跳过证书验证 (allow_insecure appears in some share-link generators)
+		if GetParamBoolAny(params, "allowInsecure", "allow_insecure", "insecure") {
 			tls["insecure"] = true
 		}
 
