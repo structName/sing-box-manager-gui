@@ -35,6 +35,8 @@ type ClashProxy struct {
 	ClientFingerprint string                 `yaml:"client-fingerprint,omitempty"`
 	Flow              string                 `yaml:"flow,omitempty"`
 	UDP               bool                   `yaml:"udp,omitempty"`
+	UDPOverTCP        bool                   `yaml:"udp-over-tcp,omitempty"`
+	UDPOverTCPVersion int                    `yaml:"udp-over-tcp-version,omitempty"`
 	Plugin            string                 `yaml:"plugin,omitempty"`
 	PluginOpts        map[string]interface{} `yaml:"plugin-opts,omitempty"`
 	WSOpts            *WSOpts                `yaml:"ws-opts,omitempty"`
@@ -135,6 +137,7 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 				extra["plugin_opts"] = proxy.PluginOpts
 			}
 		}
+		applyClashUDPOverTCP(extra, proxy)
 
 	case "vmess":
 		nodeType = "vmess"
@@ -216,6 +219,7 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 		if proxy.Password != "" {
 			extra["password"] = proxy.Password
 		}
+		applyClashUDPOverTCP(extra, proxy)
 
 	case "socks4":
 		nodeType = "socks"
@@ -223,6 +227,7 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 		if proxy.Username != "" {
 			extra["username"] = proxy.Username
 		}
+		applyClashUDPOverTCP(extra, proxy)
 
 	case "anytls":
 		nodeType = "anytls"
@@ -415,4 +420,20 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 	}
 
 	return node, nil
+}
+
+
+// applyClashUDPOverTCP maps Clash Meta udp-over-tcp (+ optional version)
+// into sing-box Extra shape used by builder and speedtest.
+func applyClashUDPOverTCP(extra map[string]interface{}, proxy ClashProxy) {
+	if !proxy.UDPOverTCP {
+		return
+	}
+	uot := map[string]interface{}{
+		"enabled": true,
+	}
+	if proxy.UDPOverTCPVersion > 0 {
+		uot["version"] = proxy.UDPOverTCPVersion
+	}
+	extra["udp_over_tcp"] = uot
 }

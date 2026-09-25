@@ -219,3 +219,48 @@ func TestNodeToMihomoProxySocksUDPOverTCP(t *testing.T) {
 		t.Fatalf("udp-over-tcp = %v, want true", proxy["udp-over-tcp"])
 	}
 }
+
+func TestNodeToMihomoProxyShadowsocksUDPOverTCP(t *testing.T) {
+	proxy, err := nodeToMihomoProxy(&models.Node{
+		Tag:        "ss-uot",
+		Type:       "shadowsocks",
+		Server:     "192.0.2.20",
+		ServerPort: 8388,
+		Extra: models.JSONMap{
+			"method":   "aes-128-gcm",
+			"password": "secret",
+			"udp_over_tcp": map[string]interface{}{
+				"enabled": true,
+				"version": 2,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy ss uot error: %v", err)
+	}
+	if proxy["udp-over-tcp"] != true {
+		t.Fatalf("udp-over-tcp = %v, want true", proxy["udp-over-tcp"])
+	}
+	if proxy["udp-over-tcp-version"] != 2 {
+		t.Fatalf("udp-over-tcp-version = %v, want 2", proxy["udp-over-tcp-version"])
+	}
+}
+
+func TestNodeToMihomoProxyShadowsocksOmitsUDPOverTCPWhenUnset(t *testing.T) {
+	proxy, err := nodeToMihomoProxy(&models.Node{
+		Tag:        "ss-plain",
+		Type:       "shadowsocks",
+		Server:     "192.0.2.21",
+		ServerPort: 8388,
+		Extra: models.JSONMap{
+			"method":   "aes-128-gcm",
+			"password": "secret",
+		},
+	})
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy ss plain error: %v", err)
+	}
+	if _, ok := proxy["udp-over-tcp"]; ok {
+		t.Fatalf("udp-over-tcp should be absent, got %v", proxy["udp-over-tcp"])
+	}
+}
