@@ -40,14 +40,21 @@ func (p *Hysteria2Parser) Parse(rawURL string) (*storage.Node, error) {
 			return nil, fmt.Errorf("解析服务器地址失败: %w", err)
 		}
 	} else {
-		// 格式2: server:port (password 在参数中)
+		// 格式2: server:port (password 在查询参数中)
 		server, port, err = parseServerInfo(addressPart)
 		if err != nil {
 			return nil, fmt.Errorf("解析服务器地址失败: %w", err)
 		}
-		password = params.Get("auth")
 	}
 
+	// Query-param password: official docs use auth=; Clash Meta / NekoBox /
+	// some panels emit password=. Also covers empty userinfo (://@host).
+	if password == "" {
+		password = params.Get("auth")
+	}
+	if password == "" {
+		password = params.Get("password")
+	}
 	if password == "" {
 		return nil, fmt.Errorf("缺少认证密码")
 	}
