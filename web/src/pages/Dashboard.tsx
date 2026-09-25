@@ -350,6 +350,7 @@ export default function Dashboard() {
 
   // 入站端口和链路数据
   const [inboundPorts, setInboundPorts] = useState<InboundPort[]>([]);
+  const [applySkipBanner, setApplySkipBanner] = useState<string | null>(null);
   const [proxyChains, setProxyChains] = useState<ProxyChain[]>([]);
   // 测速数据
   const [speedInfos, setSpeedInfos] = useState<Record<string, NodeSpeedInfo>>({});
@@ -452,9 +453,19 @@ export default function Dashboard() {
 
   const handleApplyConfig = async () => {
     try {
-      await configApi.apply();
+      const res = await configApi.apply();
       await fetchServiceStatus();
-      toast.success('配置已应用');
+      const warning = res.data?.warning as string | undefined;
+      const skippedNodes = (res.data?.skipped_nodes as { tag?: string; reason?: string }[] | undefined) || [];
+      const skippedChains = (res.data?.skipped_chains as { name?: string; id?: string; reason?: string }[] | undefined) || [];
+      if (warning || skippedNodes.length > 0 || skippedChains.length > 0) {
+        const msg = warning || `配置已应用，但跳过了 ${skippedNodes.length} 个节点、${skippedChains.length} 条链路`;
+        setApplySkipBanner(msg);
+        toast.info(msg, 8000);
+      } else {
+        setApplySkipBanner(null);
+        toast.success('配置已应用');
+      }
     } catch (error) {
       showError('应用配置失败', error);
     }
@@ -572,6 +583,19 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
+      {applySkipBanner && (
+        <div className="flex items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-100">
+          <div className="flex-1 whitespace-pre-wrap break-all">{applySkipBanner}</div>
+          <button
+            type="button"
+            className="shrink-0 text-amber-700 hover:underline dark:text-amber-200"
+            onClick={() => setApplySkipBanner(null)}
+          >
+            关闭
+          </button>
+        </div>
+      )}
+
       {/* 欢迎横幅 */}
       <WelcomeBanner greeting={greeting} />
 
