@@ -382,15 +382,9 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 			if insecure, ok := tls["insecure"].(bool); ok {
 				proxy["skip-cert-verify"] = insecure
 			}
-			if alpn, ok := tls["alpn"].([]interface{}); ok {
-				alpnStrs := make([]string, len(alpn))
-				for i, a := range alpn {
-					if s, ok := a.(string); ok {
-						alpnStrs[i] = s
-					}
-				}
-				proxy["alpn"] = alpnStrs
-			}
+			// ALPN + fingerprint via #109 helpers
+			applyMihomoTLSAlpn(proxy, tls)
+			applyMihomoClientFingerprint(proxy, tls)
 		}
 		if congestion, ok := extra["congestion_control"].(string); ok {
 			proxy["congestion-controller"] = congestion
@@ -430,16 +424,9 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 			if insecure, ok := tls["insecure"].(bool); ok {
 				proxy["skip-cert-verify"] = insecure
 			}
-			if alpn, ok := tls["alpn"].([]interface{}); ok {
-				proxy["alpn"] = alpn
-			} else if alpn, ok := tls["alpn"].([]string); ok {
-				proxy["alpn"] = alpn
-			}
-			if utls, ok := tls["utls"].(map[string]interface{}); ok {
-				if fp, ok := utls["fingerprint"].(string); ok {
-					proxy["client-fingerprint"] = fp
-				}
-			}
+			// ALPN + fingerprint via #109 helpers
+			applyMihomoTLSAlpn(proxy, tls)
+			applyMihomoClientFingerprint(proxy, tls)
 		}
 		// 空闲会话参数（mihomo 预期 int 类型）
 		if v, ok := anyTLSDurationSeconds(extra["idle_session_check_interval"]); ok {
