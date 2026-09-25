@@ -76,14 +76,19 @@ export default function Layout({ children }: LayoutProps) {
         {/* 底部链接 */}
         <div className="sticky bottom-4 left-4 right-4 mt-auto pt-4">
           {clashUIEnabled ? (
-            <a
-              href={buildZashboardPanelUrl(clashApiPort, clashApiSecret)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center justify-center gap-2 px-4 py-2 text-sm text-gray-500 dark:text-gray-400 hover:text-primary transition-colors"
+            <button
+              type="button"
+              onClick={() => {
+                window.open(
+                  buildZashboardPanelUrl(clashApiPort, clashApiSecret),
+                  '_blank',
+                  'noopener,noreferrer',
+                );
+              }}
+              className="flex w-full items-center justify-center gap-2 px-4 py-2 text-sm text-gray-500 dark:text-gray-400 hover:text-primary transition-colors"
             >
               打开 Zashboard
-            </a>
+            </button>
           ) : (
             <p className="px-4 py-2 text-center text-sm text-gray-400 dark:text-gray-500">
               Zashboard 已关闭
