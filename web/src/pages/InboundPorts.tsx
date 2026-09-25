@@ -830,7 +830,7 @@ export default function InboundPorts() {
                   <div>
                     <p className="font-medium text-default-900">使用 Tor 流量出口</p>
                     <p className="text-sm text-default-500">
-                      开启后只可选择包含 Tor 网络的代理链路。每条不同的活跃 Tor 链路会运行一个 Tor 实例，多个入站端口可以复用同一条链路。
+                      开启后只可选择包含 Tor 网络的代理链路，并绑定 TorChainID。仅当本入站启用且完成绑定后，该 Tor 链路才会写入生成配置；每条不同的活跃 Tor 链路会运行一个 Tor 实例，多个入站端口可以复用同一条链路。
                     </p>
                   </div>
                   <Switch

@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactElement } from 'react';
 import { Card, CardBody, CardHeader, Button, Chip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Input, Textarea, useDisclosure, Switch, Select, SelectItem, Accordion, AccordionItem, Tooltip } from '@nextui-org/react';
 import { Plus, Link2, Trash2, Pencil, ArrowRight, ChevronUp, ChevronDown, Activity, RefreshCw, Download, Zap, ShieldCheck } from 'lucide-react';
-import { proxyChainApi, nodeApi } from '../api';
+import { proxyChainApi, nodeApi, inboundPortApi } from '../api';
 import { toast } from '../components/Toast';
 
 // 国家选项
@@ -58,6 +58,14 @@ interface ProxyChain {
   nodes: string[];
   chain_nodes?: ChainNode[];
   enabled: boolean;
+}
+
+// Inbound port fields needed to detect Tor bind (UseTorExit + TorChainID)
+interface InboundPortBind {
+  id: string;
+  enabled: boolean;
+  use_tor_exit?: boolean;
+  tor_chain_id?: string;
 }
 
 // Node 类型
@@ -134,6 +142,7 @@ export default function ProxyChains() {
   const [testingChain, setTestingChain] = useState<string | null>(null);
   const [speedTestingChain, setSpeedTestingChain] = useState<string | null>(null);
   const [torDiagnosingChain, setTorDiagnosingChain] = useState<string | null>(null);
+  const [inboundPorts, setInboundPorts] = useState<InboundPortBind[]>([]);
 
   // 创建/编辑 Modal
   const { isOpen, onOpen, onClose } = useDisclosure();
@@ -163,6 +172,7 @@ export default function ProxyChains() {
     fetchCountryGroups();
     fetchAllHealth();
     fetchAllSpeed();
+    fetchInboundPorts();
   }, []);
 
   const fetchChains = async () => {
@@ -173,6 +183,15 @@ export default function ProxyChains() {
       toast.error('获取链路列表失败');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchInboundPorts = async () => {
+    try {
+      const res = await inboundPortApi.getAll();
+      setInboundPorts(res.data.data || []);
+    } catch (error) {
+      console.error('获取入站端口失败:', error);
     }
   };
 
@@ -451,6 +470,16 @@ export default function ProxyChains() {
   const isAutoChainTag = (tag: string) => tag === CHAIN_AUTO_TAG;
 
   const isTorChainTag = (tag: string) => tag === CHAIN_TOR_TAG;
+
+  // Mirrors builder activeTorChainIDs: enabled inbound + UseTorExit + TorChainID
+  const boundTorChainIDs = new Set(
+    inboundPorts
+      .filter((port) => port.enabled && port.use_tor_exit && Boolean(port.tor_chain_id?.trim()))
+      .map((port) => port.tor_chain_id!.trim())
+  );
+
+  const isTorChainBoundToInbound = (chainId: string) => boundTorChainIDs.has(chainId);
+
 
   const getCountryInfo = (tagOrCode: string) => {
     const code = tagOrCode.startsWith(CHAIN_COUNTRY_PREFIX)
@@ -760,7 +789,7 @@ export default function ProxyChains() {
         <div>
           <h1 className="text-2xl font-bold text-gray-800 dark:text-white">代理链路</h1>
           <p className="text-sm text-gray-500 mt-1">
-            配置多级中转链路，实现 机场节点 → 自建中转 → 最终出口 的级联代理
+            配置多级中转链路，实现 机场节点 → 自建中转 → 最终出口 的级联代理。含 Tor 的链路仅在入站绑定 UseTorExit + TorChainID 后才会写入配置。
           </p>
         </div>
         <Button
@@ -807,6 +836,11 @@ export default function ProxyChains() {
                         )}
                         {hasTor && (
                           <Chip size="sm" color="warning" variant="flat">独立 Tor 实例</Chip>
+                        )}
+                        {hasTor && chain.enabled && !isTorChainBoundToInbound(chain.id) && (
+                          <Tooltip content="需在「入站端口」开启 UseTorExit 并绑定本链路的 TorChainID 后才会写入生成配置">
+                            <Chip size="sm" color="default" variant="flat">未绑定入站 · 不会写入配置</Chip>
+                          </Tooltip>
                         )}
                         {/* 健康状态指示器 */}
                         {health && (
