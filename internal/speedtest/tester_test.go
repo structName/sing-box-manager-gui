@@ -219,3 +219,68 @@ func TestNodeToMihomoProxySocksUDPOverTCP(t *testing.T) {
 		t.Fatalf("udp-over-tcp = %v, want true", proxy["udp-over-tcp"])
 	}
 }
+
+func TestNodeToMihomoProxyTuicDisableSNI(t *testing.T) {
+	node := &models.Node{
+		Tag:        "tuic-nosni",
+		Type:       "tuic",
+		Server:     "t.example.com",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"uuid":     "11111111-1111-4111-8111-111111111111",
+			"password": "secret",
+			"tls": map[string]interface{}{
+				"enabled":     true,
+				"server_name": "t.example.com",
+				"disable_sni": true,
+				"insecure":    true,
+			},
+			"congestion_control": "bbr",
+		},
+	}
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy: %v", err)
+	}
+	if proxy["type"] != "tuic" {
+		t.Fatalf("type = %v, want tuic", proxy["type"])
+	}
+	if proxy["disable-sni"] != true {
+		t.Fatalf("disable-sni = %v, want true (tls.disable_sni from share-link/Clash)", proxy["disable-sni"])
+	}
+	// sni is still passed for cert verification context; disable-sni controls ClientHello
+	if proxy["sni"] != "t.example.com" {
+		t.Fatalf("sni = %v, want t.example.com", proxy["sni"])
+	}
+	if proxy["skip-cert-verify"] != true {
+		t.Fatalf("skip-cert-verify = %v, want true", proxy["skip-cert-verify"])
+	}
+	if proxy["congestion-controller"] != "bbr" {
+		t.Fatalf("congestion-controller = %v, want bbr", proxy["congestion-controller"])
+	}
+}
+
+func TestNodeToMihomoProxyTuicDisableSNIFalseOmits(t *testing.T) {
+	node := &models.Node{
+		Tag:        "tuic-sni-on",
+		Type:       "tuic",
+		Server:     "t.example.com",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"uuid":     "11111111-1111-4111-8111-111111111111",
+			"password": "secret",
+			"tls": map[string]interface{}{
+				"enabled":     true,
+				"server_name": "t.example.com",
+				"disable_sni": false,
+			},
+		},
+	}
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy: %v", err)
+	}
+	if _, present := proxy["disable-sni"]; present {
+		t.Fatalf("disable-sni should be omitted when false, got %#v", proxy["disable-sni"])
+	}
+}
