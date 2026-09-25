@@ -237,6 +237,8 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 					if len(grpcOpts) > 0 {
 						proxy["grpc-opts"] = grpcOpts
 					}
+				case "http", "h2":
+					applyHTTPOrH2TransportToMihomo(proxy, transport, tType)
 				}
 			}
 		}
@@ -310,6 +312,8 @@ func nodeToMihomoProxy(node *models.Node) (map[string]interface{}, error) {
 					if len(grpcOpts) > 0 {
 						proxy["grpc-opts"] = grpcOpts
 					}
+				case "http", "h2":
+					applyHTTPOrH2TransportToMihomo(proxy, transport, tType)
 				}
 			}
 		}
@@ -534,6 +538,156 @@ func numberAsInt(raw interface{}) (int, bool) {
 	default:
 		return 0, false
 	}
+}
+
+
+// applyHTTPOrH2TransportToMihomo maps sing-box transport.type=http|h2 fields into
+// mihomo http-opts / h2-opts. Without this, health/speed tests set network=http|h2
+// but dial with empty path/host and fail against HTTP-obfuscated or H2 nodes.
+func applyHTTPOrH2TransportToMihomo(proxy map[string]interface{}, transport map[string]interface{}, tType string) {
+	switch tType {
+	case "http":
+		httpOpts := map[string]interface{}{}
+		if method, ok := transport["method"].(string); ok && method != "" {
+			httpOpts["method"] = method
+		}
+		if paths := normalizeMihomoHTTPPaths(transport["path"]); len(paths) > 0 {
+			httpOpts["path"] = paths
+		}
+		if headers := normalizeMihomoHTTPHeaders(transport); len(headers) > 0 {
+			httpOpts["headers"] = headers
+		}
+		if len(httpOpts) > 0 {
+			proxy["http-opts"] = httpOpts
+		}
+	case "h2":
+		h2Opts := map[string]interface{}{}
+		if path, ok := transport["path"].(string); ok && path != "" {
+			h2Opts["path"] = path
+		}
+		if host := normalizeMihomoHostList(transport["host"]); len(host) > 0 {
+			h2Opts["host"] = host
+		}
+		if len(h2Opts) > 0 {
+			proxy["h2-opts"] = h2Opts
+		}
+	}
+}
+
+func normalizeMihomoHTTPPaths(raw interface{}) []string {
+	switch v := raw.(type) {
+	case string:
+		if v != "" {
+			return []string{v}
+		}
+	case []string:
+		out := make([]string, 0, len(v))
+		for _, p := range v {
+			if p != "" {
+				out = append(out, p)
+			}
+		}
+		return out
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// normalizeMihomoHTTPHeaders builds mihomo http-opts headers (map[string][]string).
+// Clash stores headers directly; URL parsers put authority in transport["host"].
+func normalizeMihomoHTTPHeaders(transport map[string]interface{}) map[string][]string {
+	headers := map[string][]string{}
+
+	switch h := transport["headers"].(type) {
+	case map[string][]string:
+		for k, vals := range h {
+			if len(vals) > 0 {
+				headers[k] = append([]string{}, vals...)
+			}
+		}
+	case map[string]string:
+		for k, v := range h {
+			if v != "" {
+				headers[k] = []string{v}
+			}
+		}
+	case map[string]interface{}:
+		for k, raw := range h {
+			switch v := raw.(type) {
+			case string:
+				if v != "" {
+					headers[k] = []string{v}
+				}
+			case []string:
+				vals := make([]string, 0, len(v))
+				for _, s := range v {
+					if s != "" {
+						vals = append(vals, s)
+					}
+				}
+				if len(vals) > 0 {
+					headers[k] = vals
+				}
+			case []interface{}:
+				vals := make([]string, 0, len(v))
+				for _, item := range v {
+					if s, ok := item.(string); ok && s != "" {
+						vals = append(vals, s)
+					}
+				}
+				if len(vals) > 0 {
+					headers[k] = vals
+				}
+			}
+		}
+	}
+
+	// URL / sing-box style: host is a top-level list or string, not a Host header.
+	if _, hasHost := headers["Host"]; !hasHost {
+		if _, hasHost = headers["host"]; !hasHost {
+			if host := normalizeMihomoHostList(transport["host"]); len(host) > 0 {
+				headers["Host"] = host
+			}
+		}
+	}
+
+	if len(headers) == 0 {
+		return nil
+	}
+	return headers
+}
+
+func normalizeMihomoHostList(raw interface{}) []string {
+	switch v := raw.(type) {
+	case string:
+		if v != "" {
+			return []string{v}
+		}
+	case []string:
+		out := make([]string, 0, len(v))
+		for _, h := range v {
+			if h != "" {
+				out = append(out, h)
+			}
+		}
+		return out
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 func applyShadowsocksPluginToMihomo(proxy map[string]interface{}, extra map[string]interface{}) error {

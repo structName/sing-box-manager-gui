@@ -219,3 +219,136 @@ func TestNodeToMihomoProxySocksUDPOverTCP(t *testing.T) {
 		t.Fatalf("udp-over-tcp = %v, want true", proxy["udp-over-tcp"])
 	}
 }
+
+func TestNodeToMihomoProxyVmessHTTPTransportOpts(t *testing.T) {
+	node := &models.Node{
+		Tag:        "vmess-http",
+		Type:       "vmess",
+		Server:     "1.2.3.4",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"uuid":     "11111111-1111-1111-1111-111111111111",
+			"alter_id": 0,
+			"security": "auto",
+			"tls": map[string]interface{}{
+				"enabled":     true,
+				"server_name": "cdn.example.com",
+			},
+			"transport": map[string]interface{}{
+				"type":   "http",
+				"method": "GET",
+				"path":   "/api",
+				"host":   []string{"cdn.example.com"},
+			},
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy: %v", err)
+	}
+	if proxy["network"] != "http" {
+		t.Fatalf("network = %v, want http", proxy["network"])
+	}
+	opts, ok := proxy["http-opts"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("http-opts missing: %#v", proxy["http-opts"])
+	}
+	if opts["method"] != "GET" {
+		t.Fatalf("method = %v, want GET", opts["method"])
+	}
+	paths, ok := opts["path"].([]string)
+	if !ok || len(paths) != 1 || paths[0] != "/api" {
+		t.Fatalf("path = %#v, want [/api]", opts["path"])
+	}
+	headers, ok := opts["headers"].(map[string][]string)
+	if !ok || len(headers["Host"]) != 1 || headers["Host"][0] != "cdn.example.com" {
+		t.Fatalf("headers = %#v, want Host=cdn.example.com", opts["headers"])
+	}
+}
+
+func TestNodeToMihomoProxyVmessH2TransportOpts(t *testing.T) {
+	node := &models.Node{
+		Tag:        "vmess-h2",
+		Type:       "vmess",
+		Server:     "1.2.3.4",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"uuid":     "11111111-1111-1111-1111-111111111111",
+			"alter_id": 0,
+			"security": "auto",
+			"transport": map[string]interface{}{
+				"type": "h2",
+				"path": "/h2",
+				"host": []interface{}{"h2.example.com", "h2-alt.example.com"},
+			},
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy: %v", err)
+	}
+	if proxy["network"] != "h2" {
+		t.Fatalf("network = %v, want h2", proxy["network"])
+	}
+	opts, ok := proxy["h2-opts"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("h2-opts missing: %#v", proxy["h2-opts"])
+	}
+	if opts["path"] != "/h2" {
+		t.Fatalf("path = %v, want /h2", opts["path"])
+	}
+	host, ok := opts["host"].([]string)
+	if !ok || len(host) != 2 || host[0] != "h2.example.com" || host[1] != "h2-alt.example.com" {
+		t.Fatalf("host = %#v", opts["host"])
+	}
+}
+
+func TestNodeToMihomoProxyVlessHTTPTransportClashHeaders(t *testing.T) {
+	node := &models.Node{
+		Tag:        "vless-http",
+		Type:       "vless",
+		Server:     "edge.example.com",
+		ServerPort: 443,
+		Extra: models.JSONMap{
+			"uuid": "22222222-2222-2222-2222-222222222222",
+			"transport": map[string]interface{}{
+				"type": "http",
+				"path": []interface{}{"/", "/api"},
+				"headers": map[string]interface{}{
+					"Host": []interface{}{"www.example.com"},
+					"User-Agent": []interface{}{
+						"Mozilla/5.0",
+					},
+				},
+			},
+		},
+	}
+
+	proxy, err := nodeToMihomoProxy(node)
+	if err != nil {
+		t.Fatalf("nodeToMihomoProxy: %v", err)
+	}
+	if proxy["network"] != "http" {
+		t.Fatalf("network = %v, want http", proxy["network"])
+	}
+	opts, ok := proxy["http-opts"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("http-opts missing: %#v", proxy["http-opts"])
+	}
+	paths, ok := opts["path"].([]string)
+	if !ok || len(paths) != 2 || paths[0] != "/" || paths[1] != "/api" {
+		t.Fatalf("path = %#v, want [/ /api]", opts["path"])
+	}
+	headers, ok := opts["headers"].(map[string][]string)
+	if !ok {
+		t.Fatalf("headers type = %T", opts["headers"])
+	}
+	if len(headers["Host"]) != 1 || headers["Host"][0] != "www.example.com" {
+		t.Fatalf("Host = %#v", headers["Host"])
+	}
+	if len(headers["User-Agent"]) != 1 || headers["User-Agent"][0] != "Mozilla/5.0" {
+		t.Fatalf("User-Agent = %#v", headers["User-Agent"])
+	}
+}
