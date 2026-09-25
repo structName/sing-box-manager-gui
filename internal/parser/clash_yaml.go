@@ -26,15 +26,15 @@ type ClashProxy struct {
 	Cipher            string                 `yaml:"cipher,omitempty"`
 	AlterId           int                    `yaml:"alterId,omitempty"`
 	Network           string                 `yaml:"network,omitempty"`
-	TLS               bool                   `yaml:"tls,omitempty"`
-	SkipCertVerify    bool                   `yaml:"skip-cert-verify,omitempty"`
+	TLS               flexibleBool           `yaml:"tls,omitempty"`
+	SkipCertVerify    flexibleBool           `yaml:"skip-cert-verify,omitempty"`
 	SNI               string                 `yaml:"sni,omitempty"`
 	Servername        string                 `yaml:"servername,omitempty"` // Clash 格式的 SNI 字段
 	ALPN              []string               `yaml:"alpn,omitempty"`
 	Fingerprint       string                 `yaml:"fingerprint,omitempty"`
 	ClientFingerprint string                 `yaml:"client-fingerprint,omitempty"`
 	Flow              string                 `yaml:"flow,omitempty"`
-	UDP               bool                   `yaml:"udp,omitempty"`
+	UDP               flexibleBool           `yaml:"udp,omitempty"`
 	Plugin            string                 `yaml:"plugin,omitempty"`
 	PluginOpts        map[string]interface{} `yaml:"plugin-opts,omitempty"`
 	WSOpts            *WSOpts                `yaml:"ws-opts,omitempty"`
@@ -51,7 +51,7 @@ type ClashProxy struct {
 	// TUIC 特有
 	CongestionController string `yaml:"congestion-controller,omitempty"`
 	UDPRelayMode         string `yaml:"udp-relay-mode,omitempty"`
-	ReduceRTT            bool   `yaml:"reduce-rtt,omitempty"`
+	ReduceRTT            flexibleBool `yaml:"reduce-rtt,omitempty"`
 	// SSR 特有 (obfs 字段复用 Hysteria2 的 Obfs)
 	SSRProtocol      string `yaml:"protocol,omitempty"`
 	SSRProtocolParam string `yaml:"protocol-param,omitempty"`
@@ -92,6 +92,42 @@ type GrpcOpts struct {
 type RealityOpts struct {
 	PublicKey string `yaml:"public-key,omitempty"`
 	ShortID   string `yaml:"short-id,omitempty"`
+}
+
+// flexibleBool accepts YAML booleans or common string/int forms (e.g. tls: "true").
+// Subscriptions frequently quote flags; a plain bool field would fail Decode and
+// silently drop the whole proxy.
+type flexibleBool bool
+
+func (f *flexibleBool) UnmarshalYAML(value *yaml.Node) error {
+	if value == nil || value.Tag == "!!null" || (value.Kind == yaml.ScalarNode && strings.TrimSpace(value.Value) == "") {
+		*f = false
+		return nil
+	}
+	var asBool bool
+	if err := value.Decode(&asBool); err == nil {
+		*f = flexibleBool(asBool)
+		return nil
+	}
+	var asInt int
+	if err := value.Decode(&asInt); err == nil {
+		*f = flexibleBool(asInt != 0)
+		return nil
+	}
+	var asStr string
+	if err := value.Decode(&asStr); err != nil {
+		return fmt.Errorf("invalid boolean value")
+	}
+	switch strings.ToLower(strings.TrimSpace(asStr)) {
+	case "", "0", "false", "no", "off", "n":
+		*f = false
+		return nil
+	case "1", "true", "yes", "on", "y":
+		*f = true
+		return nil
+	default:
+		return fmt.Errorf("invalid boolean %q", asStr)
+	}
 }
 
 // ParseClashYAML 解析 Clash YAML 配置
