@@ -338,11 +338,14 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 			"enabled": true,
 		}
 
-		// 设置 server_name（按优先级：SNI > Servername > 服务器地址）
+		// 设置 server_name（按优先级：SNI > Servername > 传输层 Host > 服务器地址）
+		// Clash 订阅常把 CDN 域名放在 ws-opts/h2-opts/http-opts 的 Host，而省略 sni。
 		if proxy.SNI != "" {
 			tls["server_name"] = proxy.SNI
 		} else if proxy.Servername != "" {
 			tls["server_name"] = proxy.Servername
+		} else if host := clashTransportAuthorityHost(proxy); host != "" {
+			tls["server_name"] = host
 		} else {
 			// 回退到服务器地址，确保 TLS 握手有正确的 SNI
 			tls["server_name"] = proxy.Server
@@ -415,4 +418,39 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 	}
 
 	return node, nil
+}
+
+// clashTransportAuthorityHost returns a CDN/authority hostname from transport opts.
+// Clash Meta often puts the TLS name in ws-opts.headers.Host (or h2/http Host) and
+// omits sni/servername; falling back only to proxy.Server then breaks name-based certs.
+func clashTransportAuthorityHost(proxy ClashProxy) string {
+	if proxy.WSOpts != nil {
+		for k, v := range proxy.WSOpts.Headers {
+			if strings.EqualFold(k, "Host") {
+				if host := strings.TrimSpace(v); host != "" {
+					return host
+				}
+			}
+		}
+	}
+	if proxy.H2Opts != nil {
+		for _, v := range proxy.H2Opts.Host {
+			if host := strings.TrimSpace(v); host != "" {
+				return host
+			}
+		}
+	}
+	if proxy.HTTPOpts != nil {
+		for k, vals := range proxy.HTTPOpts.Headers {
+			if !strings.EqualFold(k, "Host") {
+				continue
+			}
+			for _, v := range vals {
+				if host := strings.TrimSpace(v); host != "" {
+					return host
+				}
+			}
+		}
+	}
+	return ""
 }
