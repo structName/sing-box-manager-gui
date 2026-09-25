@@ -97,6 +97,8 @@ interface ChainHealthStatus {
     latency: number;
     error?: string;
   }[];
+  probe_mode?: 'chain' | 'exit-direct';
+  degraded_reason?: string;
 }
 
 // ChainSpeedResult 类型
@@ -106,6 +108,8 @@ interface ChainSpeedResult {
   speed_mbps: number;
   bytes_total: number;
   duration: number;
+  probe_mode?: 'chain' | 'exit-direct';
+  degraded_reason?: string;
 }
 
 interface TorDiagnosticCheck {

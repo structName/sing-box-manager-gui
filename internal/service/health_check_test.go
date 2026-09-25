@@ -36,12 +36,12 @@ func TestFindProxyPort(t *testing.T) {
 			want:           "127.0.0.1:7890",
 		},
 		{
-			name: "fallback to any socks port",
+			name: "no silent fallback to wrong outbound inbound",
 			ports: []storage.InboundPort{
 				{ID: "1", Type: "socks", Listen: "127.0.0.1", Port: 1080, Outbound: "jp", Enabled: true},
 			},
 			preferOutbound: "us",
-			want:           "127.0.0.1:1080",
+			wantErr:        true,
 		},
 		{
 			name: "skip http-only ports",
