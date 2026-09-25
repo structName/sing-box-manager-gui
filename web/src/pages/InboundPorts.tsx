@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Card, CardBody, Input, Button, Switch, Chip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Select, SelectItem, Pagination, useDisclosure } from '@nextui-org/react';
-import { Plus, Pencil, Trash2, Network, RefreshCw } from 'lucide-react';
+import { Plus, Pencil, Trash2, Network, RefreshCw, AlertCircle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '../store';
 import type { Settings as SettingsType } from '../store';
 import { inboundPortApi, filterApi, proxyChainApi, nodeApi } from '../api';
 import { toast } from '../components/Toast';
+import { apiErrorMessage } from '../utils/apiError';
 
 // 入站端口类型
 interface InboundPort {
@@ -141,11 +142,6 @@ function createDefaultPortFormData() {
   };
 }
 
-function getApiErrorMessage(error: unknown, fallback: string): string {
-  const responseError = (error as { response?: { data?: { error?: string } } })?.response?.data?.error;
-  return typeof responseError === 'string' && responseError ? responseError : fallback;
-}
-
 function getSelectableItemClasses(isSelected: boolean): string {
   return [
     'cursor-pointer rounded-xl border p-3 transition-colors',
@@ -181,13 +177,23 @@ export default function InboundPorts() {
   const [selectedSource, setSelectedSource] = useState<string>('');
   const [searchText, setSearchText] = useState<string>('');
   const [nodePage, setNodePage] = useState(1);
+  const [portsLoadError, setPortsLoadError] = useState<string | null>(null);
+  const [portsLoading, setPortsLoading] = useState(false);
+  const [outboundLoadError, setOutboundLoadError] = useState<string | null>(null);
+  const [outboundLoading, setOutboundLoading] = useState(false);
 
   async function fetchInboundPorts() {
+    setPortsLoading(true);
     try {
       const res = await inboundPortApi.getAll();
       setInboundPorts(res.data.data || []);
+      setPortsLoadError(null);
     } catch (error) {
-      console.error('获取入站端口失败:', error);
+      const message = apiErrorMessage(error, '加载入站端口失败');
+      setPortsLoadError(message);
+      toast.error(message);
+    } finally {
+      setPortsLoading(false);
     }
   }
 
@@ -195,8 +201,10 @@ export default function InboundPorts() {
     try {
       const res = await filterApi.getAll();
       setFilters(res.data.data || []);
+      return true;
     } catch (error) {
       console.error('获取过滤器列表失败:', error);
+      return false;
     }
   }
 
@@ -204,8 +212,10 @@ export default function InboundPorts() {
     try {
       const res = await proxyChainApi.getAll();
       setProxyChains(res.data.data || []);
+      return true;
     } catch (error) {
       console.error('获取代理链路失败:', error);
+      return false;
     }
   }
 
@@ -213,8 +223,10 @@ export default function InboundPorts() {
     try {
       const res = await nodeApi.getCountries();
       setCountryGroups(res.data.data || []);
+      return true;
     } catch (error) {
       console.error('获取地区分组失败:', error);
+      return false;
     }
   }
 
@@ -222,8 +234,10 @@ export default function InboundPorts() {
     try {
       const res = await nodeApi.getAll();
       setNodes(res.data.data || []);
+      return true;
     } catch (error) {
       console.error('获取节点列表失败:', error);
+      return false;
     }
   }
 
@@ -231,29 +245,39 @@ export default function InboundPorts() {
     try {
       const res = await nodeApi.getGrouped();
       setNodeGroups(res.data.data || []);
+      return true;
     } catch (error) {
       console.error('获取节点分组失败:', error);
+      return false;
     }
   }
 
   async function refreshOutboundResources() {
-    await Promise.all([
-      fetchNodes(),
-      fetchNodeGroups(),
-      fetchCountryGroups(),
-      fetchFilters(),
-      fetchProxyChains(),
-    ]);
+    setOutboundLoading(true);
+    try {
+      const results = await Promise.all([
+        fetchNodes(),
+        fetchNodeGroups(),
+        fetchCountryGroups(),
+        fetchFilters(),
+        fetchProxyChains(),
+      ]);
+      if (results.every(Boolean)) {
+        setOutboundLoadError(null);
+      } else {
+        const message = '加载出站资源失败，出站选择可能不完整';
+        setOutboundLoadError(message);
+        toast.error(message);
+      }
+    } finally {
+      setOutboundLoading(false);
+    }
   }
 
   useEffect(() => {
     fetchSettings();
     fetchInboundPorts();
-    fetchFilters();
-    fetchProxyChains();
-    fetchCountryGroups();
-    fetchNodes();
-    fetchNodeGroups();
+    refreshOutboundResources();
   }, [fetchSettings]);
 
   useEffect(() => {
@@ -320,7 +344,7 @@ export default function InboundPorts() {
       toast.success('端口已删除');
       fetchInboundPorts();
     } catch (error: unknown) {
-      toast.error(getApiErrorMessage(error, '删除失败'));
+      toast.error(apiErrorMessage(error, '删除失败'));
     }
   };
 
@@ -329,7 +353,7 @@ export default function InboundPorts() {
       await inboundPortApi.update(port.id, { ...port, enabled: !port.enabled });
       fetchInboundPorts();
     } catch (error: unknown) {
-      toast.error(getApiErrorMessage(error, '更新失败'));
+      toast.error(apiErrorMessage(error, '更新失败'));
     }
   };
 
@@ -373,7 +397,7 @@ export default function InboundPorts() {
         toast.error(result?.message || '端口不可用');
       }
     } catch (error: unknown) {
-      toast.error(getApiErrorMessage(error, '端口测试失败'));
+      toast.error(apiErrorMessage(error, '端口测试失败'));
     } finally {
       setTestingDraftPort(false);
     }
@@ -391,7 +415,7 @@ export default function InboundPorts() {
         toast.error(result?.proxy?.error || '代理测试失败');
       }
     } catch (error: unknown) {
-      toast.error(getApiErrorMessage(error, '代理测试失败'));
+      toast.error(apiErrorMessage(error, '代理测试失败'));
     } finally {
       setTestingPorts((prev) => ({ ...prev, [port.id]: false }));
     }
@@ -424,7 +448,7 @@ export default function InboundPorts() {
       onPortModalClose();
       fetchInboundPorts();
     } catch (error: unknown) {
-      toast.error(getApiErrorMessage(error, '操作失败'));
+      toast.error(apiErrorMessage(error, '操作失败'));
     }
   };
 
@@ -434,7 +458,7 @@ export default function InboundPorts() {
         await updateSettings(formData);
         toast.success('入站配置已保存');
       } catch (error: unknown) {
-        toast.error(getApiErrorMessage(error, '保存设置失败'));
+        toast.error(apiErrorMessage(error, '保存设置失败'));
       }
     }
   };
@@ -664,8 +688,47 @@ export default function InboundPorts() {
         </CardBody>
       </Card>
 
+      {outboundLoadError && (
+        <div className="flex flex-col gap-3 rounded-xl border border-warning-300 bg-warning-50/60 px-4 py-3 sm:flex-row sm:items-center sm:justify-between dark:bg-warning-500/10">
+          <div className="flex items-start gap-2 text-sm">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+            <div>
+              <p className="font-medium text-warning-700 dark:text-warning-400">出站资源加载失败</p>
+              <p className="text-default-500">{outboundLoadError}</p>
+            </div>
+          </div>
+          <Button
+            size="sm"
+            color="warning"
+            variant="flat"
+            startContent={<RefreshCw className="h-4 w-4" />}
+            isLoading={outboundLoading}
+            onPress={() => { void refreshOutboundResources(); }}
+          >
+            重试
+          </Button>
+        </div>
+      )}
+
+
       {/* Port list */}
-      {inboundPorts.length === 0 ? (
+      {portsLoadError ? (
+        <div className="rounded-2xl border border-dashed border-danger-300 bg-danger-50/40 py-16 text-center dark:bg-danger-500/10">
+          <AlertCircle className="mx-auto mb-4 h-12 w-12 text-danger opacity-80" />
+          <p className="font-medium text-danger">加载入站端口失败</p>
+          <p className="mt-1 text-sm text-default-500">{portsLoadError}</p>
+          <Button
+            className="mt-4"
+            color="danger"
+            variant="flat"
+            startContent={<RefreshCw className="h-4 w-4" />}
+            isLoading={portsLoading}
+            onPress={() => { void fetchInboundPorts(); }}
+          >
+            重试
+          </Button>
+        </div>
+      ) : inboundPorts.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-default-300 py-16 text-center text-default-500">
           <Network className="w-12 h-12 mx-auto mb-4 opacity-40" />
           <p className="font-medium">暂无入站端口</p>
