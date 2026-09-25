@@ -281,7 +281,25 @@ func convertClashProxy(proxy ClashProxy) (*storage.Node, error) {
 		network = "tcp"
 	}
 
-	if network != "tcp" || proxy.WSOpts != nil || proxy.H2Opts != nil || proxy.GrpcOpts != nil {
+	// Subscriptions often omit network= but still set *-opts. The previous
+	// condition entered the block when WSOpts/H2Opts/GrpcOpts were set while
+	// network stayed "tcp", so transport.type became "tcp" and path/headers
+	// were dropped. Infer the transport from opts (including http-opts, which
+	// was never part of that OR) before building the map.
+	if network == "tcp" {
+		switch {
+		case proxy.WSOpts != nil:
+			network = "ws"
+		case proxy.H2Opts != nil:
+			network = "h2"
+		case proxy.HTTPOpts != nil:
+			network = "http"
+		case proxy.GrpcOpts != nil:
+			network = "grpc"
+		}
+	}
+
+	if network != "tcp" {
 		transport := map[string]interface{}{
 			"type": network,
 		}
