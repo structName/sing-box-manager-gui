@@ -91,3 +91,28 @@ proxies:
 		t.Fatalf("parsed node tags = %q, %q", nodes[0].Tag, nodes[1].Tag)
 	}
 }
+
+func TestParseClashYAMLSocks4AVersion(t *testing.T) {
+	yaml := `
+proxies:
+  - name: s4a
+    type: socks4a
+    server: example.com
+    port: 1080
+    username: u
+`
+	nodes, err := ParseClashYAML(yaml)
+	if err != nil {
+		t.Fatalf("ParseClashYAML error: %v", err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("len(nodes) = %d, want 1", len(nodes))
+	}
+	if nodes[0].Type != "socks" {
+		t.Fatalf("type = %q, want socks", nodes[0].Type)
+	}
+	if v, _ := nodes[0].Extra["version"].(string); v != "4a" {
+		t.Fatalf("version = %v, want 4a", nodes[0].Extra["version"])
+	}
+}
+

@@ -901,6 +901,27 @@ func TestNodeToOutboundNormalizesSocks(t *testing.T) {
 			t.Fatalf("version = %v, want 4", outbound["version"])
 		}
 	})
+
+	t.Run("maps socks4a alias to 4a not plain 4", func(t *testing.T) {
+		outbound, err := builder.nodeToOutbound(storage.Node{
+			Tag:        "socks4a-node",
+			Type:       "socks",
+			Server:     "127.0.0.1",
+			ServerPort: 1080,
+			Extra: map[string]interface{}{
+				"version": "socks4a",
+			},
+		})
+		if err != nil {
+			t.Fatalf("nodeToOutbound error: %v", err)
+		}
+		if outbound["type"] != "socks" {
+			t.Fatalf("type = %v, want socks", outbound["type"])
+		}
+		if outbound["version"] != "4a" {
+			t.Fatalf("version = %v, want 4a (remote DNS)", outbound["version"])
+		}
+	})
 }
 
 func TestProxyChainDetourMixesSocksSSAndVLESS(t *testing.T) {

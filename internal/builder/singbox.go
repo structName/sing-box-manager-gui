@@ -1211,7 +1211,7 @@ func normalizeSocksOutbound(outbound Outbound) {
 	case "socks4", "SOCKS4":
 		outbound["version"] = "4"
 	case "socks4a", "SOCKS4A":
-		outbound["version"] = "4"
+		outbound["version"] = "4a"
 	case "socks5", "SOCKS5":
 		outbound["version"] = "5"
 	default:
