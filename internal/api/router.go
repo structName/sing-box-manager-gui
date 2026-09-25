@@ -1189,6 +1189,12 @@ func (s *Server) addFilter(c *gin.Context) {
 func (s *Server) updateFilter(c *gin.Context) {
 	id := c.Param("id")
 
+	oldFilter := s.store.GetFilter(id)
+	if oldFilter == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "过滤器不存在"})
+		return
+	}
+
 	var filter storage.Filter
 	if err := c.ShouldBindJSON(&filter); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -1196,6 +1202,34 @@ func (s *Server) updateFilter(c *gin.Context) {
 	}
 
 	filter.ID = id
+
+	var cascadeMessages []string
+
+	// 改名：过滤器 Name 即 Final 选择器成员 → 级联改写漏网 FinalOutbound
+	if oldFilter.Name != filter.Name {
+		retargeted, err := s.retargetFinalOutbound(oldFilter.Name, filter.Name)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if retargeted {
+			cascadeMessages = append(cascadeMessages, fmt.Sprintf("已更新漏网出站: %s → %s", oldFilter.Name, filter.Name))
+		}
+	}
+
+	// 停用：builder 不再发出该分组 → 重置指向该 Name 的漏网 FinalOutbound
+	// （若同时改名，上一步已把 FinalOutbound 改到新 Name）
+	if oldFilter.Enabled && !filter.Enabled {
+		reset, err := s.resetFinalOutboundIf(filter.Name)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if reset {
+			cascadeMessages = append(cascadeMessages, "已重置漏网出站为 Proxy")
+		}
+	}
+
 	if err := s.store.UpdateFilter(filter); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1207,11 +1241,27 @@ func (s *Server) updateFilter(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "更新成功"})
+	message := "更新成功"
+	if len(cascadeMessages) > 0 {
+		message = "更新成功，" + strings.Join(cascadeMessages, "，")
+	}
+	c.JSON(http.StatusOK, gin.H{"message": message})
 }
 
 func (s *Server) deleteFilter(c *gin.Context) {
 	id := c.Param("id")
+
+	filter := s.store.GetFilter(id)
+	if filter == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "过滤器不存在"})
+		return
+	}
+
+	finalReset, err := s.resetFinalOutboundIf(filter.Name)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
 	if err := s.store.DeleteFilter(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1224,7 +1274,12 @@ func (s *Server) deleteFilter(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "删除成功"})
+	message := "删除成功"
+	if finalReset {
+		message = "删除成功，已重置漏网出站为 Proxy"
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": message})
 }
 
 // ==================== 设置 API ====================
@@ -3212,6 +3267,25 @@ func (s *Server) disableInboundPortsForOutbound(outbound string) ([]storage.Inbo
 	}
 
 	return disabled, nil
+}
+
+func (s *Server) retargetFinalOutbound(oldOutbound, newOutbound string) (bool, error) {
+	settings := s.store.GetSettings()
+	if settings == nil {
+		return false, nil
+	}
+	if strings.TrimSpace(settings.FinalOutbound) != oldOutbound {
+		return false, nil
+	}
+	settings.FinalOutbound = newOutbound
+	if err := s.store.UpdateSettings(settings); err != nil {
+		return false, fmt.Errorf("更新漏网出站引用失败: %w", err)
+	}
+	return true, nil
+}
+
+func (s *Server) resetFinalOutboundIf(outbound string) (bool, error) {
+	return s.retargetFinalOutbound(outbound, "Proxy")
 }
 
 func (s *Server) validateProxyChainForSave(chain storage.ProxyChain) error {
