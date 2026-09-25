@@ -1179,20 +1179,67 @@ func isNodeMetadataField(key string) bool {
 
 func normalizeOutbound(outbound Outbound) error {
 	outboundType, _ := outbound["type"].(string)
+	var err error
 	switch outboundType {
 	case "shadowsocks":
-		return normalizeShadowsocksOutbound(outbound)
+		err = normalizeShadowsocksOutbound(outbound)
 	case "socks", "socks5", "socks4", "socks4a":
 		normalizeSocksOutbound(outbound)
-		return nil
 	case "vless":
 		normalizeVLESSOutbound(outbound)
-		return nil
 	case "anytls":
 		normalizeAnyTLSOutbound(outbound)
-		return nil
-	default:
-		return nil
+	}
+	if err != nil {
+		return err
+	}
+	normalizeTransportOutbound(outbound)
+	return nil
+}
+
+// normalizeTransportOutbound maps Clash/share-link transport.type aliases that
+// built-in sing-box rejects onto canonical names. HTTP/2 over TLS is type
+// "http" in sing-box; Clash Meta and many share links store "h2" (and sometimes
+// "http2" / "http/2"). Leaving those unmapped makes apply/check fail with
+// "unknown transport type: h2" while mihomo speedtest still wants network=h2
+// from the untouched Extra.
+//
+// Also coerces HTTP transport path from a list to a string — sing-box
+// V2RayHTTPOptions.path is a string (arrays fail decode).
+func normalizeTransportOutbound(outbound Outbound) {
+	transport, ok := outbound["transport"].(map[string]interface{})
+	if !ok || transport == nil {
+		return
+	}
+	if t, ok := transport["type"].(string); ok {
+		switch strings.ToLower(strings.TrimSpace(t)) {
+		case "h2", "http2", "http/2":
+			transport["type"] = "http"
+		}
+	}
+	switch path := transport["path"].(type) {
+	case []string:
+		if len(path) == 0 {
+			delete(transport, "path")
+		} else {
+			transport["path"] = path[0]
+		}
+	case []interface{}:
+		var first string
+		for _, item := range path {
+			if s, ok := item.(string); ok {
+				s = strings.TrimSpace(s)
+				if s != "" {
+					first = s
+					break
+				}
+			}
+		}
+		if first == "" {
+			delete(transport, "path")
+		} else {
+			transport["path"] = first
+		}
 	}
 }
 
