@@ -82,12 +82,14 @@ func (p *AnyTLSParser) Parse(rawURL string) (*storage.Node, error) {
 
 	extra["tls"] = tls
 
-	// 空闲会话管理
-	if v := params.Get("idle-check-interval"); v != "" {
-		extra["idle_session_check_interval"] = secondsDurationString(getParamInt(params, "idle-check-interval", 0))
+	// 空闲会话管理。
+	// Clash Meta / sublinkPro 等导出用 idle-session-check-interval、
+	// idle-session-timeout；历史短名 idle-check-interval、idle-timeout 仍兼容。
+	if key := firstParamKey(params, "idle-session-check-interval", "idle-check-interval"); key != "" {
+		extra["idle_session_check_interval"] = secondsDurationString(getParamInt(params, key, 0))
 	}
-	if v := params.Get("idle-timeout"); v != "" {
-		extra["idle_session_timeout"] = secondsDurationString(getParamInt(params, "idle-timeout", 0))
+	if key := firstParamKey(params, "idle-session-timeout", "idle-timeout"); key != "" {
+		extra["idle_session_timeout"] = secondsDurationString(getParamInt(params, key, 0))
 	}
 	if v := params.Get("min-idle-session"); v != "" {
 		extra["min_idle_session"] = getParamInt(params, "min-idle-session", 0)
