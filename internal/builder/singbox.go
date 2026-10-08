@@ -1091,7 +1091,6 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 	return outbounds, nil
 }
 
-
 func cloneBoolMap(src map[string]bool) map[string]bool {
 	dst := make(map[string]bool, len(src))
 	for key, value := range src {
@@ -1858,7 +1857,6 @@ func (b *ConfigBuilder) buildRoute() *RouteConfig {
 
 	return route
 }
-
 
 // appendHostOverrideRouteRules 将 hosts 映射写成 route override_address 规则。
 // 启用的用户 hosts 优先；同名系统 hosts 被跳过，避免首条命中锁死系统 IP。

@@ -170,7 +170,7 @@ func TestDeleteSubscriptionPrunesChainAndDisablesInbound(t *testing.T) {
 		UpdatedAt: time.Now(), NodeCount: 2,
 		Nodes: []storage.Node{
 			{Tag: "hk-1", Type: "vmess", Server: "1.1.1.1", ServerPort: 443},
-			{Tag: "jp-1", Type: "vmess", Server: "2.2.2.2", ServerPort: 443},
+			{Tag: "jp-1", Type: "vmess", Server: "203.0.113.10", ServerPort: 443},
 		},
 	}); err != nil {
 		t.Fatalf("AddSubscription() error = %v", err)
