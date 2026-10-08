@@ -185,8 +185,8 @@ func TestDeleteSubscriptionPrunesChainAndDisablesInbound(t *testing.T) {
 		ID: "chain-1", Name: "hk-b", Enabled: true,
 		Nodes: []string{"hk-1", "B"},
 		ChainNodes: []storage.ChainNode{
-			{OriginalTag: "hk-1", CopyTag: storage.GenerateChainNodeCopyTag("hk-b", "hk-1"), Source: subID},
-			{OriginalTag: "B", CopyTag: storage.GenerateChainNodeCopyTag("hk-b", "B"), Source: "manual"},
+			{OriginalTag: "hk-1", CopyTag: storage.GenerateChainNodeCopyTag("hk-b", "hk-1", 0), Source: subID},
+			{OriginalTag: "B", CopyTag: storage.GenerateChainNodeCopyTag("hk-b", "B", 1), Source: "manual"},
 		},
 	}); err != nil {
 		t.Fatalf("AddProxyChain() error = %v", err)

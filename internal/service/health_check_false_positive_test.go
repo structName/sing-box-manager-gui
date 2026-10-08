@@ -139,7 +139,7 @@ func TestCheckChain_ClashSuccessUsesChainProbeMode(t *testing.T) {
 	_, svc, _ := setupChainHealthFixture(t, 9090, []string{"entry-node", "exit-node"}, map[string]int{"entry-node": entryPort})
 
 	svc.clashDelayFn = func(port int, proxyName, testURL string, timeout time.Duration) (int, error) {
-		wantTag := storage.GenerateChainNodeCopyTag("us-chain", "exit-node")
+		wantTag := storage.GenerateChainNodeCopyTag("us-chain", "exit-node", 1)
 		if proxyName != wantTag {
 			t.Fatalf("Clash proxyName = %q, want %q", proxyName, wantTag)
 		}

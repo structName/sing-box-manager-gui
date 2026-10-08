@@ -36,9 +36,9 @@ func TestEmptyCountryMidChainDoesNotLeaveBrokenDetourOrOrphans(t *testing.T) {
 		t.Fatalf("buildOutbounds() error = %v", err)
 	}
 
-	entryCopy := storage.GenerateChainNodeCopyTag(chain.Name, "entry-sg")
-	exitCopy := storage.GenerateChainNodeCopyTag(chain.Name, "exit-us")
-	groupCopy := storage.GenerateChainNodeCopyTag(chain.Name, countryTag)
+	entryCopy := storage.GenerateChainNodeCopyTag(chain.Name, "entry-sg", 0)
+	exitCopy := storage.GenerateChainNodeCopyTag(chain.Name, "exit-us", 2)
+	groupCopy := storage.GenerateChainNodeCopyTag(chain.Name, countryTag, 1)
 
 	for _, outbound := range outbounds {
 		tag, _ := outbound["tag"].(string)
@@ -83,7 +83,7 @@ func TestTorChainEmptyCountryMidHopRollsBackPartials(t *testing.T) {
 		t.Fatalf("Build() error = %v", err)
 	}
 
-	entryCopy := storage.GenerateChainNodeCopyTag(chain.Name, "entry")
+	entryCopy := storage.GenerateChainNodeCopyTag(chain.Name, "entry", 0)
 	torTag := storage.GenerateChainTorOutboundTag(chain.ID)
 	for _, outbound := range config.Outbounds {
 		tag, _ := outbound["tag"].(string)

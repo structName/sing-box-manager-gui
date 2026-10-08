@@ -3475,7 +3475,7 @@ func (s *Server) updateProxyChain(c *gin.Context) {
 		if len(disabled) > 0 {
 			cascadeMessages = append(cascadeMessages, fmt.Sprintf("已停用 %d 个关联入站端口", len(disabled)))
 		}
-		reset, err := s.resetFinalOutboundIf(outboundName)
+		reset, err := s.resetFinalOutboundIf(chain.Name)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -3625,6 +3625,25 @@ func (s *Server) updateInboundPortsOutbound(oldOutbound, newOutbound string) ([]
 	}
 
 	return updated, nil
+}
+
+func (s *Server) disableInboundPortsForOutbound(outbound string) ([]storage.InboundPort, error) {
+	ports := s.store.GetInboundPorts()
+	disabled := make([]storage.InboundPort, 0)
+
+	for _, port := range ports {
+		if !port.Enabled || port.Outbound != outbound {
+			continue
+		}
+
+		port.Enabled = false
+		if err := s.store.UpdateInboundPort(port); err != nil {
+			return nil, fmt.Errorf("停用入站端口 %s 失败: %w", port.Name, err)
+		}
+		disabled = append(disabled, port)
+	}
+
+	return disabled, nil
 }
 
 // disableInboundPortsReferencingChain disables enabled inbound ports that
