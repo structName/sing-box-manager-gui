@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -139,6 +140,7 @@ func (s *UnifiedScheduler) AddSchedule(scheduleType ScheduleType, id string, nam
 		s.updateNextRun(key)
 	}
 
+	cronExpr = normalizeCronExpr(cronExpr)
 	entryID, err := s.cron.AddFunc(cronExpr, wrappedHandler)
 	if err != nil {
 		return fmt.Errorf("添加 cron 任务失败: %w", err)
@@ -354,6 +356,25 @@ func (s *UnifiedScheduler) IsRunning() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.started
+}
+
+// normalizeCronExpr adapts cron expressions for cron.WithSeconds().
+// Standard 5-field specs (min hour dom mon dow) from the web UI presets are
+// rewritten to 6-field by prepending seconds=0. Descriptors (@every, @hourly)
+// and already-6-field expressions are left unchanged.
+func normalizeCronExpr(expr string) string {
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return expr
+	}
+	if strings.HasPrefix(expr, "@") {
+		return expr
+	}
+	fields := strings.Fields(expr)
+	if len(fields) == 5 {
+		return "0 " + strings.Join(fields, " ")
+	}
+	return expr
 }
 
 // IntervalToCron 将间隔分钟数转换为调度表达式

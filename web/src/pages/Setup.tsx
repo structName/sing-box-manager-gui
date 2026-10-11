@@ -20,18 +20,24 @@ export default function Setup() {
   const [submitting, setSubmitting] = useState(false);
 
   const handleSubmit = async () => {
-    if (password.trim().length < MIN_PASSWORD_LENGTH) {
+    const nextPassword = password.trim();
+    const nextConfirm = confirmPassword.trim();
+    if (nextPassword.length < MIN_PASSWORD_LENGTH) {
       toast.error(`密码长度至少为 ${MIN_PASSWORD_LENGTH} 位`);
       return;
     }
-    if (password !== confirmPassword) {
+    if (nextPassword !== nextConfirm) {
       toast.error('两次输入的密码不一致');
+      return;
+    }
+    if (password !== nextPassword || confirmPassword !== nextConfirm) {
+      toast.error('密码首尾不能包含空格');
       return;
     }
 
     try {
       setSubmitting(true);
-      await bootstrap(password, confirmPassword);
+      await bootstrap(nextPassword, nextConfirm);
       navigate('/', { replace: true });
     } catch (error) {
       toast.error(getApiErrorMessage(error, '初始化管理员密码失败'));
@@ -83,11 +89,6 @@ export default function Setup() {
               placeholder="再次输入管理员密码"
               value={confirmPassword}
               onChange={(event) => setConfirmPassword(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && !submitting) {
-                  void handleSubmit();
-                }
-              }}
             />
             <Button color="primary" type="submit" isLoading={submitting}>
               完成初始化

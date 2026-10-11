@@ -1,9 +1,10 @@
 import { useEffect, useState, useMemo } from 'react';
 import { Card, CardBody, CardHeader, Button, Chip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Tooltip, Progress } from '@nextui-org/react';
-import { Play, Square, RefreshCw, Cpu, HardDrive, Wifi, Info, Activity, Network, Link2, Sparkles, TrendingUp, Zap, Timer } from 'lucide-react';
+import { Play, Square, RefreshCw, Cpu, HardDrive, Wifi, Info, Activity, Network, Link2, Sparkles, TrendingUp, Zap, Timer, AlertCircle } from 'lucide-react';
 import { useStore } from '../store';
 import { serviceApi, configApi, inboundPortApi, proxyChainApi, nodeApi } from '../api';
 import { toast } from '../components/Toast';
+import { apiErrorMessage } from '../utils/apiError';
 
 // 节点测速信息类型
 interface NodeSpeedInfo {
@@ -310,7 +311,10 @@ function OverviewCard({
   iconColor,
   items,
   emptyText,
-  renderItem
+  renderItem,
+  loadError,
+  onRetry,
+  retrying,
 }: {
   title: string;
   icon: React.ElementType;
@@ -318,6 +322,9 @@ function OverviewCard({
   items: any[];
   emptyText: string;
   renderItem: (item: any) => React.ReactNode;
+  loadError?: string | null;
+  onRetry?: () => void;
+  retrying?: boolean;
 }) {
   return (
     <Card className="border-none bg-white/70 dark:bg-gray-800/50 backdrop-blur-sm">
@@ -333,7 +340,27 @@ function OverviewCard({
         </div>
       </CardHeader>
       <CardBody className="pt-2">
-        {items.length === 0 ? (
+        {loadError ? (
+          <div className="flex flex-col items-center gap-3 py-6 text-center">
+            <AlertCircle className="h-8 w-8 text-danger opacity-80" />
+            <div>
+              <p className="font-medium text-danger">加载失败</p>
+              <p className="mt-1 text-sm text-gray-500">{loadError}</p>
+            </div>
+            {onRetry && (
+              <Button
+                size="sm"
+                color="danger"
+                variant="flat"
+                startContent={<RefreshCw className="h-4 w-4" />}
+                isLoading={retrying}
+                onPress={onRetry}
+              >
+                重试
+              </Button>
+            )}
+          </div>
+        ) : items.length === 0 ? (
           <p className="text-gray-500 text-center py-6">{emptyText}</p>
         ) : (
           <div className="space-y-2">
@@ -350,9 +377,14 @@ export default function Dashboard() {
 
   // 入站端口和链路数据
   const [inboundPorts, setInboundPorts] = useState<InboundPort[]>([]);
+  const [applySkipBanner, setApplySkipBanner] = useState<string | null>(null);
   const [proxyChains, setProxyChains] = useState<ProxyChain[]>([]);
   // 测速数据
   const [speedInfos, setSpeedInfos] = useState<Record<string, NodeSpeedInfo>>({});
+  const [inboundPortsLoadError, setInboundPortsLoadError] = useState<string | null>(null);
+  const [proxyChainsLoadError, setProxyChainsLoadError] = useState<string | null>(null);
+  const [inboundPortsLoading, setInboundPortsLoading] = useState(false);
+  const [proxyChainsLoading, setProxyChainsLoading] = useState(false);
 
   // 错误模态框状态
   const [errorModal, setErrorModal] = useState<{
@@ -394,20 +426,32 @@ export default function Dashboard() {
   }, []);
 
   const fetchInboundPorts = async () => {
+    setInboundPortsLoading(true);
     try {
       const res = await inboundPortApi.getAll();
       setInboundPorts(res.data.data || []);
+      setInboundPortsLoadError(null);
     } catch (error) {
-      console.error('获取入站端口失败:', error);
+      const message = apiErrorMessage(error, '加载入站端口失败');
+      setInboundPortsLoadError(message);
+      toast.error(message);
+    } finally {
+      setInboundPortsLoading(false);
     }
   };
 
   const fetchProxyChains = async () => {
+    setProxyChainsLoading(true);
     try {
       const res = await proxyChainApi.getAll();
       setProxyChains(res.data.data || []);
+      setProxyChainsLoadError(null);
     } catch (error) {
-      console.error('获取代理链路失败:', error);
+      const message = apiErrorMessage(error, '加载代理链路失败');
+      setProxyChainsLoadError(message);
+      toast.error(message);
+    } finally {
+      setProxyChainsLoading(false);
     }
   };
 
@@ -416,7 +460,7 @@ export default function Dashboard() {
       const res = await nodeApi.getDelays();
       setSpeedInfos(res.data.data || {});
     } catch (error) {
-      console.error('获取测速信息失败:', error);
+      toast.error(apiErrorMessage(error, '加载测速信息失败'));
     }
   };
 
@@ -452,9 +496,19 @@ export default function Dashboard() {
 
   const handleApplyConfig = async () => {
     try {
-      await configApi.apply();
+      const res = await configApi.apply();
       await fetchServiceStatus();
-      toast.success('配置已应用');
+      const warning = res.data?.warning as string | undefined;
+      const skippedNodes = (res.data?.skipped_nodes as { tag?: string; reason?: string }[] | undefined) || [];
+      const skippedChains = (res.data?.skipped_chains as { name?: string; id?: string; reason?: string }[] | undefined) || [];
+      if (warning || skippedNodes.length > 0 || skippedChains.length > 0) {
+        const msg = warning || `配置已应用，但跳过了 ${skippedNodes.length} 个节点、${skippedChains.length} 条链路`;
+        setApplySkipBanner(msg);
+        toast.info(msg, 8000);
+      } else {
+        setApplySkipBanner(null);
+        toast.success('配置已应用');
+      }
     } catch (error) {
       showError('应用配置失败', error);
     }
@@ -572,6 +626,19 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
+      {applySkipBanner && (
+        <div className="flex items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-100">
+          <div className="flex-1 whitespace-pre-wrap break-all">{applySkipBanner}</div>
+          <button
+            type="button"
+            className="shrink-0 text-amber-700 hover:underline dark:text-amber-200"
+            onClick={() => setApplySkipBanner(null)}
+          >
+            关闭
+          </button>
+        </div>
+      )}
+
       {/* 欢迎横幅 */}
       <WelcomeBanner greeting={greeting} />
 
@@ -629,6 +696,9 @@ export default function Dashboard() {
           iconColor="bg-gradient-to-br from-pink-500 to-rose-500"
           items={proxyChains}
           emptyText="暂无代理链路，请前往链路页面添加"
+          loadError={proxyChainsLoadError}
+          retrying={proxyChainsLoading}
+          onRetry={() => { void fetchProxyChains(); }}
           renderItem={(chain) => (
             <div
               key={chain.id}
@@ -657,6 +727,9 @@ export default function Dashboard() {
           iconColor="bg-gradient-to-br from-cyan-500 to-blue-500"
           items={inboundPorts}
           emptyText="暂无入站端口，请前往入站页面添加"
+          loadError={inboundPortsLoadError}
+          retrying={inboundPortsLoading}
+          onRetry={() => { void fetchInboundPorts(); }}
           renderItem={(port) => (
             <div
               key={port.id}

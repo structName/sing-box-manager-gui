@@ -53,9 +53,9 @@ A modern web-based management panel for [sing-box](https://github.com/SagerNet/s
 
 - **Service Control**
   - Start/Stop/Restart sing-box
-  - Configuration hot-reload
+  - Configuration hot-reload (`POST /service/reload`: rebuild current profile config, then SIGHUP; use Restart for port/TUN full cycles)
   - Auto-apply on config changes
-  - Process recovery on startup
+  - Process recovery on startup (PID-only track still supports Reload via SIGHUP)
   - systemd service integration (Linux)
   - launchd service integration (macOS)
 
@@ -278,9 +278,9 @@ MIT License
 
 - **服务控制**
   - 启动/停止/重启 sing-box
-  - 配置热重载
+  - 配置热重载（`POST /service/reload`：先重建当前 Profile 配置再发 SIGHUP；端口/TUN 等需完整周期时用重启）
   - 配置变更后自动应用
-  - 启动时自动恢复进程
+  - 启动时自动恢复进程（仅 PID 跟踪时 Reload 仍可 SIGHUP）
   - systemd 服务集成（Linux）
   - launchd 服务集成（macOS）
 

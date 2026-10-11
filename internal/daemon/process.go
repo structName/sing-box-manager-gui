@@ -540,21 +540,39 @@ func (pm *ProcessManager) setDesiredRunning(running bool) error {
 	return os.WriteFile(path, []byte("running\n"), 0644)
 }
 
-// Reload 热重载配置
+// Reload 热重载配置（SIGHUP）。管理进程重启后可能仅有 PID（cmd==nil），需与 stop() 一样走 PID 回退。
 func (pm *ProcessManager) Reload() error {
 	pm.mu.RLock()
-	defer pm.mu.RUnlock()
+	running := pm.running
+	cmd := pm.cmd
+	pid := pm.pid
+	pm.mu.RUnlock()
 
-	if !pm.running || pm.cmd == nil || pm.cmd.Process == nil {
+	if !running {
 		return fmt.Errorf("sing-box 未运行")
 	}
 
-	// sing-box 支持 SIGHUP 热重载
-	if err := pm.cmd.Process.Signal(syscall.SIGHUP); err != nil {
-		return fmt.Errorf("重载配置失败: %w", err)
+	// 情况1：有 cmd 对象（本管理器启动的进程）
+	if cmd != nil && cmd.Process != nil {
+		if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {
+			return fmt.Errorf("重载配置失败: %w", err)
+		}
+		return nil
 	}
 
-	return nil
+	// 情况2：没有 cmd 对象（恢复的进程），通过 PID 发送 SIGHUP
+	if pid > 0 {
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			return fmt.Errorf("重载配置失败: %w", err)
+		}
+		if err := proc.Signal(syscall.SIGHUP); err != nil {
+			return fmt.Errorf("重载配置失败: %w", err)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("sing-box 未运行")
 }
 
 // IsRunning 检查是否运行中（带实时检测和自动恢复）

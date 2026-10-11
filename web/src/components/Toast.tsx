@@ -30,7 +30,7 @@ export const useToast = create<ToastStore>((set) => ({
 export const toast = {
   success: (message: string) => useToast.getState().addToast({ type: 'success', message }),
   error: (message: string, duration = 5000) => useToast.getState().addToast({ type: 'error', message, duration }),
-  info: (message: string) => useToast.getState().addToast({ type: 'info', message }),
+  info: (message: string, duration = 3000) => useToast.getState().addToast({ type: 'info', message, duration }),
 };
 
 // Toast 单个项目组件

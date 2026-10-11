@@ -563,8 +563,8 @@ func TestDeploymentImportedVLESSRealityNodeCanBeUsedInProxyChain(t *testing.T) {
 		t.Fatalf("decode config: %v\n%s", err, configJSON)
 	}
 
-	relayCopyTag := storage.GenerateChainNodeCopyTag("self-hosted-chain", "relay-a")
-	importedCopyTag := storage.GenerateChainNodeCopyTag("self-hosted-chain", "edge-a-imported")
+	relayCopyTag := storage.GenerateChainNodeCopyTag("self-hosted-chain", "relay-a", 0)
+	importedCopyTag := storage.GenerateChainNodeCopyTag("self-hosted-chain", "edge-a-imported", 1)
 	chainOutbound := outboundByTag(config.Outbounds, importedCopyTag)
 	if chainOutbound == nil {
 		t.Fatalf("chain copy outbound %q missing from %#v", importedCopyTag, outboundTags(config.Outbounds))
@@ -653,6 +653,45 @@ func TestNodeToOutboundNormalizesLegacyVLESSRealityShape(t *testing.T) {
 	}
 }
 
+func TestBuildClampsMissingFinalOutboundDefault(t *testing.T) {
+	builder := NewConfigBuilder(
+		&storage.Settings{FinalOutbound: "deleted-chain"},
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+
+	config, err := builder.Build()
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	for _, outbound := range config.Outbounds {
+		tag, _ := outbound["tag"].(string)
+		if tag != "Final" {
+			continue
+		}
+		def, _ := outbound["default"].(string)
+		if def == "deleted-chain" {
+			t.Fatalf("Final default kept deleted-chain; want clamp to available selector")
+		}
+		outs, _ := outbound["outbounds"].([]string)
+		found := false
+		for _, o := range outs {
+			if o == def {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("Final default %q not in outbounds %#v", def, outs)
+		}
+		return
+	}
+	t.Fatal("Final outbound selector not found")
+}
+
 func TestBuildRoutePrioritizesCustomInboundOutbound(t *testing.T) {
 	builder := &ConfigBuilder{
 		settings: &storage.Settings{},
@@ -696,6 +735,111 @@ func TestBuildRouteDoesNotGenerateRuleSets(t *testing.T) {
 	}
 	if action, _ := route.Rules[1]["action"].(string); action != "hijack-dns" {
 		t.Fatalf("second route action = %s, want hijack-dns", action)
+	}
+}
+
+func TestAppendHostOverrideRouteRulesUserBeatsSystem(t *testing.T) {
+	systemHosts := map[string][]string{
+		"example.internal": {"10.0.0.1", "10.0.0.2"},
+		"only-system.test": {"10.0.0.9"},
+	}
+	userHosts := []storage.HostEntry{
+		{ID: "u1", Domain: "example.internal", IPs: []string{"192.0.2.10", "192.0.2.11"}, Enabled: true},
+		{ID: "u2", Domain: "only-user.test", IPs: []string{"198.51.100.7"}, Enabled: true},
+		{ID: "u3", Domain: "disabled.test", IPs: []string{"203.0.113.1"}, Enabled: false},
+	}
+
+	rules := appendHostOverrideRouteRules(nil, systemHosts, userHosts)
+
+	ipByDomain := map[string]string{}
+	counts := map[string]int{}
+	for _, rule := range rules {
+		domains, _ := rule["domain"].([]string)
+		if len(domains) != 1 {
+			t.Fatalf("unexpected domains %#v", rule["domain"])
+		}
+		domain := domains[0]
+		counts[domain]++
+		ip, _ := rule["override_address"].(string)
+		ipByDomain[domain] = ip
+		if outbound, _ := rule["outbound"].(string); outbound != "DIRECT" {
+			t.Fatalf("outbound for %s = %q, want DIRECT", domain, outbound)
+		}
+	}
+
+	if counts["example.internal"] != 1 {
+		t.Fatalf("example.internal rule count = %d, want 1 (no duplicate system rule)", counts["example.internal"])
+	}
+	if ipByDomain["example.internal"] != "192.0.2.10" {
+		t.Fatalf("example.internal override = %q, want user IP 192.0.2.10", ipByDomain["example.internal"])
+	}
+	if ipByDomain["only-user.test"] != "198.51.100.7" {
+		t.Fatalf("only-user.test override = %q, want 198.51.100.7", ipByDomain["only-user.test"])
+	}
+	if ipByDomain["only-system.test"] != "10.0.0.9" {
+		t.Fatalf("only-system.test override = %q, want 10.0.0.9", ipByDomain["only-system.test"])
+	}
+	if _, ok := ipByDomain["disabled.test"]; ok {
+		t.Fatal("disabled user host must not emit a route rule")
+	}
+
+	// User rules must appear before remaining system rules so first-match cannot resurrect system IP.
+	var exampleIdx, onlySystemIdx = -1, -1
+	for i, rule := range rules {
+		domains, _ := rule["domain"].([]string)
+		if len(domains) == 0 {
+			continue
+		}
+		switch domains[0] {
+		case "example.internal":
+			exampleIdx = i
+		case "only-system.test":
+			onlySystemIdx = i
+		}
+	}
+	if exampleIdx < 0 || onlySystemIdx < 0 {
+		t.Fatalf("missing expected rules: example=%d system=%d", exampleIdx, onlySystemIdx)
+	}
+	if exampleIdx > onlySystemIdx {
+		t.Fatalf("user override rule index %d should precede leftover system rule index %d", exampleIdx, onlySystemIdx)
+	}
+}
+
+func TestBuildRouteHonorsUserHostOverSystemHost(t *testing.T) {
+	// Pick a domain present in this machine's /etc/hosts when available; otherwise
+	// synthesize by only asserting the user rule is present exactly once with user IP.
+	systemHosts := ParseSystemHosts()
+	var domain string
+	for d := range systemHosts {
+		domain = d
+		break
+	}
+	if domain == "" {
+		domain = "sbm-hosts-override.test"
+	}
+	wantIP := "192.0.2.55"
+	builder := &ConfigBuilder{
+		settings: &storage.Settings{
+			Hosts: []storage.HostEntry{
+				{ID: "override", Domain: domain, IPs: []string{wantIP}, Enabled: true},
+			},
+		},
+	}
+
+	route := builder.buildRoute()
+	matches := 0
+	for _, rule := range route.Rules {
+		domains, _ := rule["domain"].([]string)
+		if len(domains) != 1 || domains[0] != domain {
+			continue
+		}
+		matches++
+		if ip, _ := rule["override_address"].(string); ip != wantIP {
+			t.Fatalf("override_address = %q, want user IP %q", ip, wantIP)
+		}
+	}
+	if matches != 1 {
+		t.Fatalf("route rules for %q = %d, want exactly 1", domain, matches)
 	}
 }
 
@@ -855,7 +999,6 @@ func TestBuildExperimentalUsesGithubProxyForCustomExternalUIDownloadURL(t *testi
 	}
 }
 
-
 func TestNodeToOutboundNormalizesSocks(t *testing.T) {
 	builder := &ConfigBuilder{}
 
@@ -899,6 +1042,27 @@ func TestNodeToOutboundNormalizesSocks(t *testing.T) {
 		}
 		if outbound["version"] != "4" {
 			t.Fatalf("version = %v, want 4", outbound["version"])
+		}
+	})
+
+	t.Run("maps socks4a alias to 4a not plain 4", func(t *testing.T) {
+		outbound, err := builder.nodeToOutbound(storage.Node{
+			Tag:        "socks4a-node",
+			Type:       "socks",
+			Server:     "127.0.0.1",
+			ServerPort: 1080,
+			Extra: map[string]interface{}{
+				"version": "socks4a",
+			},
+		})
+		if err != nil {
+			t.Fatalf("nodeToOutbound error: %v", err)
+		}
+		if outbound["type"] != "socks" {
+			t.Fatalf("type = %v, want socks", outbound["type"])
+		}
+		if outbound["version"] != "4a" {
+			t.Fatalf("version = %v, want 4a (remote DNS)", outbound["version"])
 		}
 	})
 }
@@ -992,8 +1156,8 @@ func TestProxyChainDetourMixesSocksSSAndVLESS(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		entryCopy := storage.GenerateChainNodeCopyTag(tc.chainName, tc.entryTag)
-		exitCopy := storage.GenerateChainNodeCopyTag(tc.chainName, tc.exitTag)
+		entryCopy := storage.GenerateChainNodeCopyTag(tc.chainName, tc.entryTag, 0)
+		exitCopy := storage.GenerateChainNodeCopyTag(tc.chainName, tc.exitTag, 1)
 		entry := outboundByTag(config.Outbounds, entryCopy)
 		exit := outboundByTag(config.Outbounds, exitCopy)
 		if entry == nil {
@@ -1022,7 +1186,7 @@ func TestProxyChainDetourMixesSocksSSAndVLESS(t *testing.T) {
 	}
 
 	// SOCKS5 alias on entry must normalize inside chain copy
-	jpSocksCopy := outboundByTag(config.Outbounds, storage.GenerateChainNodeCopyTag("socks-jp-hk", "jp-socks"))
+	jpSocksCopy := outboundByTag(config.Outbounds, storage.GenerateChainNodeCopyTag("socks-jp-hk", "jp-socks", 0))
 	if jpSocksCopy["type"] != "socks" || jpSocksCopy["version"] != "5" {
 		t.Fatalf("socks5 alias not normalized in chain copy: %#v", jpSocksCopy)
 	}
@@ -1044,5 +1208,108 @@ func TestProxyChainDetourMixesSocksSSAndVLESS(t *testing.T) {
 	output, err := exec.Command(singBoxPath, "check", "-c", configPath).CombinedOutput()
 	if err != nil {
 		t.Fatalf("sing-box check failed: %v\n%s", err, output)
+	}
+}
+
+func TestNormalizeFilterMode(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"urltest", "urltest"},
+		{"URLTest", "urltest"},
+		{"selector", "selector"},
+		{"select", "selector"},
+		{"SELECT", "selector"},
+		{"", ""},
+		{"  ", ""},
+		{"bogus", "bogus"},
+	}
+	for _, tc := range tests {
+		if got := normalizeFilterMode(tc.in); got != tc.want {
+			t.Fatalf("normalizeFilterMode(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestMatchFilterHonorsSubscriptionScope(t *testing.T) {
+	b := &ConfigBuilder{}
+	nodeA := storage.Node{Tag: "hk-a", Source: "sub-a", Country: "HK"}
+	nodeB := storage.Node{Tag: "hk-b", Source: "sub-b", Country: "HK"}
+	manual := storage.Node{Tag: "hk-manual", Source: "manual", Country: "HK"}
+
+	scoped := storage.Filter{
+		Name:          "HK-A-only",
+		AllNodes:      false,
+		Subscriptions: []string{"sub-a"},
+		Enabled:       true,
+	}
+	if !b.matchFilter(nodeA, scoped) {
+		t.Fatal("expected sub-a node to match scoped filter")
+	}
+	if b.matchFilter(nodeB, scoped) {
+		t.Fatal("expected sub-b node to be excluded from scoped filter")
+	}
+	if b.matchFilter(manual, scoped) {
+		t.Fatal("expected manual node to be excluded from scoped filter")
+	}
+
+	// AllNodes=true ignores Subscriptions list.
+	allNodes := storage.Filter{
+		Name:          "all",
+		AllNodes:      true,
+		Subscriptions: []string{"sub-a"},
+		Enabled:       true,
+	}
+	if !b.matchFilter(nodeB, allNodes) {
+		t.Fatal("AllNodes=true should include nodes outside Subscriptions")
+	}
+
+	// Empty Subscriptions keeps legacy "all sources" behavior even when AllNodes=false.
+	legacy := storage.Filter{
+		Name:          "legacy",
+		AllNodes:      false,
+		Subscriptions: nil,
+		Enabled:       true,
+	}
+	if !b.matchFilter(nodeB, legacy) || !b.matchFilter(manual, legacy) {
+		t.Fatal("empty Subscriptions should not restrict source")
+	}
+}
+
+func TestBuildOutboundsNormalizesSelectModeAndScopesFilter(t *testing.T) {
+	settings := storage.DefaultSettings()
+	nodes := []storage.Node{
+		{Tag: "n-a", Type: "socks", Server: "1.1.1.1", ServerPort: 1080, Source: "sub-a", Extra: map[string]interface{}{"version": "5"}},
+		{Tag: "n-b", Type: "socks", Server: "1.0.0.1", ServerPort: 1080, Source: "sub-b", Extra: map[string]interface{}{"version": "5"}},
+	}
+	filters := []storage.Filter{{
+		Name:          "OnlyA",
+		Mode:          "select", // legacy alias
+		AllNodes:      false,
+		Subscriptions: []string{"sub-a"},
+		Enabled:       true,
+	}}
+	b := NewConfigBuilder(settings, nodes, filters, nil, nil)
+	outbounds, err := b.buildOutbounds()
+	if err != nil {
+		t.Fatalf("buildOutbounds: %v", err)
+	}
+
+	var onlyA Outbound
+	for _, ob := range outbounds {
+		if tag, _ := ob["tag"].(string); tag == "OnlyA" {
+			onlyA = ob
+			break
+		}
+	}
+	if onlyA == nil {
+		t.Fatal("OnlyA filter outbound missing")
+	}
+	if typ, _ := onlyA["type"].(string); typ != "selector" {
+		t.Fatalf("OnlyA type = %q, want selector", typ)
+	}
+	outs, _ := onlyA["outbounds"].([]string)
+	if len(outs) != 1 || outs[0] != "n-a" {
+		t.Fatalf("OnlyA outbounds = %#v, want [n-a]", outs)
 	}
 }

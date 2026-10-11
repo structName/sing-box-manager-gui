@@ -58,7 +58,7 @@ const defaultSpeedTestProfile: SpeedTestProfile = {
   name: '默认策略',
   enabled: true,
   auto_test: false,  // 默认不启用自动测速
-  cron_expression: '0 */6 * * *', // 每6小时
+  cron_expression: '0 0 */6 * * *', // 每6小时（含秒位，匹配 cron.WithSeconds）
   mode: 'speed',  // 默认延迟+速度
   latency_url: 'https://cp.cloudflare.com/generate_204',
   speed_url: 'https://speed.cloudflare.com/__down?bytes=5000000',
@@ -69,14 +69,15 @@ const defaultSpeedTestProfile: SpeedTestProfile = {
   detect_country: false,
 };
 
-// Cron 预设选项
+// Cron 预设须为 6 段（秒 分 时 日 月 周）：UnifiedScheduler 使用 cron.WithSeconds()。
+// 5 段表达式会在 AddSchedule 时失败，自动测速静默不注册。
 const cronPresets = [
-  { label: '每30分钟', value: '*/30 * * * *' },
-  { label: '每1小时', value: '0 * * * *' },
-  { label: '每6小时', value: '0 */6 * * *' },
-  { label: '每12小时', value: '0 */12 * * *' },
-  { label: '每天0点', value: '0 0 * * *' },
-  { label: '每周一', value: '0 0 * * 1' },
+  { label: '每30分钟', value: '0 */30 * * * *' },
+  { label: '每1小时', value: '0 0 * * * *' },
+  { label: '每6小时', value: '0 0 */6 * * *' },
+  { label: '每12小时', value: '0 0 */12 * * *' },
+  { label: '每天0点', value: '0 0 0 * * *' },
+  { label: '每周一', value: '0 0 0 * * 1' },
 ];
 
 function formatBytes(bytes: number): string {
@@ -250,7 +251,7 @@ export default function Subscriptions() {
 
   // 测速设置表单
   const [speedTestProfile, setSpeedTestProfile] = useState<SpeedTestProfile>(defaultSpeedTestProfile);
-  const [selectedCronPreset, setSelectedCronPreset] = useState<string>('0 */6 * * *');
+  const [selectedCronPreset, setSelectedCronPreset] = useState<string>('0 0 */6 * * *');
   const [isLoadingProfiles, setIsLoadingProfiles] = useState(false);
 
   // 手动节点表单
@@ -1539,13 +1540,39 @@ export default function Subscriptions() {
               <div className="flex items-center justify-between">
                 <div>
                   <span className="font-medium">应用于全部节点</span>
-                  <p className="text-xs text-gray-400">启用后将匹配所有订阅的节点</p>
+                  <p className="text-xs text-gray-400">启用后将匹配所有订阅与手动节点</p>
                 </div>
                 <Switch
                   isSelected={filterForm.all_nodes}
-                  onValueChange={(checked) => setFilterForm({ ...filterForm, all_nodes: checked })}
+                  onValueChange={(checked) => setFilterForm({
+                    ...filterForm,
+                    all_nodes: checked,
+                    // Turning scope back on clears a stale subscription allow-list.
+                    subscriptions: checked ? [] : filterForm.subscriptions,
+                  })}
                 />
               </div>
+
+              {!filterForm.all_nodes && (
+                <Select
+                  label="适用订阅"
+                  placeholder={subscriptions.length === 0 ? '暂无订阅可选择' : '选择要匹配的订阅（可多选）'}
+                  selectionMode="multiple"
+                  selectedKeys={filterForm.subscriptions}
+                  isDisabled={subscriptions.length === 0}
+                  description="未选择时仍匹配全部来源（兼容旧数据）；选择后仅包含所列订阅的节点。"
+                  onSelectionChange={(keys) => setFilterForm({
+                    ...filterForm,
+                    subscriptions: Array.from(keys) as string[],
+                  })}
+                >
+                  {subscriptions.map((sub) => (
+                    <SelectItem key={sub.id} value={sub.id}>
+                      {sub.name || sub.id}
+                    </SelectItem>
+                  ))}
+                </Select>
+              )}
 
               {/* 模式选择 */}
               <Select

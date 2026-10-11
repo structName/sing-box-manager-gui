@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"fmt"
 	"strings"
 	"time"
 )
@@ -62,7 +63,7 @@ type ProxyChain struct {
 // ChainNode 链路节点副本引用
 type ChainNode struct {
 	OriginalTag string `json:"original_tag"` // 原节点 Tag
-	CopyTag     string `json:"copy_tag"`     // 副本 Tag: "{链路名}-{原Tag}"
+	CopyTag     string `json:"copy_tag"`     // 副本 Tag: "{链路名}-{hop}-{原Tag}"
 	Source      string `json:"source"`       // 来源订阅 ID 或 "manual"
 }
 
@@ -76,13 +77,21 @@ type ChainHealthConfig struct {
 	AutoSwitch   bool   `json:"auto_switch"`   // 自动切换
 }
 
+// Probe mode values for chain health / speed checks.
+const (
+	ProbeModeChain      = "chain"       // measured via Clash copyTag or chain-bound inbound
+	ProbeModeExitDirect = "exit-direct" // measured via mihomo against exit node only (not full detour path)
+)
+
 // ChainHealthStatus 链路健康状态
 type ChainHealthStatus struct {
-	ChainID      string             `json:"chain_id"`
-	LastCheck    time.Time          `json:"last_check"`
-	Status       string             `json:"status"`  // "healthy" | "degraded" | "unhealthy"
-	Latency      int                `json:"latency"` // 总延迟 (ms)
-	NodeStatuses []NodeHealthStatus `json:"node_statuses"`
+	ChainID        string             `json:"chain_id"`
+	LastCheck      time.Time          `json:"last_check"`
+	Status         string             `json:"status"`  // "healthy" | "degraded" | "unhealthy"
+	Latency        int                `json:"latency"` // 总延迟 (ms)
+	NodeStatuses   []NodeHealthStatus `json:"node_statuses"`
+	ProbeMode      string             `json:"probe_mode,omitempty"`      // "chain" | "exit-direct"
+	DegradedReason string             `json:"degraded_reason,omitempty"` // why status is not fully trustworthy
 }
 
 // NodeHealthStatus 节点健康状态
@@ -95,26 +104,42 @@ type NodeHealthStatus struct {
 
 // ChainSpeedResult 链路速度测试结果
 type ChainSpeedResult struct {
-	ChainID    string    `json:"chain_id"`
-	TestTime   time.Time `json:"test_time"`
-	SpeedMbps  float64   `json:"speed_mbps"`  // 下载速度 Mbps
-	BytesTotal int64     `json:"bytes_total"` // 下载字节数
-	Duration   int64     `json:"duration"`    // 耗时 ms
+	ChainID        string    `json:"chain_id"`
+	TestTime       time.Time `json:"test_time"`
+	SpeedMbps      float64   `json:"speed_mbps"`  // 下载速度 Mbps
+	BytesTotal     int64     `json:"bytes_total"` // 下载字节数
+	Duration       int64     `json:"duration"`    // 耗时 ms
+	ProbeMode      string    `json:"probe_mode,omitempty"`      // "chain" | "exit-direct"
+	DegradedReason string    `json:"degraded_reason,omitempty"`
 }
 
-// GenerateChainNodeCopyTag 生成链路节点副本 Tag
-func GenerateChainNodeCopyTag(chainName, originalTag string) string {
-	return chainName + "-" + originalTag
+// GenerateChainNodeCopyTag 生成链路节点副本 Tag（含 hop 下标，避免同一链路重复 hop 冲突）
+// 格式: "{chainName}-{hopIndex}-{originalTag}"
+func GenerateChainNodeCopyTag(chainName, originalTag string, hopIndex int) string {
+	return fmt.Sprintf("%s-%d-%s", chainName, hopIndex, originalTag)
 }
 
 // GenerateChainCountryCandidateCopyTag 生成链路中地区自动选择候选节点的副本 Tag
-func GenerateChainCountryCandidateCopyTag(chainName, countryTag, originalTag string) string {
-	return GenerateChainNodeCopyTag(chainName, countryTag+"-"+originalTag)
+func GenerateChainCountryCandidateCopyTag(chainName, countryTag, originalTag string, hopIndex int) string {
+	return GenerateChainNodeCopyTag(chainName, countryTag+"-"+originalTag, hopIndex)
 }
 
 // GenerateChainAutoCandidateCopyTag 生成链路中全局自动选择候选节点的副本 Tag
-func GenerateChainAutoCandidateCopyTag(chainName, originalTag string) string {
-	return GenerateChainNodeCopyTag(chainName, ChainAutoNodeTag+"-"+originalTag)
+func GenerateChainAutoCandidateCopyTag(chainName, originalTag string, hopIndex int) string {
+	return GenerateChainNodeCopyTag(chainName, ChainAutoNodeTag+"-"+originalTag, hopIndex)
+}
+
+// DisambiguateCopyTag 若 base 已被占用则追加 #N 后缀直至唯一
+func DisambiguateCopyTag(base string, used map[string]bool) string {
+	if base == "" || !used[base] {
+		return base
+	}
+	for n := 2; ; n++ {
+		candidate := fmt.Sprintf("%s#%d", base, n)
+		if !used[candidate] {
+			return candidate
+		}
+	}
 }
 
 // MakeChainCountryNodeTag 生成链路中的地区自动选择节点 Tag
@@ -185,7 +210,8 @@ func GetSpecialChainNodeDisplayName(tag string) string {
 }
 
 // ChainSpecialNodeMetadata 返回链路特殊节点的稳定副本元数据
-func ChainSpecialNodeMetadata(chainName, tag string) (ChainNode, bool) {
+// hopIndex 用于地区自动选择节点的 CopyTag（与 builder 一致）；Tor/Auto 使用固定显示名。
+func ChainSpecialNodeMetadata(chainName, tag string, hopIndex int) (ChainNode, bool) {
 	if IsChainAutoNodeTag(tag) {
 		return ChainNode{
 			OriginalTag: tag,
@@ -203,7 +229,7 @@ func ChainSpecialNodeMetadata(chainName, tag string) (ChainNode, bool) {
 	if IsChainCountryNodeTag(tag) {
 		return ChainNode{
 			OriginalTag: tag,
-			CopyTag:     GenerateChainNodeCopyTag(chainName, tag),
+			CopyTag:     GenerateChainNodeCopyTag(chainName, tag, hopIndex),
 			Source:      GetChainCountryNodeSource(ParseChainCountryNodeCode(tag)),
 		}, true
 	}
@@ -283,7 +309,7 @@ type Filter struct {
 	Exclude          []string       `json:"exclude"`           // 排除关键字
 	IncludeCountries []string       `json:"include_countries"` // 包含的国家代码
 	ExcludeCountries []string       `json:"exclude_countries"` // 排除的国家代码
-	Mode             string         `json:"mode"`              // urltest / select
+	Mode             string         `json:"mode"`              // urltest / selector (legacy alias: select)
 	URLTestConfig    *URLTestConfig `json:"urltest_config,omitempty"`
 	Subscriptions    []string       `json:"subscriptions"` // 适用的订阅ID，空表示全部
 	AllNodes         bool           `json:"all_nodes"`     // 是否应用于所有节点

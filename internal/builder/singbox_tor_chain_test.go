@@ -77,7 +77,7 @@ func TestBuildConfigGeneratesTorChainOnlyForExplicitInbound(t *testing.T) {
 	if got := torOutbound["data_directory"]; got != filepath.Join(dataDir, "tor", chain.ID) {
 		t.Fatalf("Tor data_directory = %v", got)
 	}
-	if got := torOutbound["detour"]; got != storage.GenerateChainNodeCopyTag(chain.Name, "entry") {
+	if got := torOutbound["detour"]; got != storage.GenerateChainNodeCopyTag(chain.Name, "entry", 0) {
 		t.Fatalf("Tor detour = %v", got)
 	}
 	torrc, ok := torOutbound["torrc"].(map[string]interface{})
@@ -262,7 +262,7 @@ func TestBuildConfigSupportsCountryAutoBeforeTor(t *testing.T) {
 	}
 
 	outboundMap := outboundsByTag(config.Outbounds)
-	groupCopyTag := storage.GenerateChainNodeCopyTag(chain.Name, countryTag)
+	groupCopyTag := storage.GenerateChainNodeCopyTag(chain.Name, countryTag, 0)
 	groupOutbound := outboundMap[groupCopyTag]
 	if groupOutbound == nil {
 		t.Fatalf("country auto group %q not generated", groupCopyTag)
@@ -320,7 +320,7 @@ func TestBuildConfigSupportsAllNodeAutoBeforeTor(t *testing.T) {
 	}
 
 	outboundMap := outboundsByTag(config.Outbounds)
-	groupCopyTag := storage.GenerateChainNodeCopyTag(chain.Name, storage.ChainAutoNodeTag)
+	groupCopyTag := storage.GenerateChainNodeCopyTag(chain.Name, storage.ChainAutoNodeTag, 0)
 	groupOutbound := outboundMap[groupCopyTag]
 	if groupOutbound == nil {
 		t.Fatalf("Auto entry group %q not generated", groupCopyTag)
@@ -375,9 +375,9 @@ func TestBuildConfigSupportsNodeTorNodeChain(t *testing.T) {
 	}
 
 	outboundMap := outboundsByTag(config.Outbounds)
-	entryCopyTag := storage.GenerateChainNodeCopyTag(chain.Name, "entry")
+	entryCopyTag := storage.GenerateChainNodeCopyTag(chain.Name, "entry", 0)
 	torTag := storage.GenerateChainTorOutboundTag(chain.ID)
-	postCopyTag := storage.GenerateChainNodeCopyTag(chain.Name, "post")
+	postCopyTag := storage.GenerateChainNodeCopyTag(chain.Name, "post", 2)
 
 	if got := outboundMap[torTag]["detour"]; got != entryCopyTag {
 		t.Fatalf("Tor detour = %v, want entry copy %q", got, entryCopyTag)
@@ -431,7 +431,7 @@ func TestBuildConfigSupportsAutomaticPostTorSelection(t *testing.T) {
 
 	outboundMap := outboundsByTag(config.Outbounds)
 	torTag := storage.GenerateChainTorOutboundTag(chain.ID)
-	autoGroupTag := storage.GenerateChainNodeCopyTag(chain.Name, storage.ChainAutoNodeTag)
+	autoGroupTag := storage.GenerateChainNodeCopyTag(chain.Name, storage.ChainAutoNodeTag, 2)
 	autoGroup := outboundMap[autoGroupTag]
 	if autoGroup == nil {
 		t.Fatalf("post-Tor auto group %q not generated", autoGroupTag)

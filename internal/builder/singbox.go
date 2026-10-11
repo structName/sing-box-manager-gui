@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -42,13 +44,16 @@ type DNSConfig struct {
 
 // DNSServer DNS 服务器 (新格式，支持 FakeIP 和 hosts)
 type DNSServer struct {
-	Tag        string         `json:"tag"`
-	Type       string         `json:"type"`                  // udp, tcp, https, tls, quic, h3, fakeip, rcode, hosts
-	Server     string         `json:"server,omitempty"`      // 服务器地址
-	Detour     string         `json:"detour,omitempty"`      // 出站代理
-	Inet4Range string         `json:"inet4_range,omitempty"` // FakeIP IPv4 地址池
-	Inet6Range string         `json:"inet6_range,omitempty"` // FakeIP IPv6 地址池
-	Predefined map[string]any `json:"predefined,omitempty"`  // hosts 类型专用：预定义域名映射
+	Tag            string         `json:"tag"`
+	Type           string         `json:"type"`                      // udp, tcp, https, tls, quic, h3, fakeip, rcode, hosts, local
+	Server         string         `json:"server,omitempty"`          // 服务器地址
+	ServerPort     int            `json:"server_port,omitempty"`     // 非默认端口时写出
+	Path           string         `json:"path,omitempty"`            // DoH/H3 路径（默认 /dns-query 可省略）
+	DomainResolver string         `json:"domain_resolver,omitempty"` // server 为域名时的解析器
+	Detour         string         `json:"detour,omitempty"`          // 出站代理
+	Inet4Range     string         `json:"inet4_range,omitempty"`     // FakeIP IPv4 地址池
+	Inet6Range     string         `json:"inet6_range,omitempty"`     // FakeIP IPv6 地址池
+	Predefined     map[string]any `json:"predefined,omitempty"`      // hosts 类型专用：预定义域名映射
 }
 
 // DNSRule DNS 规则
@@ -134,25 +139,34 @@ type CacheFileConfig struct {
 
 // ConfigBuilder 配置生成器
 type ConfigBuilder struct {
-	settings     *storage.Settings
-	nodes        []storage.Node
-	filters      []storage.Filter
-	inboundPorts []storage.InboundPort
-	proxyChains  []storage.ProxyChain
-	dataDir      string // 数据目录路径
+	settings      *storage.Settings
+	nodes         []storage.Node
+	filters       []storage.Filter
+	inboundPorts  []storage.InboundPort
+	proxyChains   []storage.ProxyChain
+	dataDir       string // 数据目录路径
+	skippedChains []SkippedChain
 }
 
 // SkippedNode 被排除在运行配置之外的无效代理节点。
 type SkippedNode struct {
-	Tag    string
-	Type   string
-	Reason string
+	Tag    string `json:"tag"`
+	Type   string `json:"type"`
+	Reason string `json:"reason"`
+}
+
+// SkippedChain 因缺 hop / 空国家候选等原因未写入运行配置的代理链路。
+type SkippedChain struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
 }
 
 // ValidatedConfig 已通过内核校验的 sing-box 配置。
 type ValidatedConfig struct {
-	JSON         string
-	SkippedNodes []SkippedNode
+	JSON          string         `json:"-"`
+	SkippedNodes  []SkippedNode  `json:"skipped_nodes,omitempty"`
+	SkippedChains []SkippedChain `json:"skipped_chains,omitempty"`
 }
 
 // NewConfigBuilder 创建配置生成器
@@ -178,10 +192,14 @@ func (b *ConfigBuilder) Build() (*SingBoxConfig, error) {
 		return nil, err
 	}
 	route := b.buildRoute()
+	dns, err := b.buildDNS()
+	if err != nil {
+		return nil, err
+	}
 
 	config := &SingBoxConfig{
 		Log:          b.buildLog(),
-		DNS:          b.buildDNS(),
+		DNS:          dns,
 		NTP:          b.buildNTP(),
 		Inbounds:     b.buildInbounds(),
 		Outbounds:    outbounds,
@@ -279,13 +297,14 @@ func (b *ConfigBuilder) BuildValidatedJSON(validate func(string) error) (*Valida
 		if err != nil {
 			return nil, err
 		}
+		chains := append([]SkippedChain(nil), candidate.skippedChains...)
 		if validate == nil {
-			return &ValidatedConfig{JSON: configJSON, SkippedNodes: skipped}, nil
+			return &ValidatedConfig{JSON: configJSON, SkippedNodes: skipped, SkippedChains: chains}, nil
 		}
 
 		validationErr := validate(configJSON)
 		if validationErr == nil {
-			return &ValidatedConfig{JSON: configJSON, SkippedNodes: skipped}, nil
+			return &ValidatedConfig{JSON: configJSON, SkippedNodes: skipped, SkippedChains: chains}, nil
 		}
 
 		outboundIndex, ok := outboundIndexFromError(validationErr)
@@ -404,16 +423,23 @@ func (b *ConfigBuilder) buildLog() *LogConfig {
 	}
 }
 
-// ParseSystemHosts 解析系统 /etc/hosts 文件
+// ParseSystemHosts 解析系统 /etc/hosts 文件。
+// 仅保留可路由的「真实」映射：跳过 loopback / 未指定 / 链路本地 / 组播地址，
+// 以及 localhost 类域名。否则 Debian/Ubuntu 的 `127.0.0.1 <hostname>` 与
+// `ip6-allnodes` 等条目会进入 DNS hosts / route override_address，把本机主机名
+// 或组播名钉死到回环/组播地址。
 func ParseSystemHosts() map[string][]string {
-	hosts := make(map[string][]string)
-
 	data, err := os.ReadFile("/etc/hosts")
 	if err != nil {
-		return hosts
+		return map[string][]string{}
 	}
+	return parseHostsFileContent(string(data))
+}
 
-	lines := strings.Split(string(data), "\n")
+func parseHostsFileContent(content string) map[string][]string {
+	hosts := make(map[string][]string)
+
+	lines := strings.Split(content, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		// 跳过空行和注释
@@ -431,9 +457,12 @@ func ParseSystemHosts() map[string][]string {
 		}
 
 		ip := fields[0]
-		// 跳过 localhost 相关条目
+		if shouldSkipSystemHostIP(ip) {
+			continue
+		}
+
 		for _, domain := range fields[1:] {
-			if domain == "localhost" || strings.HasSuffix(domain, ".localhost") {
+			if shouldSkipSystemHostDomain(domain) {
 				continue
 			}
 			hosts[domain] = append(hosts[domain], ip)
@@ -443,22 +472,142 @@ func ParseSystemHosts() map[string][]string {
 	return hosts
 }
 
-// buildDNS 构建 DNS 配置
-func (b *ConfigBuilder) buildDNS() *DNSConfig {
-	// 基础 DNS 服务器
-	servers := []DNSServer{
-		{
-			Tag:    "dns_proxy",
-			Type:   "https",
-			Server: "8.8.8.8",
-			Detour: "Proxy",
-		},
-		{
-			Tag:    "dns_direct",
-			Type:   "udp",
-			Server: "223.5.5.5",
-		},
+func shouldSkipSystemHostIP(ip string) bool {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return true
 	}
+	return parsed.IsLoopback() ||
+		parsed.IsUnspecified() ||
+		parsed.IsMulticast() ||
+		parsed.IsLinkLocalUnicast() ||
+		parsed.IsLinkLocalMulticast()
+}
+
+func shouldSkipSystemHostDomain(domain string) bool {
+	if domain == "" {
+		return true
+	}
+	lower := strings.ToLower(domain)
+	if lower == "localhost" || strings.HasSuffix(lower, ".localhost") {
+		return true
+	}
+	// glibc/Debian IPv6 伪主机名（即便落在非 loopback 地址上也不该进入代理配置）
+	if strings.HasPrefix(lower, "ip6-") {
+		return true
+	}
+	if lower == "broadcasthost" {
+		return true
+	}
+	return false
+}
+
+// parseSettingsDNSServer 将设置里的 DNS 地址（URL 或裸 IP/主机名）转为 sing-box 1.12+ DNS server。
+// 支持: https/h3/tls/quic/tcp/udp 以及 "local"；无 scheme 时按 udp 处理。
+func parseSettingsDNSServer(tag, raw, detour string) (DNSServer, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return DNSServer{}, fmt.Errorf("empty dns address")
+	}
+	if strings.EqualFold(raw, "local") {
+		return DNSServer{Tag: tag, Type: "local", Detour: detour}, nil
+	}
+
+	serverType := "udp"
+	host := raw
+	path := ""
+	port := 0
+
+	if strings.Contains(raw, "://") {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return DNSServer{}, fmt.Errorf("parse dns address: %w", err)
+		}
+		switch strings.ToLower(u.Scheme) {
+		case "https":
+			serverType = "https"
+		case "h3":
+			serverType = "h3"
+		case "tls":
+			serverType = "tls"
+		case "quic":
+			serverType = "quic"
+		case "tcp":
+			serverType = "tcp"
+		case "udp":
+			serverType = "udp"
+		default:
+			return DNSServer{}, fmt.Errorf("unsupported dns scheme %q", u.Scheme)
+		}
+		host = u.Hostname()
+		if host == "" {
+			return DNSServer{}, fmt.Errorf("dns address missing host")
+		}
+		if u.Port() != "" {
+			p, err := strconv.Atoi(u.Port())
+			if err != nil {
+				return DNSServer{}, fmt.Errorf("invalid dns port: %w", err)
+			}
+			port = p
+		}
+		path = u.EscapedPath()
+	}
+
+	srv := DNSServer{
+		Tag:        tag,
+		Type:       serverType,
+		Server:     host,
+		ServerPort: port,
+		Detour:     detour,
+	}
+	// sing-box https/h3 默认 path 为 /dns-query，仅在非默认时写出
+	if (serverType == "https" || serverType == "h3") && path != "" && path != "/" && path != "/dns-query" {
+		srv.Path = path
+	}
+	return srv, nil
+}
+
+func dnsServerNeedsDomainResolver(srv DNSServer) bool {
+	if srv.Type == "" || srv.Type == "local" || srv.Type == "fakeip" || srv.Type == "hosts" || srv.Type == "rcode" {
+		return false
+	}
+	host := strings.TrimSpace(srv.Server)
+	if host == "" {
+		return false
+	}
+	return net.ParseIP(host) == nil
+}
+
+// buildDNS 构建 DNS 配置
+func (b *ConfigBuilder) buildDNS() (*DNSConfig, error) {
+	proxyDNS := strings.TrimSpace(b.settings.ProxyDNS)
+	if proxyDNS == "" {
+		proxyDNS = "https://1.1.1.1/dns-query"
+	}
+	directDNS := strings.TrimSpace(b.settings.DirectDNS)
+	if directDNS == "" {
+		directDNS = "https://dns.alidns.com/dns-query"
+	}
+
+	dnsProxy, err := parseSettingsDNSServer("dns_proxy", proxyDNS, "Proxy")
+	if err != nil {
+		return nil, fmt.Errorf("代理 DNS %q: %w", proxyDNS, err)
+	}
+	dnsDirect, err := parseSettingsDNSServer("dns_direct", directDNS, "")
+	if err != nil {
+		return nil, fmt.Errorf("直连 DNS %q: %w", directDNS, err)
+	}
+
+	var servers []DNSServer
+	// server 字段为域名时需要 domain_resolver；直连 DNS 用 local 引导，代理 DNS 复用 dns_direct。
+	if dnsServerNeedsDomainResolver(dnsDirect) {
+		servers = append(servers, DNSServer{Tag: "dns_local", Type: "local"})
+		dnsDirect.DomainResolver = "dns_local"
+	}
+	if dnsServerNeedsDomainResolver(dnsProxy) {
+		dnsProxy.DomainResolver = "dns_direct"
+	}
+	servers = append(servers, dnsProxy, dnsDirect)
 
 	// 基础 DNS 规则
 	var rules []DNSRule
@@ -535,7 +684,7 @@ func (b *ConfigBuilder) buildDNS() *DNSConfig {
 		Servers:  servers,
 		Rules:    rules,
 		Final:    "dns_proxy",
-	}
+	}, nil
 }
 
 // buildNTP 默认不生成 NTP 配置，避免额外的外部时间同步请求
@@ -587,6 +736,44 @@ func (b *ConfigBuilder) buildInbounds() []Inbound {
 }
 
 // buildOutbounds 构建出站配置
+
+func (b *ConfigBuilder) recordSkippedChain(chain storage.ProxyChain, reason string) {
+	b.skippedChains = append(b.skippedChains, SkippedChain{
+		ID:     chain.ID,
+		Name:   chain.Name,
+		Reason: reason,
+	})
+}
+
+func missingChainHopLabels(nodes []string, exists func(string) bool) []string {
+	var missing []string
+	for _, nodeTag := range nodes {
+		if exists(nodeTag) {
+			continue
+		}
+		if storage.IsChainCountryNodeTag(nodeTag) {
+			code := storage.ParseChainCountryNodeCode(nodeTag)
+			missing = append(missing, fmt.Sprintf("%s (no %s candidates)", nodeTag, code))
+			continue
+		}
+		if storage.IsChainAutoNodeTag(nodeTag) {
+			missing = append(missing, nodeTag+" (no candidates)")
+			continue
+		}
+		missing = append(missing, nodeTag)
+	}
+	return missing
+}
+
+func containsString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
 func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 	outbounds := []Outbound{
 		{"type": "direct", "tag": "DIRECT"},
@@ -604,7 +791,7 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 		nodeMap[node.Tag] = node
 		allNodeTags = append(allNodeTags, node.Tag)
 
-		countryCode := node.Country
+		countryCode := strings.ToUpper(strings.TrimSpace(node.Country))
 		if countryCode == "" {
 			countryCode = "OTHER"
 		}
@@ -621,56 +808,63 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 	}
 
 	// 生成链路节点副本（独立的副本，不影响原始节点）
+	b.skippedChains = nil
 	chainCopyTags := make(map[string]bool) // 已创建的副本 Tag
 	activeTorChainIDs := b.activeTorChainIDs()
 	for _, chain := range b.proxyChains {
-		if !chain.Enabled || len(chain.Nodes) < 2 {
+		if !chain.Enabled {
+			continue
+		}
+		if len(chain.Nodes) < 2 {
+			b.recordSkippedChain(chain, "chain requires at least 2 hops")
 			continue
 		}
 		if storage.ChainContainsTor(chain.Nodes) {
 			if activeTorChainIDs[chain.ID] {
+				before := len(outbounds)
 				generated, err := b.appendTorChainOutbounds(outbounds, chainCopyTags, chain, nodeMap, countryNodes)
 				if err != nil {
 					return nil, err
 				}
+				if len(generated) == before {
+					b.recordSkippedChain(chain, "Tor chain incomplete (empty country/auto hop or missing entry)")
+				}
 				outbounds = generated
+			} else {
+				b.recordSkippedChain(chain, "Tor exit not bound to an enabled inbound (UseTorExit)")
 			}
 			continue
 		}
 
-		// 验证链路中的所有节点是否存在
-		allNodesExist := true
-		for _, nodeTag := range chain.Nodes {
-			if !chainNodeExists(nodeTag) {
-				allNodesExist = false
-				break
-			}
-		}
-		if !allNodesExist {
+		// 验证链路中的所有节点是否存在（含空国家候选）
+		if missing := missingChainHopLabels(chain.Nodes, chainNodeExists); len(missing) > 0 {
+			b.recordSkippedChain(chain, "missing hops: "+strings.Join(missing, ", "))
 			continue
 		}
 
-		// 为链路中的每个节点创建副本
+		// 为链路中的每个节点创建副本（CopyTag 含 hop 下标，重复 hop 各自独立）
 		// 链路顺序: [入口, 中间..., 出口]
 		// detour 方向: 出口节点的 detour 指向前一个节点
 		// 流量路径: 客户端 → 入口 → 中间... → 出口 → 目标
+		// 空国家候选时中止整链并回滚，避免 prevCopyTag 不推进导致 detour 断裂（#26）
+		chainStart := len(outbounds)
+		copyTagSnapshot := cloneBoolMap(chainCopyTags)
 		var prevCopyTag string
-		for _, nodeTag := range chain.Nodes {
+		aborted := false
+		for hopIndex, nodeTag := range chain.Nodes {
 			if storage.IsChainCountryNodeTag(nodeTag) {
 				countryCode := storage.ParseChainCountryNodeCode(nodeTag)
 				candidateTags := countryNodes[countryCode]
 				if len(candidateTags) == 0 {
-					continue
+					aborted = true
+					break
 				}
 
-				groupCopyTag := storage.GenerateChainNodeCopyTag(chain.Name, nodeTag)
+				groupCopyTag := reserveChainCopyTag(chainCopyTags, storage.GenerateChainNodeCopyTag(chain.Name, nodeTag, hopIndex))
 				virtualOutbounds := make([]string, 0, len(candidateTags))
 				for _, candidateTag := range candidateTags {
-					candidateCopyTag := storage.GenerateChainCountryCandidateCopyTag(chain.Name, nodeTag, candidateTag)
+					candidateCopyTag := reserveChainCopyTag(chainCopyTags, storage.GenerateChainCountryCandidateCopyTag(chain.Name, nodeTag, candidateTag, hopIndex))
 					virtualOutbounds = append(virtualOutbounds, candidateCopyTag)
-					if chainCopyTags[candidateCopyTag] {
-						continue
-					}
 
 					copyOutbound, err := b.nodeToOutbound(nodeMap[candidateTag])
 					if err != nil {
@@ -682,40 +876,37 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 					}
 
 					outbounds = append(outbounds, copyOutbound)
-					chainCopyTags[candidateCopyTag] = true
 				}
 
-				if !chainCopyTags[groupCopyTag] {
-					outbounds = append(outbounds, Outbound{
-						"tag":       groupCopyTag,
-						"type":      "urltest",
-						"outbounds": virtualOutbounds,
-						"url":       "https://www.gstatic.com/generate_204",
-						"interval":  "30m",
-						"tolerance": 50,
-					})
-					chainCopyTags[groupCopyTag] = true
-				}
+				outbounds = append(outbounds, Outbound{
+					"tag":       groupCopyTag,
+					"type":      "urltest",
+					"outbounds": virtualOutbounds,
+					"url":       "https://www.gstatic.com/generate_204",
+					"interval":  "30m",
+					"tolerance": 50,
+				})
 				prevCopyTag = groupCopyTag
 				continue
 			}
 
-			copyTag := storage.GenerateChainNodeCopyTag(chain.Name, nodeTag)
-			if !chainCopyTags[copyTag] {
-				copyOutbound, err := b.nodeToOutbound(nodeMap[nodeTag])
-				if err != nil {
-					return nil, err
-				}
-				copyOutbound["tag"] = copyTag
-				if prevCopyTag != "" {
-					copyOutbound["detour"] = prevCopyTag
-				}
-
-				outbounds = append(outbounds, copyOutbound)
-				chainCopyTags[copyTag] = true
+			copyTag := reserveChainCopyTag(chainCopyTags, storage.GenerateChainNodeCopyTag(chain.Name, nodeTag, hopIndex))
+			copyOutbound, err := b.nodeToOutbound(nodeMap[nodeTag])
+			if err != nil {
+				return nil, err
+			}
+			copyOutbound["tag"] = copyTag
+			if prevCopyTag != "" {
+				copyOutbound["detour"] = prevCopyTag
 			}
 
+			outbounds = append(outbounds, copyOutbound)
 			prevCopyTag = copyTag
+		}
+		if aborted {
+			outbounds = outbounds[:chainStart]
+			restoreBoolMap(chainCopyTags, copyTagSnapshot)
+			continue
 		}
 	}
 
@@ -752,14 +943,15 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 		groupTag := filter.Name
 		filterGroupTags = append(filterGroupTags, groupTag)
 
+		mode := normalizeFilterMode(filter.Mode)
 		// 创建分组
 		group := Outbound{
 			"tag":       groupTag,
-			"type":      filter.Mode,
+			"type":      mode,
 			"outbounds": filteredTags,
 		}
 
-		if filter.Mode == "urltest" {
+		if mode == "urltest" {
 			if filter.URLTestConfig != nil {
 				group["url"] = filter.URLTestConfig.URL
 				group["interval"] = filter.URLTestConfig.Interval
@@ -844,7 +1036,8 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 
 		// 创建链路选择器，指向链路的副本出口节点（最后一个）
 		// 流量路径: 选择器 → 出口节点 → (detour) 中间节点... → 入口节点 → 目标
-		exitCopyTag := storage.GenerateChainNodeCopyTag(chain.Name, chain.Nodes[len(chain.Nodes)-1])
+		exitHop := len(chain.Nodes) - 1
+		exitCopyTag := storage.GenerateChainNodeCopyTag(chain.Name, chain.Nodes[exitHop], exitHop)
 		outbounds = append(outbounds, Outbound{
 			"tag":       chain.Name,
 			"type":      "selector",
@@ -879,14 +1072,38 @@ func (b *ConfigBuilder) buildOutbounds() ([]Outbound, error) {
 	fallbackOutbounds = append(fallbackOutbounds, countryGroupTags...) // 添加国家分组
 	fallbackOutbounds = append(fallbackOutbounds, filterGroupTags...)
 	fallbackOutbounds = append(fallbackOutbounds, chainGroupTags...) // 添加链路分组
+	finalDefault := strings.TrimSpace(b.settings.FinalOutbound)
+	if finalDefault == "" || !containsString(fallbackOutbounds, finalDefault) {
+		// Settings may still name a deleted chain/filter; keep selector valid.
+		finalDefault = "Proxy"
+	}
 	outbounds = append(outbounds, Outbound{
 		"tag":       "Final",
 		"type":      "selector",
 		"outbounds": fallbackOutbounds,
-		"default":   b.settings.FinalOutbound,
+		"default":   finalDefault,
 	})
 
 	return outbounds, nil
+}
+
+func cloneBoolMap(src map[string]bool) map[string]bool {
+	dst := make(map[string]bool, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
+}
+
+func restoreBoolMap(dst, snapshot map[string]bool) {
+	for key := range dst {
+		if !snapshot[key] {
+			delete(dst, key)
+		}
+	}
+	for key, value := range snapshot {
+		dst[key] = value
+	}
 }
 
 func (b *ConfigBuilder) activeTorChainIDs() map[string]bool {
@@ -898,6 +1115,12 @@ func (b *ConfigBuilder) activeTorChainIDs() map[string]bool {
 		active[port.TorChainID] = true
 	}
 	return active
+}
+
+func reserveChainCopyTag(chainCopyTags map[string]bool, base string) string {
+	tag := storage.DisambiguateCopyTag(base, chainCopyTags)
+	chainCopyTags[tag] = true
+	return tag
 }
 
 func (b *ConfigBuilder) appendTorChainOutbounds(
@@ -918,20 +1141,28 @@ func (b *ConfigBuilder) appendTorChainOutbounds(
 		return outbounds, nil
 	}
 
+	chainStart := len(outbounds)
+	copyTagSnapshot := cloneBoolMap(chainCopyTags)
+	rollback := func() ([]Outbound, error) {
+		restoreBoolMap(chainCopyTags, copyTagSnapshot)
+		return outbounds[:chainStart], nil
+	}
+
 	var prevCopyTag string
-	for _, nodeTag := range chain.Nodes[:torIndex] {
-		generated, copyTag, ok, err := b.appendTorChainHopOutbounds(outbounds, chainCopyTags, chain, nodeTag, prevCopyTag, nodeMap, countryNodes)
+	for hopIndex, nodeTag := range chain.Nodes[:torIndex] {
+		generated, copyTag, ok, err := b.appendTorChainHopOutbounds(outbounds, chainCopyTags, chain, nodeTag, hopIndex, prevCopyTag, nodeMap, countryNodes)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
-			return generated, nil
+			// 空国家/自动候选时中止整链并回滚，避免留下断裂 detour 的半成品（#26）
+			return rollback()
 		}
 		outbounds = generated
 		prevCopyTag = copyTag
 	}
 	if prevCopyTag == "" {
-		return outbounds, nil
+		return rollback()
 	}
 
 	torTag := storage.GenerateChainTorOutboundTag(chain.ID)
@@ -940,13 +1171,14 @@ func (b *ConfigBuilder) appendTorChainOutbounds(
 		chainCopyTags[torTag] = true
 	}
 	exitTag := torTag
-	for _, nodeTag := range chain.Nodes[torIndex+1:] {
-		generated, copyTag, ok, err := b.appendTorChainHopOutbounds(outbounds, chainCopyTags, chain, nodeTag, exitTag, nodeMap, countryNodes)
+	for offset, nodeTag := range chain.Nodes[torIndex+1:] {
+		hopIndex := torIndex + 1 + offset
+		generated, copyTag, ok, err := b.appendTorChainHopOutbounds(outbounds, chainCopyTags, chain, nodeTag, hopIndex, exitTag, nodeMap, countryNodes)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
-			return generated, nil
+			return rollback()
 		}
 		outbounds = generated
 		exitTag = copyTag
@@ -969,6 +1201,7 @@ func (b *ConfigBuilder) appendTorChainHopOutbounds(
 	chainCopyTags map[string]bool,
 	chain storage.ProxyChain,
 	nodeTag string,
+	hopIndex int,
 	prevCopyTag string,
 	nodeMap map[string]storage.Node,
 	countryNodes map[string][]string,
@@ -983,14 +1216,11 @@ func (b *ConfigBuilder) appendTorChainHopOutbounds(
 			return outbounds, "", false, nil
 		}
 
-		groupCopyTag := storage.GenerateChainNodeCopyTag(chain.Name, nodeTag)
+		groupCopyTag := reserveChainCopyTag(chainCopyTags, storage.GenerateChainNodeCopyTag(chain.Name, nodeTag, hopIndex))
 		virtualOutbounds := make([]string, 0, len(candidateTags))
 		for _, candidateTag := range candidateTags {
-			candidateCopyTag := storage.GenerateChainAutoCandidateCopyTag(chain.Name, candidateTag)
+			candidateCopyTag := reserveChainCopyTag(chainCopyTags, storage.GenerateChainAutoCandidateCopyTag(chain.Name, candidateTag, hopIndex))
 			virtualOutbounds = append(virtualOutbounds, candidateCopyTag)
-			if chainCopyTags[candidateCopyTag] {
-				continue
-			}
 
 			copyOutbound, err := b.nodeToOutbound(nodeMap[candidateTag])
 			if err != nil {
@@ -1001,20 +1231,16 @@ func (b *ConfigBuilder) appendTorChainHopOutbounds(
 				copyOutbound["detour"] = prevCopyTag
 			}
 			outbounds = append(outbounds, copyOutbound)
-			chainCopyTags[candidateCopyTag] = true
 		}
 
-		if !chainCopyTags[groupCopyTag] {
-			outbounds = append(outbounds, Outbound{
-				"tag":       groupCopyTag,
-				"type":      "urltest",
-				"outbounds": virtualOutbounds,
-				"url":       "https://www.gstatic.com/generate_204",
-				"interval":  "30m",
-				"tolerance": 50,
-			})
-			chainCopyTags[groupCopyTag] = true
-		}
+		outbounds = append(outbounds, Outbound{
+			"tag":       groupCopyTag,
+			"type":      "urltest",
+			"outbounds": virtualOutbounds,
+			"url":       "https://www.gstatic.com/generate_204",
+			"interval":  "30m",
+			"tolerance": 50,
+		})
 		return outbounds, groupCopyTag, true, nil
 	}
 
@@ -1025,14 +1251,11 @@ func (b *ConfigBuilder) appendTorChainHopOutbounds(
 			return outbounds, "", false, nil
 		}
 
-		groupCopyTag := storage.GenerateChainNodeCopyTag(chain.Name, nodeTag)
+		groupCopyTag := reserveChainCopyTag(chainCopyTags, storage.GenerateChainNodeCopyTag(chain.Name, nodeTag, hopIndex))
 		virtualOutbounds := make([]string, 0, len(candidateTags))
 		for _, candidateTag := range candidateTags {
-			candidateCopyTag := storage.GenerateChainCountryCandidateCopyTag(chain.Name, nodeTag, candidateTag)
+			candidateCopyTag := reserveChainCopyTag(chainCopyTags, storage.GenerateChainCountryCandidateCopyTag(chain.Name, nodeTag, candidateTag, hopIndex))
 			virtualOutbounds = append(virtualOutbounds, candidateCopyTag)
-			if chainCopyTags[candidateCopyTag] {
-				continue
-			}
 
 			copyOutbound, err := b.nodeToOutbound(nodeMap[candidateTag])
 			if err != nil {
@@ -1043,20 +1266,16 @@ func (b *ConfigBuilder) appendTorChainHopOutbounds(
 				copyOutbound["detour"] = prevCopyTag
 			}
 			outbounds = append(outbounds, copyOutbound)
-			chainCopyTags[candidateCopyTag] = true
 		}
 
-		if !chainCopyTags[groupCopyTag] {
-			outbounds = append(outbounds, Outbound{
-				"tag":       groupCopyTag,
-				"type":      "urltest",
-				"outbounds": virtualOutbounds,
-				"url":       "https://www.gstatic.com/generate_204",
-				"interval":  "30m",
-				"tolerance": 50,
-			})
-			chainCopyTags[groupCopyTag] = true
-		}
+		outbounds = append(outbounds, Outbound{
+			"tag":       groupCopyTag,
+			"type":      "urltest",
+			"outbounds": virtualOutbounds,
+			"url":       "https://www.gstatic.com/generate_204",
+			"interval":  "30m",
+			"tolerance": 50,
+		})
 		return outbounds, groupCopyTag, true, nil
 	}
 
@@ -1064,20 +1283,17 @@ func (b *ConfigBuilder) appendTorChainHopOutbounds(
 	if !exists {
 		return outbounds, "", false, nil
 	}
-	copyTag := storage.GenerateChainNodeCopyTag(chain.Name, nodeTag)
-	if !chainCopyTags[copyTag] {
-		copyOutbound, err := b.nodeToOutbound(node)
-		if err != nil {
-			return nil, "", false, err
-		}
-		copyOutbound["tag"] = copyTag
-		if prevCopyTag != "" {
-			copyOutbound["detour"] = prevCopyTag
-		}
-
-		outbounds = append(outbounds, copyOutbound)
-		chainCopyTags[copyTag] = true
+	copyTag := reserveChainCopyTag(chainCopyTags, storage.GenerateChainNodeCopyTag(chain.Name, nodeTag, hopIndex))
+	copyOutbound, err := b.nodeToOutbound(node)
+	if err != nil {
+		return nil, "", false, err
 	}
+	copyOutbound["tag"] = copyTag
+	if prevCopyTag != "" {
+		copyOutbound["detour"] = prevCopyTag
+	}
+
+	outbounds = append(outbounds, copyOutbound)
 	return outbounds, copyTag, true, nil
 }
 
@@ -1211,7 +1427,7 @@ func normalizeSocksOutbound(outbound Outbound) {
 	case "socks4", "SOCKS4":
 		outbound["version"] = "4"
 	case "socks4a", "SOCKS4A":
-		outbound["version"] = "4"
+		outbound["version"] = "4a"
 	case "socks5", "SOCKS5":
 		outbound["version"] = "5"
 	default:
@@ -1491,8 +1707,37 @@ func stringifyPluginOpt(value interface{}) string {
 	return text
 }
 
+// normalizeFilterMode maps the documented legacy alias "select" to sing-box "selector".
+// Empty and unknown modes are left unchanged so generation does not invent a type.
+func normalizeFilterMode(mode string) string {
+	trimmed := strings.TrimSpace(mode)
+	switch strings.ToLower(trimmed) {
+	case "urltest":
+		return "urltest"
+	case "selector", "select":
+		return "selector"
+	default:
+		return trimmed
+	}
+}
+
 // matchFilter 检查节点是否匹配过滤器
 func (b *ConfigBuilder) matchFilter(node storage.Node, filter storage.Filter) bool {
+	// 0. 来源范围：AllNodes 或空 Subscriptions 表示不限来源；
+	//    否则仅匹配 Source 落在 Subscriptions 中的节点（手动节点 Source=manual）。
+	if !filter.AllNodes && len(filter.Subscriptions) > 0 {
+		sourceMatched := false
+		for _, subID := range filter.Subscriptions {
+			if node.Source == subID {
+				sourceMatched = true
+				break
+			}
+		}
+		if !sourceMatched {
+			return false
+		}
+	}
+
 	name := strings.ToLower(node.Tag)
 
 	// 1. 检查国家包含条件
@@ -1571,25 +1816,9 @@ func (b *ConfigBuilder) buildRoute() *RouteConfig {
 	// 3. 添加 hosts 域名的路由规则（优先级高，在其他规则之前）
 	// 使用 override_address 直接指定目标 IP，避免 DIRECT outbound 重新 DNS 解析
 	// 这解决了 sniff_override_destination 导致的 NXDOMAIN 问题
-	systemHosts := ParseSystemHosts()
-	for domain, ips := range systemHosts {
-		if len(ips) > 0 {
-			rules = append(rules, RouteRule{
-				"domain":           []string{domain},
-				"outbound":         "DIRECT",
-				"override_address": ips[0],
-			})
-		}
-	}
-	for _, host := range b.settings.Hosts {
-		if host.Enabled && host.Domain != "" && len(host.IPs) > 0 {
-			rules = append(rules, RouteRule{
-				"domain":           []string{host.Domain},
-				"outbound":         "DIRECT",
-				"override_address": host.IPs[0],
-			})
-		}
-	}
+	// 用户自定义 hosts 优先于系统 /etc/hosts（与 buildDNS 一致）；
+	// sing-box 路由按首条命中，旧实现先写系统再写用户会导致覆盖失效。
+	rules = appendHostOverrideRouteRules(rules, ParseSystemHosts(), b.settings.Hosts)
 
 	// 自定义入站端口绑定的出站应优先于普通分流规则，
 	// 否则会被域名/IP 规则提前命中，导致指定链路或节点失效。
@@ -1624,6 +1853,34 @@ func (b *ConfigBuilder) buildRoute() *RouteConfig {
 	route.Rules = rules
 
 	return route
+}
+
+// appendHostOverrideRouteRules 将 hosts 映射写成 route override_address 规则。
+// 启用的用户 hosts 优先；同名系统 hosts 被跳过，避免首条命中锁死系统 IP。
+func appendHostOverrideRouteRules(rules []RouteRule, systemHosts map[string][]string, userHosts []storage.HostEntry) []RouteRule {
+	userOverride := make(map[string]bool)
+	for _, host := range userHosts {
+		if !host.Enabled || host.Domain == "" || len(host.IPs) == 0 {
+			continue
+		}
+		userOverride[host.Domain] = true
+		rules = append(rules, RouteRule{
+			"domain":           []string{host.Domain},
+			"outbound":         "DIRECT",
+			"override_address": host.IPs[0],
+		})
+	}
+	for domain, ips := range systemHosts {
+		if userOverride[domain] || len(ips) == 0 {
+			continue
+		}
+		rules = append(rules, RouteRule{
+			"domain":           []string{domain},
+			"outbound":         "DIRECT",
+			"override_address": ips[0],
+		})
+	}
+	return rules
 }
 
 func (b *ConfigBuilder) torChainRouteOutbound(chainID string) string {

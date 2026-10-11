@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/structName/sing-box-manager-gui/internal/database"
 	"github.com/structName/sing-box-manager-gui/internal/database/models"
+	"github.com/structName/sing-box-manager-gui/internal/logger"
 	"github.com/structName/sing-box-manager-gui/internal/service"
 	"github.com/structName/sing-box-manager-gui/internal/speedtest"
 )
@@ -68,7 +69,7 @@ func (h *SpeedTestHandler) updateUnifiedSchedule(profile *models.SpeedTestProfil
 		} else {
 			cronExpr = service.IntervalToCron(profile.ScheduleInterval)
 		}
-		h.unifiedScheduler.AddSchedule(
+		if err := h.unifiedScheduler.AddSchedule(
 			service.ScheduleTypeSpeedTest,
 			key,
 			"定时测速: "+profile.Name,
@@ -78,7 +79,9 @@ func (h *SpeedTestHandler) updateUnifiedSchedule(profile *models.SpeedTestProfil
 					h.executor.RunWithProfile(profileID, nil, speedtest.TriggerTypeScheduled)
 				}
 			},
-		)
+		); err != nil {
+			logger.Error("注册测速调度失败 [%s]: %v (cron=%q)", profile.Name, err, cronExpr)
+		}
 	}
 }
 

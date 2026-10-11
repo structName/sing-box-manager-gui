@@ -305,7 +305,7 @@ func TestTorDiagnosticsTemporarySegmentUsesTruncatedChainAndCleansUp(t *testing.
 
 	for _, outbound := range config.Outbounds {
 		tag, _ := outbound["tag"].(string)
-		if tag == storage.GenerateChainNodeCopyTag(chain.Name, "post") {
+		if tag == storage.GenerateChainNodeCopyTag(chain.Name, "post", 2) {
 			t.Fatalf("temporary Tor segment config should exclude post-Tor chain copy, got tag %q", tag)
 		}
 	}

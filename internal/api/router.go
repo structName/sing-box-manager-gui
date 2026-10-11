@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -85,6 +86,9 @@ type Server struct {
 	deployServiceRunning *bool
 	// Test hook for Tor detection candidates. Nil means use platform defaults.
 	torDetectionPaths []string
+	// applyMu serializes rebuild+save+restart so concurrent autoApply / apply / start / restart
+	// cannot interleave config writes or double-restart.
+	applyMu sync.Mutex
 }
 
 const maxLocalSubscriptionBytes = 10 << 20
@@ -348,9 +352,21 @@ func (s *Server) updateSubscriptionSchedule(sub storage.Subscription) {
 					s.taskManager.StartTask(task.ID)
 				}
 
+				var previousTags []string
+				if existing := s.subService.Get(subID); existing != nil {
+					previousTags = collectNodeTags(existing.Nodes)
+				}
+
 				if err := s.subService.Refresh(subID); err != nil {
 					if task != nil {
 						s.taskManager.FailTask(task.ID, err.Error())
+					}
+					return
+				}
+				if _, err := s.disableInboundPortsForRemovedNodeTags(previousTags); err != nil {
+					logger.Warn("定时订阅刷新后级联停用入站失败: %v", err)
+					if task != nil {
+						s.taskManager.FailTask(task.ID, "刷新成功，但级联停用入站失败: "+err.Error())
 					}
 					return
 				}
@@ -371,59 +387,31 @@ func (s *Server) updateSubscriptionSchedule(sub storage.Subscription) {
 	}
 }
 
-// ensureDefaultSpeedTestProfile 确保存在启用自动测速的策略
-// 当添加订阅时，检查是否有启用自动测速的策略，如果没有则创建两个默认策略
+// ensureDefaultSpeedTestProfile ensures delay/speed default profiles exist when
+// a subscription is added. Existing profiles with AutoTest=false are left alone
+// (users may intentionally disable scheduled tests); only missing mode types are
+// created with AutoTest enabled.
 func (s *Server) ensureDefaultSpeedTestProfile() {
 	if s.dbStore == nil || s.unifiedScheduler == nil {
 		return
 	}
 
-	// 检查是否已有启用自动测速的策略
 	profiles, err := s.dbStore.GetSpeedTestProfiles()
 	if err != nil {
 		return
 	}
 
-	// 检查是否有启用 AutoTest 的策略
-	hasAutoTest := false
 	hasDelayProfile := false
 	hasSpeedProfile := false
 	for _, p := range profiles {
 		if p.AutoTest && p.Enabled {
 			s.addSpeedTestSchedule(&p)
-			hasAutoTest = true
 		}
 		// Mode 为空或 "delay" 都视为延迟检测类型
 		if p.Mode == "delay" || p.Mode == "" {
 			hasDelayProfile = true
 		} else if p.Mode == "speed" {
 			hasSpeedProfile = true
-		}
-	}
-
-	// 如果已有策略但没启用自动测速，自动启用所有策略的自动测速
-	if len(profiles) > 0 && !hasAutoTest {
-		for i := range profiles {
-			profile := &profiles[i]
-			profile.AutoTest = true
-			profile.Enabled = true
-			if profile.ScheduleCron == "" {
-				profile.ScheduleType = "cron"
-				if profile.Mode == "delay" || profile.Mode == "" {
-					profile.ScheduleCron = "0 0 * * * *" // 延迟检测每小时
-					profile.Mode = "delay"
-					hasDelayProfile = true
-				} else {
-					profile.ScheduleCron = "0 30 */6 * * *" // 速度测试每6小时
-					hasSpeedProfile = true
-				}
-			}
-			if err := s.dbStore.UpdateSpeedTestProfile(profile); err != nil {
-				logger.Warn("更新测速策略失败: %v", err)
-				continue
-			}
-			s.addSpeedTestSchedule(profile)
-			logger.Info("已启用测速策略 [%s] 的自动测速", profile.Name)
 		}
 	}
 
@@ -927,6 +915,7 @@ func (s *Server) updateSubscription(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+		var previousTags []string
 		if content != "" {
 			nodes, err := parser.ParseSubscriptionContent(content)
 			if err != nil {
@@ -938,6 +927,7 @@ func (s *Server) updateSubscription(c *gin.Context) {
 				return
 			}
 
+			previousTags = collectNodeTags(existing.Nodes)
 			autoUpdate := false
 			next.URL = fileName
 			next.Type = "local"
@@ -965,6 +955,10 @@ func (s *Server) updateSubscription(c *gin.Context) {
 					c.JSON(http.StatusInternalServerError, gin.H{"error": "同步链路节点失败: " + err.Error()})
 					return
 				}
+			}
+			if _, err := s.disableInboundPortsForRemovedNodeTags(previousTags); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "更新成功，但级联停用入站失败: " + err.Error()})
+				return
 			}
 			nodeIDs := s.syncNodesToSQLiteAndGetIDs()
 			if s.eventTrigger != nil {
@@ -1041,6 +1035,23 @@ func (s *Server) updateSubscription(c *gin.Context) {
 func (s *Server) deleteSubscription(c *gin.Context) {
 	id := c.Param("id")
 
+	// 删除前收集节点 Tag，用于链路剪枝与入站 Outbound 级联停用
+	var deletedTags []string
+	if existing := s.subService.Get(id); existing != nil {
+		seen := make(map[string]struct{}, len(existing.Nodes))
+		for _, node := range existing.Nodes {
+			tag := strings.TrimSpace(node.Tag)
+			if tag == "" {
+				continue
+			}
+			if _, ok := seen[tag]; ok {
+				continue
+			}
+			seen[tag] = struct{}{}
+			deletedTags = append(deletedTags, tag)
+		}
+	}
+
 	if err := s.subService.Delete(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1051,6 +1062,30 @@ func (s *Server) deleteSubscription(c *gin.Context) {
 		s.unifiedScheduler.RemoveSchedule(service.ScheduleTypeSubUpdate, id)
 	}
 
+	var cascadeMessages []string
+
+	// 与删除手动节点对称：剪掉链路中已失效的订阅节点引用
+	if s.chainSyncSvc != nil {
+		if err := s.chainSyncSvc.SyncChainNodes(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "删除订阅成功，但同步链路失败: " + err.Error()})
+			return
+		}
+	}
+
+	// 入站端口可直选订阅节点 Tag；删除后停用仍绑定旧 Tag 的入站，避免路由指向幽灵 outbound
+	disabledCount := 0
+	for _, tag := range deletedTags {
+		disabledPorts, err := s.disableInboundPortsForOutbound(tag)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "删除订阅成功，但级联停用入站失败: " + err.Error()})
+			return
+		}
+		disabledCount += len(disabledPorts)
+	}
+	if disabledCount > 0 {
+		cascadeMessages = append(cascadeMessages, fmt.Sprintf("已停用 %d 个关联入站", disabledCount))
+	}
+
 	// 同步节点到 SQLite（用于测速模块）
 	if err := s.syncNodesToSQLite(); err != nil {
 		logger.Warn("同步节点到 SQLite 失败: %v", err)
@@ -1058,21 +1093,35 @@ func (s *Server) deleteSubscription(c *gin.Context) {
 
 	// 自动应用配置
 	if err := s.autoApplyConfig(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"message": "删除成功，但自动应用配置失败: " + err.Error()})
+		resp := gin.H{"message": "删除成功，但自动应用配置失败: " + err.Error()}
+		if len(cascadeMessages) > 0 {
+			resp["cascade"] = cascadeMessages
+		}
+		c.JSON(http.StatusOK, resp)
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "删除成功"})
+	message := "删除成功"
+	if len(cascadeMessages) > 0 {
+		message = "删除成功，" + strings.Join(cascadeMessages, "，")
+	}
+	resp := gin.H{"message": message}
+	if len(cascadeMessages) > 0 {
+		resp["cascade"] = cascadeMessages
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 func (s *Server) refreshSubscription(c *gin.Context) {
 	id := c.Param("id")
 
-	// 获取订阅信息用于任务名称
+	// 获取订阅信息用于任务名称；刷新前记录节点 Tag，供入站 Outbound 级联停用
 	sub := s.subService.Get(id)
 	subName := "订阅"
+	var previousTags []string
 	if sub != nil {
 		subName = sub.Name
+		previousTags = collectNodeTags(sub.Nodes)
 	}
 
 	// 创建任务记录
@@ -1088,6 +1137,21 @@ func (s *Server) refreshSubscription(c *gin.Context) {
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+
+	var cascadeMessages []string
+	// 刷新可能删掉旧 Tag：链路已由 Refresh→SyncChainNodesForSubscription 剪枝，
+	// 入站直选节点 Tag 需对称停用，避免路由指向幽灵 outbound。
+	disabledPorts, err := s.disableInboundPortsForRemovedNodeTags(previousTags)
+	if err != nil {
+		if task != nil {
+			s.taskManager.FailTask(task.ID, "刷新成功，但级联停用入站失败: "+err.Error())
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "刷新成功，但级联停用入站失败: " + err.Error()})
+		return
+	}
+	if len(disabledPorts) > 0 {
+		cascadeMessages = append(cascadeMessages, fmt.Sprintf("已停用 %d 个关联入站", len(disabledPorts)))
 	}
 
 	// 同步节点到 SQLite（用于测速模块）
@@ -1108,14 +1172,32 @@ func (s *Server) refreshSubscription(c *gin.Context) {
 
 	// 自动应用配置
 	if err := s.autoApplyConfig(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"message": "刷新成功，但自动应用配置失败: " + err.Error()})
+		resp := gin.H{"message": "刷新成功，但自动应用配置失败: " + err.Error()}
+		if len(cascadeMessages) > 0 {
+			resp["cascade"] = cascadeMessages
+		}
+		c.JSON(http.StatusOK, resp)
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "刷新成功"})
+	message := "刷新成功"
+	if len(cascadeMessages) > 0 {
+		message = "刷新成功，" + strings.Join(cascadeMessages, "，")
+	}
+	resp := gin.H{"message": message}
+	if len(cascadeMessages) > 0 {
+		resp["cascade"] = cascadeMessages
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 func (s *Server) refreshAllSubscriptions(c *gin.Context) {
+	// 刷新前收集全部订阅节点 Tag，供入站 Outbound 级联停用
+	var previousTags []string
+	for _, sub := range s.store.GetSubscriptions() {
+		previousTags = append(previousTags, collectNodeTags(sub.Nodes)...)
+	}
+
 	// 创建任务记录
 	var task *models.Task
 	if s.taskManager != nil {
@@ -1129,6 +1211,19 @@ func (s *Server) refreshAllSubscriptions(c *gin.Context) {
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+
+	var cascadeMessages []string
+	disabledPorts, err := s.disableInboundPortsForRemovedNodeTags(previousTags)
+	if err != nil {
+		if task != nil {
+			s.taskManager.FailTask(task.ID, "刷新成功，但级联停用入站失败: "+err.Error())
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "刷新成功，但级联停用入站失败: " + err.Error()})
+		return
+	}
+	if len(disabledPorts) > 0 {
+		cascadeMessages = append(cascadeMessages, fmt.Sprintf("已停用 %d 个关联入站", len(disabledPorts)))
 	}
 
 	// 同步节点到 SQLite（用于测速模块）
@@ -1148,11 +1243,23 @@ func (s *Server) refreshAllSubscriptions(c *gin.Context) {
 
 	// 自动应用配置
 	if err := s.autoApplyConfig(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"message": "刷新成功，但自动应用配置失败: " + err.Error()})
+		resp := gin.H{"message": "刷新成功，但自动应用配置失败: " + err.Error()}
+		if len(cascadeMessages) > 0 {
+			resp["cascade"] = cascadeMessages
+		}
+		c.JSON(http.StatusOK, resp)
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "刷新成功"})
+	message := "刷新成功"
+	if len(cascadeMessages) > 0 {
+		message = "刷新成功，" + strings.Join(cascadeMessages, "，")
+	}
+	resp := gin.H{"message": message}
+	if len(cascadeMessages) > 0 {
+		resp["cascade"] = cascadeMessages
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // ==================== 过滤器 API ====================
@@ -1189,6 +1296,12 @@ func (s *Server) addFilter(c *gin.Context) {
 func (s *Server) updateFilter(c *gin.Context) {
 	id := c.Param("id")
 
+	oldFilter := s.store.GetFilter(id)
+	if oldFilter == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "过滤器不存在"})
+		return
+	}
+
 	var filter storage.Filter
 	if err := c.ShouldBindJSON(&filter); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -1196,6 +1309,50 @@ func (s *Server) updateFilter(c *gin.Context) {
 	}
 
 	filter.ID = id
+
+	var cascadeMessages []string
+
+	// 改名：过滤器 Name 同时是入站 Outbound 和漏网 FinalOutbound 的引用。
+	if oldFilter.Name != filter.Name {
+		renamed, err := s.updateInboundPortsOutbound(oldFilter.Name, filter.Name)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if len(renamed) > 0 {
+			cascadeMessages = append(cascadeMessages, fmt.Sprintf("已更新 %d 个关联入站端口", len(renamed)))
+		}
+		retargeted, err := s.retargetFinalOutbound(oldFilter.Name, filter.Name)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if retargeted {
+			cascadeMessages = append(cascadeMessages, fmt.Sprintf("已更新漏网出站: %s → %s", oldFilter.Name, filter.Name))
+		}
+	}
+
+	// 停用：builder 不再发出该分组。入站停用，漏网出站重置。
+	// 若同时改名，上一步已把引用改到新 Name。
+	if oldFilter.Enabled && !filter.Enabled {
+		disabled, err := s.disableInboundPortsForOutbound(filter.Name)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if len(disabled) > 0 {
+			cascadeMessages = append(cascadeMessages, fmt.Sprintf("已停用 %d 个关联入站端口", len(disabled)))
+		}
+		reset, err := s.resetFinalOutboundIf(filter.Name)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if reset {
+			cascadeMessages = append(cascadeMessages, "已重置漏网出站为 Proxy")
+		}
+	}
+
 	if err := s.store.UpdateFilter(filter); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1207,11 +1364,32 @@ func (s *Server) updateFilter(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "更新成功"})
+	message := "更新成功"
+	if len(cascadeMessages) > 0 {
+		message = "更新成功，" + strings.Join(cascadeMessages, "，")
+	}
+	c.JSON(http.StatusOK, gin.H{"message": message})
 }
 
 func (s *Server) deleteFilter(c *gin.Context) {
 	id := c.Param("id")
+
+	filter := s.store.GetFilter(id)
+	if filter == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "过滤器不存在"})
+		return
+	}
+
+	disabledPorts, err := s.disableInboundPortsForOutbound(filter.Name)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	finalReset, err := s.resetFinalOutboundIf(filter.Name)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
 	if err := s.store.DeleteFilter(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1224,7 +1402,19 @@ func (s *Server) deleteFilter(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "删除成功"})
+	message := "删除成功"
+	var deleteNotes []string
+	if len(disabledPorts) > 0 {
+		deleteNotes = append(deleteNotes, fmt.Sprintf("已停用 %d 个关联入站", len(disabledPorts)))
+	}
+	if finalReset {
+		deleteNotes = append(deleteNotes, "已重置漏网出站为 Proxy")
+	}
+	if len(deleteNotes) > 0 {
+		message = "删除成功，" + strings.Join(deleteNotes, "，")
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": message})
 }
 
 // ==================== 设置 API ====================
@@ -1440,27 +1630,32 @@ func (s *Server) getSystemHosts(c *gin.Context) {
 // ==================== 配置 API ====================
 
 func (s *Server) generateConfig(c *gin.Context) {
-	configJSON, err := s.buildConfig()
+	result, err := s.buildConfig()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"data": configJSON})
+	resp := gin.H{"data": result.JSON}
+	applySkipFields(resp, result)
+	c.JSON(http.StatusOK, resp)
 }
 
 func (s *Server) previewConfig(c *gin.Context) {
-	configJSON, err := s.buildConfig()
+	result, err := s.buildConfig()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.String(http.StatusOK, configJSON)
+	c.String(http.StatusOK, result.JSON)
 }
 
 func (s *Server) applyConfig(c *gin.Context) {
-	configJSON, err := s.buildConfig()
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+
+	result, err := s.buildConfig()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1468,7 +1663,7 @@ func (s *Server) applyConfig(c *gin.Context) {
 
 	// 保存配置文件
 	settings := s.store.GetSettings()
-	if err := s.saveConfigFile(s.resolvePath(settings.ConfigPath), configJSON); err != nil {
+	if err := s.saveConfigFile(s.resolvePath(settings.ConfigPath), result.JSON); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -1487,18 +1682,26 @@ func (s *Server) applyConfig(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "配置已应用"})
+	resp := gin.H{"message": "配置已应用"}
+	applySkipFields(resp, result)
+	c.JSON(http.StatusOK, resp)
 }
 
 func (s *Server) buildAndSaveCurrentConfig() error {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+	return s.buildAndSaveCurrentConfigLocked()
+}
+
+func (s *Server) buildAndSaveCurrentConfigLocked() error {
 	settings := s.store.GetSettings()
 
-	configJSON, err := s.buildConfig()
+	result, err := s.buildConfig()
 	if err != nil {
 		return err
 	}
 
-	return s.saveConfigFile(s.resolvePath(settings.ConfigPath), configJSON)
+	return s.saveConfigFile(s.resolvePath(settings.ConfigPath), result.JSON)
 }
 
 // PrepareRuntimeConfig 在自动恢复 sing-box 前重建并校验当前 Profile 配置。
@@ -1514,11 +1717,11 @@ func rebuildConfigAndRestart(build func() error, restart func() error) error {
 	return restart()
 }
 
-func (s *Server) buildConfig() (string, error) {
+func (s *Server) buildConfig() (*builder.ValidatedConfig, error) {
 	settings := s.store.GetSettings()
 	if settings.ClashUIEnabled {
 		if err := zashboard.EnsureEmbeddedUI(s.store.GetDataDir(), settings.ClashUIPath); err != nil {
-			return "", fmt.Errorf("准备内置 zashboard 资源失败: %w", err)
+			return nil, fmt.Errorf("准备内置 zashboard 资源失败: %w", err)
 		}
 	}
 
@@ -1536,31 +1739,110 @@ func (s *Server) buildConfig() (string, error) {
 	}
 	result, err := b.BuildValidatedJSON(validate)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	for _, skipped := range result.SkippedNodes {
 		logger.Warn("跳过无效代理节点 tag=%q type=%q: %s", skipped.Tag, skipped.Type, skipped.Reason)
 	}
-	if len(result.SkippedNodes) > 0 {
-		logger.Warn("配置生成完成，共跳过 %d 个无效代理节点", len(result.SkippedNodes))
+	for _, skipped := range result.SkippedChains {
+		logger.Warn("跳过代理链路 id=%q name=%q: %s", skipped.ID, skipped.Name, skipped.Reason)
 	}
-	return result.JSON, nil
+	if len(result.SkippedNodes) > 0 || len(result.SkippedChains) > 0 {
+		logger.Warn("配置生成完成，跳过 %d 个无效节点、%d 条链路", len(result.SkippedNodes), len(result.SkippedChains))
+	}
+	return result, nil
+}
+
+func formatConfigSkipWarning(result *builder.ValidatedConfig) string {
+	if result == nil {
+		return ""
+	}
+	parts := make([]string, 0, 2)
+	if n := len(result.SkippedNodes); n > 0 {
+		details := make([]string, 0, n)
+		for _, skipped := range result.SkippedNodes {
+			details = append(details, fmt.Sprintf("%s (%s)", skipped.Tag, skipped.Reason))
+		}
+		parts = append(parts, fmt.Sprintf("skipped %d node(s): %s", n, strings.Join(details, "; ")))
+	}
+	if n := len(result.SkippedChains); n > 0 {
+		details := make([]string, 0, n)
+		for _, skipped := range result.SkippedChains {
+			name := skipped.Name
+			if name == "" {
+				name = skipped.ID
+			}
+			details = append(details, fmt.Sprintf("%s (%s)", name, skipped.Reason))
+		}
+		parts = append(parts, fmt.Sprintf("skipped %d chain(s): %s", n, strings.Join(details, "; ")))
+	}
+	return strings.Join(parts, " | ")
+}
+
+func applySkipFields(dst gin.H, result *builder.ValidatedConfig) {
+	if result == nil {
+		return
+	}
+	if len(result.SkippedNodes) > 0 {
+		dst["skipped_nodes"] = result.SkippedNodes
+	}
+	if len(result.SkippedChains) > 0 {
+		dst["skipped_chains"] = result.SkippedChains
+	}
+	if warning := formatConfigSkipWarning(result); warning != "" {
+		dst["warning"] = warning
+	}
 }
 
 func (s *Server) saveConfigFile(path, content string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(content), 0644)
+
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp.*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	if _, err := tmp.Write([]byte(content)); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	if err := os.Rename(tmpName, path); err != nil {
+		// Windows cannot rename over an existing file; remove then retry.
+		_ = os.Remove(path)
+		if err2 := os.Rename(tmpName, path); err2 != nil {
+			return err
+		}
+	}
+	cleanup = false
+	return nil
 }
 
 // exportConfig 导出 sing-box 配置文件（下载）
 func (s *Server) exportConfig(c *gin.Context) {
-	configJSON, err := s.buildConfig()
+	result, err := s.buildConfig()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	configJSON := result.JSON
 
 	// 设置响应头，触发浏览器下载
 	c.Header("Content-Disposition", "attachment; filename=singbox-config.json")
@@ -1876,12 +2158,15 @@ func (s *Server) resolvePath(path string) string {
 
 // autoApplyConfig 自动应用配置（如果 sing-box 正在运行）
 func (s *Server) autoApplyConfig() error {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+
 	settings := s.store.GetSettings()
 	if !settings.AutoApply {
 		return nil
 	}
 
-	if err := s.buildAndSaveCurrentConfig(); err != nil {
+	if err := s.buildAndSaveCurrentConfigLocked(); err != nil {
 		return err
 	}
 
@@ -1915,7 +2200,10 @@ func (s *Server) getServiceStatus(c *gin.Context) {
 }
 
 func (s *Server) startService(c *gin.Context) {
-	if err := s.buildAndSaveCurrentConfig(); err != nil {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+
+	if err := s.buildAndSaveCurrentConfigLocked(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -1936,15 +2224,20 @@ func (s *Server) stopService(c *gin.Context) {
 }
 
 func (s *Server) restartService(c *gin.Context) {
-	if err := rebuildConfigAndRestart(s.buildAndSaveCurrentConfig, s.processManager.Restart); err != nil {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+
+	if err := rebuildConfigAndRestart(s.buildAndSaveCurrentConfigLocked, s.processManager.Restart); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "服务已重启"})
 }
 
+// reloadService rebuilds the current profile config to disk, then SIGHUP.
+// Reload = rebuild+SIGHUP (hot); Restart = stop+start (ports/TUN full cycle).
 func (s *Server) reloadService(c *gin.Context) {
-	if err := s.processManager.Reload(); err != nil {
+	if err := rebuildConfigAndRestart(s.buildAndSaveCurrentConfig, s.processManager.Reload); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -2050,7 +2343,10 @@ func (s *Server) restartLaunchd(c *gin.Context) {
 		return
 	}
 
-	if err := rebuildConfigAndRestart(s.buildAndSaveCurrentConfig, s.launchdManager.Restart); err != nil {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+
+	if err := rebuildConfigAndRestart(s.buildAndSaveCurrentConfigLocked, s.launchdManager.Restart); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -2157,7 +2453,10 @@ func (s *Server) restartSystemd(c *gin.Context) {
 		return
 	}
 
-	if err := rebuildConfigAndRestart(s.buildAndSaveCurrentConfig, s.systemdManager.Restart); err != nil {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+
+	if err := rebuildConfigAndRestart(s.buildAndSaveCurrentConfigLocked, s.systemdManager.Restart); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -2329,7 +2628,10 @@ func (s *Server) restartDaemon(c *gin.Context) {
 		return
 	}
 
-	if err := rebuildConfigAndRestart(s.buildAndSaveCurrentConfig, restart); err != nil {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+
+	if err := rebuildConfigAndRestart(s.buildAndSaveCurrentConfigLocked, restart); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -2699,13 +3001,24 @@ func (s *Server) updateManualNode(c *gin.Context) {
 	var cascadeMessages []string
 	oldTag := strings.TrimSpace(oldNode.Node.Tag)
 	newTag := strings.TrimSpace(node.Node.Tag)
-	// 仅在 Tag 实际变更时改写链路引用；禁用/启用不调用 SyncChainNodes，避免误剪枝
-	if oldTag != "" && oldTag != newTag && s.chainSyncSvc != nil {
-		if err := s.chainSyncSvc.RetargetNodeTag(oldTag, newTag); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "更新节点成功，但级联更新链路失败: " + err.Error()})
+	// 仅在 Tag 实际变更时改写链路/入站引用；禁用/启用不调用 SyncChainNodes，避免误剪枝
+	if oldTag != "" && oldTag != newTag {
+		if s.chainSyncSvc != nil {
+			if err := s.chainSyncSvc.RetargetNodeTag(oldTag, newTag); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "更新节点成功，但级联更新链路失败: " + err.Error()})
+				return
+			}
+			cascadeMessages = append(cascadeMessages, fmt.Sprintf("已更新链路中的节点引用: %s → %s", oldTag, newTag))
+		}
+		// 入站端口可直选单独节点 Tag 作为 Outbound；与链路改名级联保持对称
+		renamedPorts, err := s.updateInboundPortsOutbound(oldTag, newTag)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "更新节点成功，但级联更新入站失败: " + err.Error()})
 			return
 		}
-		cascadeMessages = append(cascadeMessages, fmt.Sprintf("已更新链路中的节点引用: %s → %s", oldTag, newTag))
+		if len(renamedPorts) > 0 {
+			cascadeMessages = append(cascadeMessages, fmt.Sprintf("已更新 %d 个关联入站端口", len(renamedPorts)))
+		}
 	}
 
 	// 自动应用配置
@@ -2729,10 +3042,20 @@ func (s *Server) updateManualNode(c *gin.Context) {
 func (s *Server) deleteManualNode(c *gin.Context) {
 	id := c.Param("id")
 
+	var deletedTag string
+	for _, mn := range s.store.GetManualNodes() {
+		if mn.ID == id {
+			deletedTag = strings.TrimSpace(mn.Node.Tag)
+			break
+		}
+	}
+
 	if err := s.store.DeleteManualNode(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	var cascadeMessages []string
 
 	// 节点已真正删除：同步链路，剪掉失效的 OriginalTag 引用
 	if s.chainSyncSvc != nil {
@@ -2742,13 +3065,37 @@ func (s *Server) deleteManualNode(c *gin.Context) {
 		}
 	}
 
+	// 入站端口可直选单独节点 Tag；与链路删除级联停用保持对称
+	if deletedTag != "" {
+		disabledPorts, err := s.disableInboundPortsForOutbound(deletedTag)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "删除节点成功，但级联停用入站失败: " + err.Error()})
+			return
+		}
+		if len(disabledPorts) > 0 {
+			cascadeMessages = append(cascadeMessages, fmt.Sprintf("已停用 %d 个关联入站", len(disabledPorts)))
+		}
+	}
+
 	// 自动应用配置
 	if err := s.autoApplyConfig(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"message": "删除成功，但自动应用配置失败: " + err.Error()})
+		resp := gin.H{"message": "删除成功，但自动应用配置失败: " + err.Error()}
+		if len(cascadeMessages) > 0 {
+			resp["cascade"] = cascadeMessages
+		}
+		c.JSON(http.StatusOK, resp)
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "删除成功"})
+	message := "删除成功"
+	if len(cascadeMessages) > 0 {
+		message = "删除成功，" + strings.Join(cascadeMessages, "，")
+	}
+	resp := gin.H{"message": message}
+	if len(cascadeMessages) > 0 {
+		resp["cascade"] = cascadeMessages
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // ==================== 内核管理 API ====================
@@ -3097,7 +3444,7 @@ func (s *Server) updateProxyChain(c *gin.Context) {
 	// 检测级联操作
 	var cascadeMessages []string
 
-	// 改名：更新关联入站端口的 Outbound 引用
+	// 改名：更新关联入站端口的 Outbound 引用，以及漏网 FinalOutbound
 	if oldChain.Name != chain.Name {
 		renamed, err := s.updateInboundPortsOutbound(oldChain.Name, chain.Name)
 		if err != nil {
@@ -3107,21 +3454,34 @@ func (s *Server) updateProxyChain(c *gin.Context) {
 		if len(renamed) > 0 {
 			cascadeMessages = append(cascadeMessages, fmt.Sprintf("已更新 %d 个关联入站端口", len(renamed)))
 		}
+		retargeted, err := s.retargetFinalOutbound(oldChain.Name, chain.Name)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if retargeted {
+			cascadeMessages = append(cascadeMessages, fmt.Sprintf("已更新漏网出站: %s → %s", oldChain.Name, chain.Name))
+		}
 	}
 
-	// 停用：停用关联入站端口
+	// 停用：停用关联入站端口，并重置指向该链路的漏网 FinalOutbound
 	if oldChain.Enabled && !chain.Enabled {
-		outboundName := chain.Name
-		if oldChain.Name != chain.Name {
-			outboundName = chain.Name // 如果同时改名，用新名字（已更新过了）
-		}
-		disabled, err := s.disableInboundPortsForOutbound(outboundName)
+		// Tor 绑定按 chain.ID（与名称无关）；Outbound 引用已在改名分支切到新名
+		disabled, err := s.disableInboundPortsReferencingChain(chain)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
 		if len(disabled) > 0 {
 			cascadeMessages = append(cascadeMessages, fmt.Sprintf("已停用 %d 个关联入站端口", len(disabled)))
+		}
+		reset, err := s.resetFinalOutboundIf(chain.Name)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if reset {
+			cascadeMessages = append(cascadeMessages, "已重置漏网出站为 Proxy")
 		}
 	}
 
@@ -3151,7 +3511,17 @@ func (s *Server) deleteProxyChain(c *gin.Context) {
 		return
 	}
 
-	disabledPorts, err := s.disableInboundPortsForOutbound(chain.Name)
+	disabledPorts, err := s.disableInboundPortsReferencingChain(*chain)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := s.clearDeletedChainTorRefs(chain.ID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	finalReset, err := s.resetFinalOutboundIf(chain.Name)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -3169,11 +3539,73 @@ func (s *Server) deleteProxyChain(c *gin.Context) {
 	}
 
 	message := "删除成功"
+	var cascadeParts []string
 	if len(disabledPorts) > 0 {
-		message = fmt.Sprintf("删除成功，已停用 %d 个关联入站", len(disabledPorts))
+		cascadeParts = append(cascadeParts, fmt.Sprintf("已停用 %d 个关联入站", len(disabledPorts)))
+	}
+	if finalReset {
+		cascadeParts = append(cascadeParts, "已重置漏网出站为 Proxy")
+	}
+	if len(cascadeParts) > 0 {
+		message = "删除成功，" + strings.Join(cascadeParts, "，")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": message})
+}
+
+// collectNodeTags returns unique non-empty node tags (stable-ish insertion order).
+func collectNodeTags(nodes []storage.Node) []string {
+	seen := make(map[string]struct{}, len(nodes))
+	tags := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		tag := strings.TrimSpace(node.Tag)
+		if tag == "" {
+			continue
+		}
+		if _, ok := seen[tag]; ok {
+			continue
+		}
+		seen[tag] = struct{}{}
+		tags = append(tags, tag)
+	}
+	return tags
+}
+
+// disableInboundPortsForRemovedNodeTags stops inbounds whose Outbound equals a
+// tag that vanished from a subscription refresh/replace and is no longer present
+// in GetAllNodes() (another subscription/manual node may still own the same Tag).
+func (s *Server) disableInboundPortsForRemovedNodeTags(previousTags []string) ([]storage.InboundPort, error) {
+	if len(previousTags) == 0 {
+		return nil, nil
+	}
+	alive := make(map[string]struct{})
+	for _, node := range s.store.GetAllNodes() {
+		tag := strings.TrimSpace(node.Tag)
+		if tag != "" {
+			alive[tag] = struct{}{}
+		}
+	}
+	disabled := make([]storage.InboundPort, 0)
+	seen := make(map[string]struct{}, len(previousTags))
+	for _, tag := range previousTags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" {
+			continue
+		}
+		if _, ok := seen[tag]; ok {
+			continue
+		}
+		seen[tag] = struct{}{}
+		if _, still := alive[tag]; still {
+			continue
+		}
+		ports, err := s.disableInboundPortsForOutbound(tag)
+		if err != nil {
+			return disabled, err
+		}
+		disabled = append(disabled, ports...)
+	}
+	return disabled, nil
 }
 
 func (s *Server) updateInboundPortsOutbound(oldOutbound, newOutbound string) ([]storage.InboundPort, error) {
@@ -3214,7 +3646,84 @@ func (s *Server) disableInboundPortsForOutbound(outbound string) ([]storage.Inbo
 	return disabled, nil
 }
 
+// disableInboundPortsReferencingChain disables enabled inbound ports that
+// reference the chain either as Outbound (by name) or via UseTorExit+TorChainID.
+// Tor-bound ports save outbound as empty (InboundPorts UI), so name-only matching
+// left them enabled; builder then mapped the missing Tor chain to REJECT.
+func (s *Server) disableInboundPortsReferencingChain(chain storage.ProxyChain) ([]storage.InboundPort, error) {
+	ports := s.store.GetInboundPorts()
+	disabled := make([]storage.InboundPort, 0)
+
+	for _, port := range ports {
+		if !port.Enabled {
+			continue
+		}
+		byOutbound := port.Outbound != "" && port.Outbound == chain.Name
+		byTor := port.UseTorExit && strings.TrimSpace(port.TorChainID) == chain.ID
+		if !byOutbound && !byTor {
+			continue
+		}
+
+		port.Enabled = false
+		if err := s.store.UpdateInboundPort(port); err != nil {
+			return nil, fmt.Errorf("停用入站端口 %s 失败: %w", port.Name, err)
+		}
+		disabled = append(disabled, port)
+	}
+
+	return disabled, nil
+}
+
+// clearDeletedChainTorRefs drops UseTorExit/TorChainID on any inbound still
+// pointing at a deleted chain (including ports that were already disabled).
+func (s *Server) clearDeletedChainTorRefs(chainID string) error {
+	chainID = strings.TrimSpace(chainID)
+	if chainID == "" {
+		return nil
+	}
+	for _, port := range s.store.GetInboundPorts() {
+		if strings.TrimSpace(port.TorChainID) != chainID {
+			continue
+		}
+		port.UseTorExit = false
+		port.TorChainID = ""
+		if err := s.store.UpdateInboundPort(port); err != nil {
+			return fmt.Errorf("清除入站端口 %s 的 Tor 链路引用失败: %w", port.Name, err)
+		}
+	}
+	return nil
+}
+
+func (s *Server) retargetFinalOutbound(oldOutbound, newOutbound string) (bool, error) {
+	settings := s.store.GetSettings()
+	if settings == nil {
+		return false, nil
+	}
+	if strings.TrimSpace(settings.FinalOutbound) != oldOutbound {
+		return false, nil
+	}
+	settings.FinalOutbound = newOutbound
+	if err := s.store.UpdateSettings(settings); err != nil {
+		return false, fmt.Errorf("更新漏网出站引用失败: %w", err)
+	}
+	return true, nil
+}
+
+func (s *Server) resetFinalOutboundIf(outbound string) (bool, error) {
+	return s.retargetFinalOutbound(outbound, "Proxy")
+}
+
 func (s *Server) validateProxyChainForSave(chain storage.ProxyChain) error {
+	name := strings.TrimSpace(chain.Name)
+	if name == "" {
+		return fmt.Errorf("代理链路名称不能为空")
+	}
+	for _, existing := range s.store.GetProxyChains() {
+		if existing.ID != chain.ID && strings.TrimSpace(existing.Name) == name {
+			return fmt.Errorf("代理链路名称已存在: %s", name)
+		}
+	}
+
 	torCount := 0
 	hasAuto := false
 	for index, nodeTag := range chain.Nodes {
@@ -3264,10 +3773,10 @@ func (s *Server) generateChainNodes(chainName string, nodeTags []string) []stora
 	}
 
 	result := make([]storage.ChainNode, 0, len(nodeTags))
-	for _, tag := range nodeTags {
+	for hopIndex, tag := range nodeTags {
 		node, exists := nodeMap[tag]
 		source := ""
-		copyTag := storage.GenerateChainNodeCopyTag(chainName, tag)
+		copyTag := storage.GenerateChainNodeCopyTag(chainName, tag, hopIndex)
 		if storage.IsChainAutoNodeTag(tag) {
 			source = storage.ChainAutoNodeSource
 			copyTag = storage.ChainAutoDisplayName
