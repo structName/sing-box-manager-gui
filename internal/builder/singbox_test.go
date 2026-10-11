@@ -738,7 +738,6 @@ func TestBuildRouteDoesNotGenerateRuleSets(t *testing.T) {
 	}
 }
 
-
 func TestAppendHostOverrideRouteRulesUserBeatsSystem(t *testing.T) {
 	systemHosts := map[string][]string{
 		"example.internal": {"10.0.0.1", "10.0.0.2"},
@@ -1000,7 +999,6 @@ func TestBuildExperimentalUsesGithubProxyForCustomExternalUIDownloadURL(t *testi
 	}
 }
 
-
 func TestNodeToOutboundNormalizesSocks(t *testing.T) {
 	builder := &ConfigBuilder{}
 
@@ -1222,9 +1220,9 @@ func TestNormalizeFilterMode(t *testing.T) {
 		{"selector", "selector"},
 		{"select", "selector"},
 		{"SELECT", "selector"},
-		{"", "selector"},
-		{"  ", "selector"},
-		{"bogus", "selector"},
+		{"", ""},
+		{"  ", ""},
+		{"bogus", "bogus"},
 	}
 	for _, tc := range tests {
 		if got := normalizeFilterMode(tc.in); got != tc.want {

@@ -46,7 +46,10 @@ func TestBuildDNSHonorsProxyAndDirectSettings(t *testing.T) {
 	settings.Hosts = nil
 
 	b := NewConfigBuilder(settings, nil, nil, nil, nil)
-	dns := b.buildDNS()
+	dns, err := b.buildDNS()
+	if err != nil {
+		t.Fatalf("buildDNS() error = %v", err)
+	}
 	if dns == nil {
 		t.Fatal("buildDNS() returned nil")
 	}
@@ -83,7 +86,10 @@ func TestBuildDNSAddsLocalResolverForHostnameDirectDNS(t *testing.T) {
 	settings.Hosts = nil
 
 	b := NewConfigBuilder(settings, nil, nil, nil, nil)
-	dns := b.buildDNS()
+	dns, err := b.buildDNS()
+	if err != nil {
+		t.Fatalf("buildDNS() error = %v", err)
+	}
 	byTag := map[string]DNSServer{}
 	for _, srv := range dns.Servers {
 		byTag[srv.Tag] = srv
@@ -109,7 +115,10 @@ func TestBuildDNSProxyHostnameUsesDirectResolver(t *testing.T) {
 	settings.Hosts = nil
 
 	b := NewConfigBuilder(settings, nil, nil, nil, nil)
-	dns := b.buildDNS()
+	dns, err := b.buildDNS()
+	if err != nil {
+		t.Fatalf("buildDNS() error = %v", err)
+	}
 	byTag := map[string]DNSServer{}
 	for _, srv := range dns.Servers {
 		byTag[srv.Tag] = srv
@@ -132,5 +141,21 @@ func TestDnsServerNeedsDomainResolver(t *testing.T) {
 	}
 	if dnsServerNeedsDomainResolver(DNSServer{Type: "local"}) {
 		t.Fatal("local type should not need domain_resolver")
+	}
+}
+
+func TestParseSettingsDNSServerRejectsHTTPScheme(t *testing.T) {
+	_, err := parseSettingsDNSServer("t", "http://1.1.1.1/dns-query", "")
+	if err == nil {
+		t.Fatal("http DNS scheme should be rejected, not rewritten as https")
+	}
+}
+
+func TestBuildDNSRejectsUnparseableSetting(t *testing.T) {
+	settings := storage.DefaultSettings()
+	settings.ProxyDNS = "ftp://1.1.1.1"
+	b := NewConfigBuilder(settings, nil, nil, nil, nil)
+	if _, err := b.buildDNS(); err == nil {
+		t.Fatal("buildDNS() should surface an unparseable DNS setting")
 	}
 }

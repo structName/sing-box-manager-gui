@@ -192,10 +192,14 @@ func (b *ConfigBuilder) Build() (*SingBoxConfig, error) {
 		return nil, err
 	}
 	route := b.buildRoute()
+	dns, err := b.buildDNS()
+	if err != nil {
+		return nil, err
+	}
 
 	config := &SingBoxConfig{
 		Log:          b.buildLog(),
-		DNS:          b.buildDNS(),
+		DNS:          dns,
 		NTP:          b.buildNTP(),
 		Inbounds:     b.buildInbounds(),
 		Outbounds:    outbounds,
@@ -520,7 +524,7 @@ func parseSettingsDNSServer(tag, raw, detour string) (DNSServer, error) {
 			return DNSServer{}, fmt.Errorf("parse dns address: %w", err)
 		}
 		switch strings.ToLower(u.Scheme) {
-		case "https", "http":
+		case "https":
 			serverType = "https"
 		case "h3":
 			serverType = "h3"
@@ -563,20 +567,6 @@ func parseSettingsDNSServer(tag, raw, detour string) (DNSServer, error) {
 	return srv, nil
 }
 
-func mustParseSettingsDNSServer(tag, raw, detour string) DNSServer {
-	srv, err := parseSettingsDNSServer(tag, raw, detour)
-	if err == nil {
-		return srv
-	}
-	// 解析失败时回退到安全默认，避免生成无效配置
-	switch tag {
-	case "dns_direct":
-		return DNSServer{Tag: tag, Type: "udp", Server: "223.5.5.5"}
-	default:
-		return DNSServer{Tag: tag, Type: "https", Server: "1.1.1.1", Detour: detour}
-	}
-}
-
 func dnsServerNeedsDomainResolver(srv DNSServer) bool {
 	if srv.Type == "" || srv.Type == "local" || srv.Type == "fakeip" || srv.Type == "hosts" || srv.Type == "rcode" {
 		return false
@@ -589,7 +579,7 @@ func dnsServerNeedsDomainResolver(srv DNSServer) bool {
 }
 
 // buildDNS 构建 DNS 配置
-func (b *ConfigBuilder) buildDNS() *DNSConfig {
+func (b *ConfigBuilder) buildDNS() (*DNSConfig, error) {
 	proxyDNS := strings.TrimSpace(b.settings.ProxyDNS)
 	if proxyDNS == "" {
 		proxyDNS = "https://1.1.1.1/dns-query"
@@ -599,8 +589,14 @@ func (b *ConfigBuilder) buildDNS() *DNSConfig {
 		directDNS = "https://dns.alidns.com/dns-query"
 	}
 
-	dnsProxy := mustParseSettingsDNSServer("dns_proxy", proxyDNS, "Proxy")
-	dnsDirect := mustParseSettingsDNSServer("dns_direct", directDNS, "")
+	dnsProxy, err := parseSettingsDNSServer("dns_proxy", proxyDNS, "Proxy")
+	if err != nil {
+		return nil, fmt.Errorf("代理 DNS %q: %w", proxyDNS, err)
+	}
+	dnsDirect, err := parseSettingsDNSServer("dns_direct", directDNS, "")
+	if err != nil {
+		return nil, fmt.Errorf("直连 DNS %q: %w", directDNS, err)
+	}
 
 	var servers []DNSServer
 	// server 字段为域名时需要 domain_resolver；直连 DNS 用 local 引导，代理 DNS 复用 dns_direct。
@@ -688,7 +684,7 @@ func (b *ConfigBuilder) buildDNS() *DNSConfig {
 		Servers:  servers,
 		Rules:    rules,
 		Final:    "dns_proxy",
-	}
+	}, nil
 }
 
 // buildNTP 默认不生成 NTP 配置，避免额外的外部时间同步请求
@@ -1711,16 +1707,17 @@ func stringifyPluginOpt(value interface{}) string {
 	return text
 }
 
-// normalizeFilterMode maps stored filter modes to sing-box outbound types.
-// Legacy/docs alias "select" must become "selector"; empty defaults to selector.
+// normalizeFilterMode maps the documented legacy alias "select" to sing-box "selector".
+// Empty and unknown modes are left unchanged so generation does not invent a type.
 func normalizeFilterMode(mode string) string {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
+	trimmed := strings.TrimSpace(mode)
+	switch strings.ToLower(trimmed) {
 	case "urltest":
 		return "urltest"
-	case "selector", "select", "":
+	case "selector", "select":
 		return "selector"
 	default:
-		return "selector"
+		return trimmed
 	}
 }
 
