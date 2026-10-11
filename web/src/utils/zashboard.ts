@@ -10,22 +10,12 @@ export function resolveZashboardHost(host?: string) {
   return rawHost;
 }
 
-export function buildZashboardSetupUrl(port: number, secret?: string, host?: string) {
+// buildZashboardPanelUrl opens the embedded panel without a setup query.
+// The Clash API secret must not be placed in the navigation URL: the hash is
+// still stored in history and session restore, and this origin cannot clear it.
+export function buildZashboardPanelUrl(port: number, host?: string) {
   const zashboardHost = resolveZashboardHost(host);
-  const params = new URLSearchParams({
-    hostname: zashboardHost,
-    port: String(port),
-  });
-
-  if (secret) {
-    params.set('secret', secret);
-  }
-
-  return `http://${zashboardHost}:${port}/ui/#/setup?${params.toString()}`;
-}
-
-export function buildZashboardPanelUrl(port: number, secret?: string, host?: string) {
-  return buildZashboardSetupUrl(port, secret, host);
+  return `http://${zashboardHost}:${port}/ui/`;
 }
 
 export function buildZashboardSetupPreviewUrl(port: number, secret?: string, host?: string) {

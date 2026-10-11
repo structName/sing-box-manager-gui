@@ -8,6 +8,66 @@ const api = axios.create({
 
 let responseInterceptorId: number | null = null;
 
+export interface ConfigSkipPayload {
+  warning?: string;
+  skipped_nodes?: { tag?: string; type?: string; reason?: string }[];
+  skipped_chains?: { id?: string; name?: string; reason?: string }[];
+}
+
+type ConfigSkipHandler = (payload: ConfigSkipPayload, options: { toast: boolean }) => void;
+
+let configSkipHandler: ConfigSkipHandler | null = null;
+
+export function registerConfigSkipHandler(handler: ConfigSkipHandler) {
+  configSkipHandler = handler;
+}
+
+function readConfigSkipPayload(body: unknown): ConfigSkipPayload | null {
+  if (!body || typeof body !== 'object') {
+    return null;
+  }
+  const record = body as Record<string, unknown>;
+  const candidates = [record, record.data];
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      continue;
+    }
+    const item = candidate as Record<string, unknown>;
+    if (!('skipped_nodes' in item) && !('skipped_chains' in item)) {
+      continue;
+    }
+    return {
+      warning: typeof item.warning === 'string' ? item.warning : undefined,
+      skipped_nodes: Array.isArray(item.skipped_nodes) ? item.skipped_nodes as ConfigSkipPayload['skipped_nodes'] : [],
+      skipped_chains: Array.isArray(item.skipped_chains) ? item.skipped_chains as ConfigSkipPayload['skipped_chains'] : [],
+    };
+  }
+  return null;
+}
+
+export function configSkipMessage(payload: ConfigSkipPayload | null | undefined): string | null {
+  if (!payload) {
+    return null;
+  }
+  const nodes = payload.skipped_nodes?.length || 0;
+  const chains = payload.skipped_chains?.length || 0;
+  if (nodes === 0 && chains === 0) {
+    return null;
+  }
+  if (payload.warning) {
+    return payload.warning;
+  }
+  return `配置已应用，但跳过了 ${nodes} 个节点、${chains} 条链路`;
+}
+
+function skipCount(value: unknown) {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+export function responseHasConfigSkips(data: { skipped_nodes?: unknown; skipped_chains?: unknown } | null | undefined) {
+  return skipCount(data?.skipped_nodes) + skipCount(data?.skipped_chains) > 0;
+}
+
 export function registerAuthErrorHandlers(handlers: {
   onUnauthorized: () => void;
   onBootstrapRequired: () => void;
@@ -17,7 +77,14 @@ export function registerAuthErrorHandlers(handlers: {
   }
 
   responseInterceptorId = api.interceptors.response.use(
-    (response) => response,
+    (response) => {
+      const payload = readConfigSkipPayload(response.data);
+      if (payload && configSkipHandler) {
+        const method = String(response.config.method || 'get').toLowerCase();
+        configSkipHandler(payload, { toast: method !== 'get' });
+      }
+      return response;
+    },
     (error) => {
       const status = error?.response?.status;
       if (status === 401) {

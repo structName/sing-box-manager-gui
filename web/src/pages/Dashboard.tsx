@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo } from 'react';
 import { Card, CardBody, CardHeader, Button, Chip, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Tooltip, Progress } from '@nextui-org/react';
 import { Play, Square, RefreshCw, Cpu, HardDrive, Wifi, Info, Activity, Network, Link2, Sparkles, TrendingUp, Zap, Timer, AlertCircle } from 'lucide-react';
 import { useStore } from '../store';
-import { serviceApi, configApi, inboundPortApi, proxyChainApi, nodeApi } from '../api';
+import { serviceApi, configApi, inboundPortApi, proxyChainApi, nodeApi, responseHasConfigSkips } from '../api';
 import { toast } from '../components/Toast';
 import { apiErrorMessage } from '../utils/apiError';
 
@@ -377,7 +377,6 @@ export default function Dashboard() {
 
   // 入站端口和链路数据
   const [inboundPorts, setInboundPorts] = useState<InboundPort[]>([]);
-  const [applySkipBanner, setApplySkipBanner] = useState<string | null>(null);
   const [proxyChains, setProxyChains] = useState<ProxyChain[]>([]);
   // 测速数据
   const [speedInfos, setSpeedInfos] = useState<Record<string, NodeSpeedInfo>>({});
@@ -466,9 +465,11 @@ export default function Dashboard() {
 
   const handleStart = async () => {
     try {
-      await serviceApi.start();
+      const res = await serviceApi.start();
       await fetchServiceStatus();
-      toast.success('服务已启动');
+      if (!responseHasConfigSkips(res.data) && !res.data?.warning) {
+        toast.success('服务已启动');
+      }
     } catch (error) {
       showError('启动失败', error);
     }
@@ -486,9 +487,11 @@ export default function Dashboard() {
 
   const handleRestart = async () => {
     try {
-      await serviceApi.restart();
+      const res = await serviceApi.restart();
       await fetchServiceStatus();
-      toast.success('服务已重启');
+      if (!responseHasConfigSkips(res.data) && !res.data?.warning) {
+        toast.success('服务已重启');
+      }
     } catch (error) {
       showError('重启失败', error);
     }
@@ -498,15 +501,9 @@ export default function Dashboard() {
     try {
       const res = await configApi.apply();
       await fetchServiceStatus();
-      const warning = res.data?.warning as string | undefined;
-      const skippedNodes = (res.data?.skipped_nodes as { tag?: string; reason?: string }[] | undefined) || [];
-      const skippedChains = (res.data?.skipped_chains as { name?: string; id?: string; reason?: string }[] | undefined) || [];
-      if (warning || skippedNodes.length > 0 || skippedChains.length > 0) {
-        const msg = warning || `配置已应用，但跳过了 ${skippedNodes.length} 个节点、${skippedChains.length} 条链路`;
-        setApplySkipBanner(msg);
-        toast.info(msg, 8000);
-      } else {
-        setApplySkipBanner(null);
+      const skippedNodes = (res.data?.skipped_nodes as unknown[] | undefined) || [];
+      const skippedChains = (res.data?.skipped_chains as unknown[] | undefined) || [];
+      if (skippedNodes.length === 0 && skippedChains.length === 0 && !res.data?.warning) {
         toast.success('配置已应用');
       }
     } catch (error) {
@@ -626,19 +623,6 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      {applySkipBanner && (
-        <div className="flex items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-100">
-          <div className="flex-1 whitespace-pre-wrap break-all">{applySkipBanner}</div>
-          <button
-            type="button"
-            className="shrink-0 text-amber-700 hover:underline dark:text-amber-200"
-            onClick={() => setApplySkipBanner(null)}
-          >
-            关闭
-          </button>
-        </div>
-      )}
-
       {/* 欢迎横幅 */}
       <WelcomeBanner greeting={greeting} />
 

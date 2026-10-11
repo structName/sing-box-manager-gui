@@ -79,10 +79,10 @@ func (s *Store) GetNodes() ([]models.Node, error) {
 	return nodes, err
 }
 
-// GetEnabledNodes 获取所有启用的节点
+// GetEnabledNodes 获取所有启用的节点，并预加载标签供测速筛选使用。
 func (s *Store) GetEnabledNodes() ([]models.Node, error) {
 	var nodes []models.Node
-	err := s.db.Where("enabled = ?", true).Order("created_at DESC").Find(&nodes).Error
+	err := s.db.Preload("Tags").Where("enabled = ?", true).Order("created_at DESC").Find(&nodes).Error
 	return nodes, err
 }
 

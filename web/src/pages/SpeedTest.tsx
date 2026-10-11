@@ -46,6 +46,7 @@ import {
 } from 'lucide-react';
 import { speedtestApi } from '../api';
 import { toast } from '../components/Toast';
+import { formatNameFilter, parseNameFilter } from '../utils/nameFilter';
 
 // 类型定义
 interface SpeedTestProfile {
@@ -160,6 +161,7 @@ export default function SpeedTest() {
   const { isOpen, onOpen, onClose } = useDisclosure();
   const [editingProfile, setEditingProfile] = useState<SpeedTestProfile | null>(null);
   const [profileForm, setProfileForm] = useState(defaultProfileForm);
+  const [tagFilterText, setTagFilterText] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // 任务详情弹窗
@@ -217,6 +219,7 @@ export default function SpeedTest() {
   const handleCreate = () => {
     setEditingProfile(null);
     setProfileForm(defaultProfileForm);
+    setTagFilterText('');
     onOpen();
   };
 
@@ -245,6 +248,7 @@ export default function SpeedTest() {
       country_filter: profile.country_filter || [],
       tag_filter: profile.tag_filter || [],
     });
+    setTagFilterText(formatNameFilter(profile.tag_filter));
     onOpen();
   };
 
@@ -784,6 +788,18 @@ export default function SpeedTest() {
                         ))}
                       </Select>
                     )}
+
+                    <Input
+                      label="标签筛选"
+                      placeholder="例如：家宽, 流媒体"
+                      value={tagFilterText}
+                      onChange={(e) => {
+                        const text = e.target.value;
+                        setTagFilterText(text);
+                        setProfileForm({ ...profileForm, tag_filter: parseNameFilter(text) });
+                      }}
+                      description="留空表示不按标签限制。填写已保存的标签名，命中其中任一标签的节点才会测速。"
+                    />
                   </div>
                 </AccordionItem>
               </Accordion>
@@ -993,6 +1009,11 @@ function ProfileCard({ profile, onEdit, onDelete, onRun, formatTime }: ProfileCa
                 <Chip size="sm" variant="flat" color="warning">
                   <Clock className="w-3 h-3 mr-1" />
                   定时启用
+                </Chip>
+              )}
+              {formatNameFilter(profile.tag_filter) && (
+                <Chip size="sm" variant="flat">
+                  标签: {formatNameFilter(profile.tag_filter)}
                 </Chip>
               )}
             </div>

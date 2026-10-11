@@ -32,6 +32,7 @@ import { useStore } from '../store';
 import { nodeApi, speedtestApi } from '../api';
 import { toast } from '../components/Toast';
 import type { Subscription, ManualNode, Node, Filter } from '../store';
+import { formatNameFilter, parseNameFilter } from '../utils/nameFilter';
 
 // 测速设置类型
 interface SpeedTestProfile {
@@ -51,6 +52,9 @@ interface SpeedTestProfile {
   speed_concurrency: number;
   include_handshake: boolean;
   detect_country: boolean;
+  source_filter: string[];
+  country_filter: string[];
+  tag_filter: string[];
 }
 
 // 默认测速设置
@@ -67,6 +71,9 @@ const defaultSpeedTestProfile: SpeedTestProfile = {
   speed_concurrency: 5,
   include_handshake: false,
   detect_country: false,
+  source_filter: [],
+  country_filter: [],
+  tag_filter: [],
 };
 
 // Cron 预设须为 6 段（秒 分 时 日 月 周）：UnifiedScheduler 使用 cron.WithSeconds()。
@@ -96,6 +103,9 @@ const normalizeSpeedTestProfiles = (response: any): any[] => {
 };
 
 const getProfileId = (profile: any): number | undefined => profile?.ID ?? profile?.id;
+
+const stringList = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
 
 const pickDefaultProfile = (profiles: any[]) =>
   profiles.find((profile) => profile?.is_default || profile?.isDefault) ?? profiles[0];
@@ -251,6 +261,7 @@ export default function Subscriptions() {
 
   // 测速设置表单
   const [speedTestProfile, setSpeedTestProfile] = useState<SpeedTestProfile>(defaultSpeedTestProfile);
+  const [tagFilterText, setTagFilterText] = useState('');
   const [selectedCronPreset, setSelectedCronPreset] = useState<string>('0 0 */6 * * *');
   const [isLoadingProfiles, setIsLoadingProfiles] = useState(false);
 
@@ -551,7 +562,11 @@ export default function Subscriptions() {
           detect_country: typeof profile.detect_country === 'boolean'
             ? profile.detect_country
             : defaultSpeedTestProfile.detect_country,
+          source_filter: stringList(profile.source_filter),
+          country_filter: stringList(profile.country_filter),
+          tag_filter: stringList(profile.tag_filter),
         });
+        setTagFilterText(formatNameFilter(stringList(profile.tag_filter)));
         if (profile.cron_expression || profile.schedule_cron) {
           setSelectedCronPreset(profile.cron_expression || profile.schedule_cron);
         }
@@ -1847,6 +1862,21 @@ export default function Subscriptions() {
                           />
                         </div>
                       </div>
+
+                      <Input
+                        label="标签筛选"
+                        placeholder="例如：家宽, 流媒体"
+                        value={tagFilterText}
+                        onChange={(e) => {
+                          const text = e.target.value;
+                          setTagFilterText(text);
+                          setSpeedTestProfile({
+                            ...speedTestProfile,
+                            tag_filter: parseNameFilter(text),
+                          });
+                        }}
+                        description="留空表示不按标签限制。填写已保存的标签名，命中其中任一标签的节点才会测速。"
+                      />
                     </div>
                   </AccordionItem>
                 </Accordion>

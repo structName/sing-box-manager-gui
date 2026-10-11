@@ -1,6 +1,17 @@
 import { create } from 'zustand';
-import { subscriptionApi, filterApi, settingsApi, serviceApi, nodeApi, manualNodeApi, monitorApi } from '../api';
+import { subscriptionApi, filterApi, settingsApi, serviceApi, nodeApi, manualNodeApi, monitorApi, responseHasConfigSkips, type ConfigSkipPayload } from '../api';
 import { toast } from '../components/Toast';
+
+function toastMutation(data: { warning?: string; skipped_nodes?: unknown; skipped_chains?: unknown } | undefined, success: string) {
+  if (responseHasConfigSkips(data)) {
+    return;
+  }
+  if (data?.warning) {
+    toast.info(data.warning);
+    return;
+  }
+  toast.success(success);
+}
 
 // 类型定义
 export interface Subscription {
@@ -128,6 +139,8 @@ interface AppState {
   settings: Settings | null;
   serviceStatus: ServiceStatus | null;
   systemInfo: SystemInfo | null;
+  configSkipWarning: string | null;
+  dismissedConfigSkipWarning: string | null;
 
   // 加载状态
   loading: boolean;
@@ -140,6 +153,8 @@ interface AppState {
   fetchSettings: () => Promise<void>;
   fetchServiceStatus: () => Promise<void>;
   fetchSystemInfo: () => Promise<void>;
+  noteConfigSkip: (payload: ConfigSkipPayload | null) => void;
+  dismissConfigSkipWarning: () => void;
 
   addSubscription: (name: string, url: string, autoUpdate?: boolean, updateInterval?: number) => Promise<void>;
   addLocalSubscription: (name: string, file: File) => Promise<void>;
@@ -171,6 +186,8 @@ export const useStore = create<AppState>((set, get) => ({
   settings: null,
   serviceStatus: null,
   systemInfo: null,
+  configSkipWarning: null,
+  dismissedConfigSkipWarning: null,
   loading: false,
 
   fetchSubscriptions: async () => {
@@ -236,12 +253,31 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
+  noteConfigSkip: (payload) => {
+    const nodes = payload?.skipped_nodes?.length || 0;
+    const chains = payload?.skipped_chains?.length || 0;
+    if (nodes === 0 && chains === 0) {
+      set({ configSkipWarning: null, dismissedConfigSkipWarning: null });
+      return;
+    }
+    const message = payload?.warning || `配置已应用，但跳过了 ${nodes} 个节点、${chains} 条链路`;
+    if (get().dismissedConfigSkipWarning === message) {
+      return;
+    }
+    set({ configSkipWarning: message });
+  },
+
+  dismissConfigSkipWarning: () => set((state) => ({
+    configSkipWarning: null,
+    dismissedConfigSkipWarning: state.configSkipWarning,
+  })),
+
   addSubscription: async (name: string, url: string, autoUpdate?: boolean, updateInterval?: number) => {
     set({ loading: true });
     try {
-      await subscriptionApi.add(name, url, autoUpdate, updateInterval);
+      const res = await subscriptionApi.add(name, url, autoUpdate, updateInterval);
       await get().fetchSubscriptions();
-      toast.success('订阅添加成功');
+      toastMutation(res.data, '订阅添加成功');
     } catch (error: any) {
       toast.error(error.response?.data?.error || '添加订阅失败');
       throw error;
@@ -253,9 +289,9 @@ export const useStore = create<AppState>((set, get) => ({
   addLocalSubscription: async (name: string, file: File) => {
     set({ loading: true });
     try {
-      await subscriptionApi.addLocal(name, file);
+      const res = await subscriptionApi.addLocal(name, file);
       await get().fetchSubscriptions();
-      toast.success('订阅添加成功');
+      toastMutation(res.data, '订阅添加成功');
     } catch (error: any) {
       toast.error(error.response?.data?.error || '添加订阅失败');
       throw error;
@@ -267,9 +303,9 @@ export const useStore = create<AppState>((set, get) => ({
   updateSubscription: async (id: string, name: string, url: string, autoUpdate?: boolean, updateInterval?: number) => {
     set({ loading: true });
     try {
-      await subscriptionApi.update(id, { name, url, auto_update: autoUpdate, update_interval: updateInterval });
+      const res = await subscriptionApi.update(id, { name, url, auto_update: autoUpdate, update_interval: updateInterval });
       await get().fetchSubscriptions();
-      toast.success('订阅更新成功');
+      toastMutation(res.data, '订阅更新成功');
     } catch (error: any) {
       toast.error(error.response?.data?.error || '更新订阅失败');
       throw error;
@@ -281,9 +317,9 @@ export const useStore = create<AppState>((set, get) => ({
   updateLocalSubscription: async (id: string, name: string, file?: File | null) => {
     set({ loading: true });
     try {
-      await subscriptionApi.updateLocal(id, name, file);
+      const res = await subscriptionApi.updateLocal(id, name, file);
       await get().fetchSubscriptions();
-      toast.success('订阅更新成功');
+      toastMutation(res.data, '订阅更新成功');
     } catch (error: any) {
       toast.error(error.response?.data?.error || '更新订阅失败');
       throw error;
@@ -294,9 +330,9 @@ export const useStore = create<AppState>((set, get) => ({
 
   deleteSubscription: async (id: string) => {
     try {
-      await subscriptionApi.delete(id);
+      const res = await subscriptionApi.delete(id);
       await get().fetchSubscriptions();
-      toast.success('订阅已删除');
+      toastMutation(res.data, '订阅已删除');
     } catch (error: any) {
       console.error('删除订阅失败:', error);
       toast.error(error.response?.data?.error || '删除订阅失败');
@@ -309,12 +345,7 @@ export const useStore = create<AppState>((set, get) => ({
       const res = await subscriptionApi.refresh(id);
       await get().fetchSubscriptions();
       await get().fetchCountryGroups();
-      // 检查后端返回的 warning
-      if (res.data.warning) {
-        toast.info(res.data.warning);
-      } else {
-        toast.success('订阅刷新成功');
-      }
+      toastMutation(res.data, '订阅刷新成功');
     } catch (error: any) {
       console.error('刷新订阅失败:', error);
       toast.error(error.response?.data?.error || '刷新订阅失败');
@@ -330,11 +361,7 @@ export const useStore = create<AppState>((set, get) => ({
         const res = await subscriptionApi.update(id, { ...subscription, enabled });
         await get().fetchSubscriptions();
         await get().fetchCountryGroups();
-        if (res.data.warning) {
-          toast.info(res.data.warning);
-        } else {
-          toast.success(`订阅已${enabled ? '启用' : '禁用'}`);
-        }
+        toastMutation(res.data, `订阅已${enabled ? '启用' : '禁用'}`);
       } catch (error: any) {
         console.error('切换订阅状态失败:', error);
         toast.error(error.response?.data?.error || '切换订阅状态失败');
@@ -347,11 +374,7 @@ export const useStore = create<AppState>((set, get) => ({
       const res = await manualNodeApi.add(node);
       await get().fetchManualNodes();
       await get().fetchCountryGroups();
-      if (res.data.warning) {
-        toast.info(res.data.warning);
-      } else {
-        toast.success('节点添加成功');
-      }
+      toastMutation(res.data, '节点添加成功');
     } catch (error: any) {
       console.error('添加手动节点失败:', error);
       toast.error(error.response?.data?.error || '添加节点失败');
@@ -364,11 +387,7 @@ export const useStore = create<AppState>((set, get) => ({
       const res = await manualNodeApi.update(id, node);
       await get().fetchManualNodes();
       await get().fetchCountryGroups();
-      if (res.data.warning) {
-        toast.info(res.data.warning);
-      } else {
-        toast.success('节点更新成功');
-      }
+      toastMutation(res.data, '节点更新成功');
     } catch (error: any) {
       console.error('更新手动节点失败:', error);
       toast.error(error.response?.data?.error || '更新节点失败');
@@ -381,11 +400,7 @@ export const useStore = create<AppState>((set, get) => ({
       const res = await manualNodeApi.delete(id);
       await get().fetchManualNodes();
       await get().fetchCountryGroups();
-      if (res.data.warning) {
-        toast.info(res.data.warning);
-      } else {
-        toast.success('节点已删除');
-      }
+      toastMutation(res.data, '节点已删除');
     } catch (error: any) {
       console.error('删除手动节点失败:', error);
       toast.error(error.response?.data?.error || '删除节点失败');
@@ -404,9 +419,9 @@ export const useStore = create<AppState>((set, get) => ({
 
   addFilter: async (filter: Omit<Filter, 'id'>) => {
     try {
-      await filterApi.add(filter);
+      const res = await filterApi.add(filter);
       await get().fetchFilters();
-      toast.success('过滤器添加成功');
+      toastMutation(res.data, '过滤器添加成功');
     } catch (error: any) {
       console.error('添加过滤器失败:', error);
       toast.error(error.response?.data?.error || '添加过滤器失败');
@@ -416,9 +431,9 @@ export const useStore = create<AppState>((set, get) => ({
 
   updateFilter: async (id: string, filter: Partial<Filter>) => {
     try {
-      await filterApi.update(id, filter);
+      const res = await filterApi.update(id, filter);
       await get().fetchFilters();
-      toast.success('过滤器更新成功');
+      toastMutation(res.data, '过滤器更新成功');
     } catch (error: any) {
       console.error('更新过滤器失败:', error);
       toast.error(error.response?.data?.error || '更新过滤器失败');
@@ -428,9 +443,9 @@ export const useStore = create<AppState>((set, get) => ({
 
   deleteFilter: async (id: string) => {
     try {
-      await filterApi.delete(id);
+      const res = await filterApi.delete(id);
       await get().fetchFilters();
-      toast.success('过滤器已删除');
+      toastMutation(res.data, '过滤器已删除');
     } catch (error: any) {
       console.error('删除过滤器失败:', error);
       toast.error(error.response?.data?.error || '删除过滤器失败');
@@ -442,9 +457,9 @@ export const useStore = create<AppState>((set, get) => ({
     const filter = get().filters.find(f => f.id === id);
     if (filter) {
       try {
-        await filterApi.update(id, { ...filter, enabled });
+        const res = await filterApi.update(id, { ...filter, enabled });
         await get().fetchFilters();
-        toast.success(`过滤器已${enabled ? '启用' : '禁用'}`);
+        toastMutation(res.data, `过滤器已${enabled ? '启用' : '禁用'}`);
       } catch (error: any) {
         console.error('切换过滤器状态失败:', error);
         toast.error(error.response?.data?.error || '切换过滤器状态失败');

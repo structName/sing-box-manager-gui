@@ -24,7 +24,14 @@ interface LayoutProps {
 
 export default function Layout({ children }: LayoutProps) {
   const location = useLocation();
-  const { settings, fetchSettings, serviceStatus, fetchServiceStatus } = useStore();
+  const {
+    settings,
+    fetchSettings,
+    serviceStatus,
+    fetchServiceStatus,
+    configSkipWarning,
+    dismissConfigSkipWarning,
+  } = useStore();
   const logout = useAuthStore((state) => state.logout);
 
   useEffect(() => {
@@ -37,7 +44,6 @@ export default function Layout({ children }: LayoutProps) {
   }, [fetchServiceStatus, fetchSettings, serviceStatus, settings]);
 
   const clashApiPort = settings?.clash_api_port || 19091;
-  const clashApiSecret = settings?.clash_api_secret || '';
   const clashUIEnabled = settings?.clash_ui_enabled ?? true;
 
   return (
@@ -80,7 +86,7 @@ export default function Layout({ children }: LayoutProps) {
               type="button"
               onClick={() => {
                 window.open(
-                  buildZashboardPanelUrl(clashApiPort, clashApiSecret),
+                  buildZashboardPanelUrl(clashApiPort),
                   '_blank',
                   'noopener,noreferrer',
                 );
@@ -111,6 +117,18 @@ export default function Layout({ children }: LayoutProps) {
 
       {/* 主内容区 */}
       <main className="flex-1 p-8 overflow-auto ml-64">
+        {configSkipWarning && (
+          <div className="sticky top-0 z-20 mb-6 flex items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 shadow-sm dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100">
+            <div className="flex-1 whitespace-pre-wrap break-all">{configSkipWarning}</div>
+            <button
+              type="button"
+              className="shrink-0 text-amber-700 hover:underline dark:text-amber-200"
+              onClick={dismissConfigSkipWarning}
+            >
+              关闭
+            </button>
+          </div>
+        )}
         {children}
       </main>
     </div>
