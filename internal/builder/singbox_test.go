@@ -1,6 +1,7 @@
 package builder
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -174,6 +175,13 @@ func TestBuildValidatedJSONSkipsLocallyRejectedNode(t *testing.T) {
 	}
 	if !strings.Contains(result.SkippedNodes[0].Reason, "shadowtls") || !strings.Contains(result.SkippedNodes[0].Reason, "不受 sing-box 支持") {
 		t.Fatalf("skip reason = %q", result.SkippedNodes[0].Reason)
+	}
+	encoded, err := json.Marshal(result.SkippedNodes)
+	if err != nil {
+		t.Fatalf("marshal skipped nodes: %v", err)
+	}
+	if bytes.Contains(encoded, []byte("secret")) {
+		t.Fatalf("skip payload leaked node secret: %s", encoded)
 	}
 }
 

@@ -89,6 +89,10 @@ type Server struct {
 	// applyMu serializes rebuild+save+restart so concurrent autoApply / apply / start / restart
 	// cannot interleave config writes or double-restart.
 	applyMu sync.Mutex
+	// configSkipMu guards the last successful build's skip snapshot for status polling.
+	configSkipMu      sync.Mutex
+	lastSkippedNodes  []builder.SkippedNode
+	lastSkippedChains []builder.SkippedChain
 }
 
 const maxLocalSubscriptionBytes = 10 << 20
@@ -374,7 +378,7 @@ func (s *Server) updateSubscriptionSchedule(sub storage.Subscription) {
 				if s.eventTrigger != nil {
 					s.eventTrigger.OnSubscriptionUpdate(subID, nodeIDs)
 				}
-				s.autoApplyConfig()
+				_, _ = s.autoApplyConfig()
 
 				if task != nil {
 					s.taskManager.CompleteTask(task.ID, "订阅更新成功", map[string]interface{}{
@@ -834,12 +838,7 @@ func (s *Server) addSubscription(c *gin.Context) {
 			})
 		}
 
-		if err := s.autoApplyConfig(); err != nil {
-			c.JSON(http.StatusOK, gin.H{"data": sanitizeSubscriptionResponse(*sub), "warning": "添加成功，但自动应用配置失败: " + err.Error()})
-			return
-		}
-
-		c.JSON(http.StatusOK, gin.H{"data": sanitizeSubscriptionResponse(*sub)})
+		s.writeAutoApplied(c, gin.H{"data": sanitizeSubscriptionResponse(*sub)}, "添加成功")
 		return
 	}
 
@@ -883,12 +882,7 @@ func (s *Server) addSubscription(c *gin.Context) {
 		})
 	}
 
-	if err := s.autoApplyConfig(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"data": sanitizeSubscriptionResponse(*sub), "warning": "添加成功，但自动应用配置失败: " + err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"data": sanitizeSubscriptionResponse(*sub)})
+	s.writeAutoApplied(c, gin.H{"data": sanitizeSubscriptionResponse(*sub)}, "添加成功")
 }
 
 func (s *Server) updateSubscription(c *gin.Context) {
@@ -970,12 +964,7 @@ func (s *Server) updateSubscription(c *gin.Context) {
 			}
 		}
 
-		if err := s.autoApplyConfig(); err != nil {
-			c.JSON(http.StatusOK, gin.H{"message": "更新成功，但自动应用配置失败: " + err.Error()})
-			return
-		}
-
-		c.JSON(http.StatusOK, gin.H{"message": "更新成功"})
+		s.writeAutoApplied(c, gin.H{"message": "更新成功"}, "更新成功")
 		return
 	}
 
@@ -1024,12 +1013,7 @@ func (s *Server) updateSubscription(c *gin.Context) {
 	}
 
 	// 自动应用配置
-	if err := s.autoApplyConfig(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"message": "更新成功，但自动应用配置失败: " + err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "更新成功"})
+	s.writeAutoApplied(c, gin.H{"message": "更新成功"}, "更新成功")
 }
 
 func (s *Server) deleteSubscription(c *gin.Context) {
@@ -1091,16 +1075,6 @@ func (s *Server) deleteSubscription(c *gin.Context) {
 		logger.Warn("同步节点到 SQLite 失败: %v", err)
 	}
 
-	// 自动应用配置
-	if err := s.autoApplyConfig(); err != nil {
-		resp := gin.H{"message": "删除成功，但自动应用配置失败: " + err.Error()}
-		if len(cascadeMessages) > 0 {
-			resp["cascade"] = cascadeMessages
-		}
-		c.JSON(http.StatusOK, resp)
-		return
-	}
-
 	message := "删除成功"
 	if len(cascadeMessages) > 0 {
 		message = "删除成功，" + strings.Join(cascadeMessages, "，")
@@ -1109,7 +1083,7 @@ func (s *Server) deleteSubscription(c *gin.Context) {
 	if len(cascadeMessages) > 0 {
 		resp["cascade"] = cascadeMessages
 	}
-	c.JSON(http.StatusOK, resp)
+	s.writeAutoApplied(c, resp, "删除成功")
 }
 
 func (s *Server) refreshSubscription(c *gin.Context) {
@@ -1170,16 +1144,6 @@ func (s *Server) refreshSubscription(c *gin.Context) {
 		})
 	}
 
-	// 自动应用配置
-	if err := s.autoApplyConfig(); err != nil {
-		resp := gin.H{"message": "刷新成功，但自动应用配置失败: " + err.Error()}
-		if len(cascadeMessages) > 0 {
-			resp["cascade"] = cascadeMessages
-		}
-		c.JSON(http.StatusOK, resp)
-		return
-	}
-
 	message := "刷新成功"
 	if len(cascadeMessages) > 0 {
 		message = "刷新成功，" + strings.Join(cascadeMessages, "，")
@@ -1188,7 +1152,7 @@ func (s *Server) refreshSubscription(c *gin.Context) {
 	if len(cascadeMessages) > 0 {
 		resp["cascade"] = cascadeMessages
 	}
-	c.JSON(http.StatusOK, resp)
+	s.writeAutoApplied(c, resp, "刷新成功")
 }
 
 func (s *Server) refreshAllSubscriptions(c *gin.Context) {
@@ -1241,16 +1205,6 @@ func (s *Server) refreshAllSubscriptions(c *gin.Context) {
 		})
 	}
 
-	// 自动应用配置
-	if err := s.autoApplyConfig(); err != nil {
-		resp := gin.H{"message": "刷新成功，但自动应用配置失败: " + err.Error()}
-		if len(cascadeMessages) > 0 {
-			resp["cascade"] = cascadeMessages
-		}
-		c.JSON(http.StatusOK, resp)
-		return
-	}
-
 	message := "刷新成功"
 	if len(cascadeMessages) > 0 {
 		message = "刷新成功，" + strings.Join(cascadeMessages, "，")
@@ -1259,7 +1213,7 @@ func (s *Server) refreshAllSubscriptions(c *gin.Context) {
 	if len(cascadeMessages) > 0 {
 		resp["cascade"] = cascadeMessages
 	}
-	c.JSON(http.StatusOK, resp)
+	s.writeAutoApplied(c, resp, "刷新成功")
 }
 
 // ==================== 过滤器 API ====================
@@ -1285,12 +1239,7 @@ func (s *Server) addFilter(c *gin.Context) {
 	}
 
 	// 自动应用配置
-	if err := s.autoApplyConfig(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"data": filter, "warning": "添加成功，但自动应用配置失败: " + err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"data": filter})
+	s.writeAutoApplied(c, gin.H{"data": filter}, "添加成功")
 }
 
 func (s *Server) updateFilter(c *gin.Context) {
@@ -1358,17 +1307,11 @@ func (s *Server) updateFilter(c *gin.Context) {
 		return
 	}
 
-	// 自动应用配置
-	if err := s.autoApplyConfig(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"message": "更新成功，但自动应用配置失败: " + err.Error()})
-		return
-	}
-
 	message := "更新成功"
 	if len(cascadeMessages) > 0 {
 		message = "更新成功，" + strings.Join(cascadeMessages, "，")
 	}
-	c.JSON(http.StatusOK, gin.H{"message": message})
+	s.writeAutoApplied(c, gin.H{"message": message}, "更新成功")
 }
 
 func (s *Server) deleteFilter(c *gin.Context) {
@@ -1396,12 +1339,6 @@ func (s *Server) deleteFilter(c *gin.Context) {
 		return
 	}
 
-	// 自动应用配置
-	if err := s.autoApplyConfig(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"message": "删除成功，但自动应用配置失败: " + err.Error()})
-		return
-	}
-
 	message := "删除成功"
 	var deleteNotes []string
 	if len(disabledPorts) > 0 {
@@ -1414,7 +1351,7 @@ func (s *Server) deleteFilter(c *gin.Context) {
 		message = "删除成功，" + strings.Join(deleteNotes, "，")
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": message})
+	s.writeAutoApplied(c, gin.H{"message": message}, "删除成功")
 }
 
 // ==================== 设置 API ====================
@@ -1456,12 +1393,7 @@ func (s *Server) updateSettings(c *gin.Context) {
 	s.processManager.SetConfigPath(s.resolvePath(settings.ConfigPath))
 
 	// 自动应用配置
-	if err := s.autoApplyConfig(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"message": "更新成功，但自动应用配置失败: " + err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "更新成功"})
+	s.writeAutoApplied(c, gin.H{"message": "更新成功"}, "更新成功")
 }
 
 func (s *Server) validateTorRuntimeSettings(settings storage.Settings) error {
@@ -1694,14 +1626,22 @@ func (s *Server) buildAndSaveCurrentConfig() error {
 }
 
 func (s *Server) buildAndSaveCurrentConfigLocked() error {
+	_, err := s.buildAndSaveCurrentConfigResult()
+	return err
+}
+
+func (s *Server) buildAndSaveCurrentConfigResult() (*builder.ValidatedConfig, error) {
 	settings := s.store.GetSettings()
 
 	result, err := s.buildConfig()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	return s.saveConfigFile(s.resolvePath(settings.ConfigPath), result.JSON)
+	if err := s.saveConfigFile(s.resolvePath(settings.ConfigPath), result.JSON); err != nil {
+		return result, err
+	}
+	return result, nil
 }
 
 // PrepareRuntimeConfig 在自动恢复 sing-box 前重建并校验当前 Profile 配置。
@@ -1750,6 +1690,7 @@ func (s *Server) buildConfig() (*builder.ValidatedConfig, error) {
 	if len(result.SkippedNodes) > 0 || len(result.SkippedChains) > 0 {
 		logger.Warn("配置生成完成，跳过 %d 个无效节点、%d 条链路", len(result.SkippedNodes), len(result.SkippedChains))
 	}
+	s.rememberConfigSkips(result)
 	return result, nil
 }
 
@@ -1783,14 +1724,52 @@ func applySkipFields(dst gin.H, result *builder.ValidatedConfig) {
 	if result == nil {
 		return
 	}
-	if len(result.SkippedNodes) > 0 {
-		dst["skipped_nodes"] = result.SkippedNodes
+	dst["skipped_nodes"] = skipSlice(result.SkippedNodes)
+	dst["skipped_chains"] = skipSlice(result.SkippedChains)
+	warning := formatConfigSkipWarning(result)
+	if warning == "" {
+		return
 	}
-	if len(result.SkippedChains) > 0 {
-		dst["skipped_chains"] = result.SkippedChains
+	if existing, ok := dst["warning"].(string); ok && existing != "" {
+		dst["warning"] = existing + " | " + warning
+		return
 	}
+	dst["warning"] = warning
+}
+
+func skipSlice[T any](items []T) []T {
+	if items == nil {
+		return []T{}
+	}
+	return items
+}
+
+func (s *Server) rememberConfigSkips(result *builder.ValidatedConfig) {
+	if result == nil {
+		return
+	}
+	nodes := append([]builder.SkippedNode(nil), result.SkippedNodes...)
+	chains := append([]builder.SkippedChain(nil), result.SkippedChains...)
+	s.configSkipMu.Lock()
+	s.lastSkippedNodes = nodes
+	s.lastSkippedChains = chains
+	s.configSkipMu.Unlock()
+}
+
+func (s *Server) configSkips() ([]builder.SkippedNode, []builder.SkippedChain) {
+	s.configSkipMu.Lock()
+	defer s.configSkipMu.Unlock()
+	return append([]builder.SkippedNode(nil), s.lastSkippedNodes...), append([]builder.SkippedChain(nil), s.lastSkippedChains...)
+}
+
+func setConfigSkipHeaders(c *gin.Context, result *builder.ValidatedConfig) {
+	if result == nil {
+		return
+	}
+	c.Header("X-SBM-Skipped-Nodes", strconv.Itoa(len(result.SkippedNodes)))
+	c.Header("X-SBM-Skipped-Chains", strconv.Itoa(len(result.SkippedChains)))
 	if warning := formatConfigSkipWarning(result); warning != "" {
-		dst["warning"] = warning
+		c.Header("X-SBM-Config-Warning", url.QueryEscape(warning))
 	}
 }
 
@@ -1844,7 +1823,8 @@ func (s *Server) exportConfig(c *gin.Context) {
 	}
 	configJSON := result.JSON
 
-	// 设置响应头，触发浏览器下载
+	// 设置响应头，触发浏览器下载。跳过明细不写入文件正文，供客户端从响应头或状态接口读取。
+	setConfigSkipHeaders(c, result)
 	c.Header("Content-Disposition", "attachment; filename=singbox-config.json")
 	c.Header("Content-Type", "application/json")
 	c.String(http.StatusOK, configJSON)
@@ -1908,9 +1888,7 @@ func (s *Server) importBackup(c *gin.Context) {
 	}
 
 	// 自动应用配置
-	s.autoApplyConfig()
-
-	c.JSON(http.StatusOK, gin.H{"message": "数据已恢复", "backup": backupFile})
+	s.writeAutoApplied(c, gin.H{"message": "数据已恢复", "backup": backupFile}, "数据已恢复")
 }
 
 // ==================== Profile API ====================
@@ -2156,26 +2134,46 @@ func (s *Server) resolvePath(path string) string {
 	return filepath.Join(s.store.GetDataDir(), path)
 }
 
-// autoApplyConfig 自动应用配置（如果 sing-box 正在运行）
-func (s *Server) autoApplyConfig() error {
+// autoApplyConfig 自动应用配置（如果 sing-box 正在运行）。
+// 返回的 ValidatedConfig 在构建成功时包含跳过明细；自动应用关闭时为 nil。
+func (s *Server) autoApplyConfig() (*builder.ValidatedConfig, error) {
 	s.applyMu.Lock()
 	defer s.applyMu.Unlock()
 
 	settings := s.store.GetSettings()
 	if !settings.AutoApply {
-		return nil
+		return nil, nil
 	}
 
-	if err := s.buildAndSaveCurrentConfigLocked(); err != nil {
-		return err
+	result, err := s.buildAndSaveCurrentConfigResult()
+	if err != nil {
+		return result, err
 	}
 
 	// 如果 sing-box 正在运行，则重启
 	if s.processManager.IsRunning() {
-		return s.processManager.Restart()
+		if err := s.processManager.Restart(); err != nil {
+			return result, err
+		}
 	}
 
-	return nil
+	return result, nil
+}
+
+// writeAutoApplied attaches skip fields to a successful mutation response.
+// successLabel is used only when auto-apply fails, preserving the existing
+// "X成功，但自动应用配置失败" wording. Cascade fields already in resp are kept.
+func (s *Server) writeAutoApplied(c *gin.Context, resp gin.H, successLabel string) {
+	result, err := s.autoApplyConfig()
+	if err != nil {
+		failure := successLabel + "，但自动应用配置失败: " + err.Error()
+		if _, ok := resp["message"]; ok {
+			resp["message"] = failure
+		}
+		resp["warning"] = failure
+	}
+	applySkipFields(resp, result)
+	c.JSON(http.StatusOK, resp)
 }
 
 // ==================== 服务 API ====================
@@ -2189,21 +2187,28 @@ func (s *Server) getServiceStatus(c *gin.Context) {
 		version = v
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"data": gin.H{
-			"running":     running,
-			"pid":         pid,
-			"version":     version,
-			"sbm_version": s.version,
-		},
-	})
+	nodes, chains := s.configSkips()
+	data := gin.H{
+		"running":        running,
+		"pid":            pid,
+		"version":        version,
+		"sbm_version":    s.version,
+		"skipped_nodes":  skipSlice(nodes),
+		"skipped_chains": skipSlice(chains),
+	}
+	if warning := formatConfigSkipWarning(&builder.ValidatedConfig{SkippedNodes: nodes, SkippedChains: chains}); warning != "" {
+		data["warning"] = warning
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": data})
 }
 
 func (s *Server) startService(c *gin.Context) {
 	s.applyMu.Lock()
 	defer s.applyMu.Unlock()
 
-	if err := s.buildAndSaveCurrentConfigLocked(); err != nil {
+	result, err := s.buildAndSaveCurrentConfigResult()
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -2212,7 +2217,9 @@ func (s *Server) startService(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "服务已启动"})
+	resp := gin.H{"message": "服务已启动"}
+	applySkipFields(resp, result)
+	c.JSON(http.StatusOK, resp)
 }
 
 func (s *Server) stopService(c *gin.Context) {
@@ -2227,21 +2234,38 @@ func (s *Server) restartService(c *gin.Context) {
 	s.applyMu.Lock()
 	defer s.applyMu.Unlock()
 
-	if err := rebuildConfigAndRestart(s.buildAndSaveCurrentConfigLocked, s.processManager.Restart); err != nil {
+	result, err := s.buildAndSaveCurrentConfigResult()
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "服务已重启"})
+	if err := s.processManager.Restart(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	resp := gin.H{"message": "服务已重启"}
+	applySkipFields(resp, result)
+	c.JSON(http.StatusOK, resp)
 }
 
 // reloadService rebuilds the current profile config to disk, then SIGHUP.
 // Reload = rebuild+SIGHUP (hot); Restart = stop+start (ports/TUN full cycle).
 func (s *Server) reloadService(c *gin.Context) {
-	if err := rebuildConfigAndRestart(s.buildAndSaveCurrentConfig, s.processManager.Reload); err != nil {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+
+	result, err := s.buildAndSaveCurrentConfigResult()
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "配置已重载"})
+	if err := s.processManager.Reload(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	resp := gin.H{"message": "配置已重载"}
+	applySkipFields(resp, result)
+	c.JSON(http.StatusOK, resp)
 }
 
 // ==================== launchd API ====================
@@ -2961,12 +2985,7 @@ func (s *Server) addManualNode(c *gin.Context) {
 	}
 
 	// 自动应用配置
-	if err := s.autoApplyConfig(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"data": node, "warning": "添加成功，但自动应用配置失败: " + err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"data": node})
+	s.writeAutoApplied(c, gin.H{"data": node}, "添加成功")
 }
 
 func (s *Server) updateManualNode(c *gin.Context) {
@@ -3022,21 +3041,12 @@ func (s *Server) updateManualNode(c *gin.Context) {
 	}
 
 	// 自动应用配置
-	if err := s.autoApplyConfig(); err != nil {
-		resp := gin.H{"message": "更新成功，但自动应用配置失败: " + err.Error()}
-		if len(cascadeMessages) > 0 {
-			resp["cascade"] = cascadeMessages
-		}
-		c.JSON(http.StatusOK, resp)
-		return
-	}
-
 	resp := gin.H{"message": "更新成功"}
 	if len(cascadeMessages) > 0 {
 		resp["message"] = "更新成功，" + strings.Join(cascadeMessages, "；")
 		resp["cascade"] = cascadeMessages
 	}
-	c.JSON(http.StatusOK, resp)
+	s.writeAutoApplied(c, resp, "更新成功")
 }
 
 func (s *Server) deleteManualNode(c *gin.Context) {
@@ -3077,16 +3087,6 @@ func (s *Server) deleteManualNode(c *gin.Context) {
 		}
 	}
 
-	// 自动应用配置
-	if err := s.autoApplyConfig(); err != nil {
-		resp := gin.H{"message": "删除成功，但自动应用配置失败: " + err.Error()}
-		if len(cascadeMessages) > 0 {
-			resp["cascade"] = cascadeMessages
-		}
-		c.JSON(http.StatusOK, resp)
-		return
-	}
-
 	message := "删除成功"
 	if len(cascadeMessages) > 0 {
 		message = "删除成功，" + strings.Join(cascadeMessages, "，")
@@ -3095,7 +3095,7 @@ func (s *Server) deleteManualNode(c *gin.Context) {
 	if len(cascadeMessages) > 0 {
 		resp["cascade"] = cascadeMessages
 	}
-	c.JSON(http.StatusOK, resp)
+	s.writeAutoApplied(c, resp, "删除成功")
 }
 
 // ==================== 内核管理 API ====================
@@ -3254,12 +3254,7 @@ func (s *Server) addInboundPort(c *gin.Context) {
 	}
 
 	// 自动应用配置
-	if err := s.autoApplyConfig(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"data": port, "warning": "添加成功，但自动应用配置失败: " + err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"data": port})
+	s.writeAutoApplied(c, gin.H{"data": port}, "添加成功")
 }
 
 func (s *Server) updateInboundPort(c *gin.Context) {
@@ -3302,12 +3297,7 @@ func (s *Server) updateInboundPort(c *gin.Context) {
 	}
 
 	// 自动应用配置
-	if err := s.autoApplyConfig(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"message": "更新成功，但自动应用配置失败: " + err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "更新成功"})
+	s.writeAutoApplied(c, gin.H{"message": "更新成功"}, "更新成功")
 }
 
 func (s *Server) validateInboundPortForSave(candidate storage.InboundPort) error {
@@ -3368,12 +3358,7 @@ func (s *Server) deleteInboundPort(c *gin.Context) {
 	}
 
 	// 自动应用配置
-	if err := s.autoApplyConfig(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"message": "删除成功，但自动应用配置失败: " + err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "删除成功"})
+	s.writeAutoApplied(c, gin.H{"message": "删除成功"}, "删除成功")
 }
 
 // ==================== 代理链路 API ====================
@@ -3407,12 +3392,7 @@ func (s *Server) addProxyChain(c *gin.Context) {
 	}
 
 	// 自动应用配置
-	if err := s.autoApplyConfig(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"data": chain, "warning": "添加成功，但自动应用配置失败: " + err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"data": chain})
+	s.writeAutoApplied(c, gin.H{"data": chain}, "添加成功")
 }
 
 func (s *Server) updateProxyChain(c *gin.Context) {
@@ -3490,17 +3470,11 @@ func (s *Server) updateProxyChain(c *gin.Context) {
 		return
 	}
 
-	// 自动应用配置
-	if err := s.autoApplyConfig(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"message": "更新成功，但自动应用配置失败: " + err.Error()})
-		return
-	}
-
 	message := "更新成功"
 	if len(cascadeMessages) > 0 {
 		message = "更新成功，" + strings.Join(cascadeMessages, "，")
 	}
-	c.JSON(http.StatusOK, gin.H{"message": message})
+	s.writeAutoApplied(c, gin.H{"message": message}, "更新成功")
 }
 
 func (s *Server) deleteProxyChain(c *gin.Context) {
@@ -3533,11 +3507,6 @@ func (s *Server) deleteProxyChain(c *gin.Context) {
 	}
 
 	// 自动应用配置
-	if err := s.autoApplyConfig(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"message": "删除成功，但自动应用配置失败: " + err.Error()})
-		return
-	}
-
 	message := "删除成功"
 	var cascadeParts []string
 	if len(disabledPorts) > 0 {
@@ -3550,7 +3519,7 @@ func (s *Server) deleteProxyChain(c *gin.Context) {
 		message = "删除成功，" + strings.Join(cascadeParts, "，")
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": message})
+	s.writeAutoApplied(c, gin.H{"message": message}, "删除成功")
 }
 
 // collectNodeTags returns unique non-empty node tags (stable-ish insertion order).

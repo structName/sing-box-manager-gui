@@ -14,8 +14,10 @@ import Logs from './pages/Logs';
 import { ToastContainer } from './components/Toast';
 import Login from './pages/Login';
 import Setup from './pages/Setup';
-import { registerAuthErrorHandlers } from './api';
+import { registerAuthErrorHandlers, registerConfigSkipHandler } from './api';
 import { useAuthStore } from './store/authStore';
+import { useStore } from './store';
+import { toast } from './components/Toast';
 
 function App() {
   const fetchSession = useAuthStore((state) => state.fetchSession);
@@ -26,6 +28,16 @@ function App() {
     registerAuthErrorHandlers({
       onUnauthorized: markUnauthenticated,
       onBootstrapRequired: markBootstrapRequired,
+    });
+    registerConfigSkipHandler((payload, options) => {
+      useStore.getState().noteConfigSkip(payload);
+      if (!options.toast) {
+        return;
+      }
+      const warning = useStore.getState().configSkipWarning;
+      if (warning) {
+        toast.info(warning, 8000);
+      }
     });
     void fetchSession();
   }, [fetchSession, markBootstrapRequired, markUnauthenticated]);

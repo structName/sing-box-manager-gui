@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -134,32 +135,64 @@ func (e *Executor) runWithProfile(profile *models.SpeedTestProfile, nodeIDs []ui
 	return task, nil
 }
 
-// getNodesByProfile 根据策略筛选条件获取节点
+// getNodesByProfile 根据策略筛选条件获取节点。
+// tag_filter 复用已保存的标签名，与 source_filter / country_filter 一样是包含匹配，不引入新语法。
 func (e *Executor) getNodesByProfile(profile *models.SpeedTestProfile) ([]models.Node, error) {
 	nodes, err := e.store.GetEnabledNodes()
 	if err != nil {
 		return nil, err
 	}
+	return filterNodesByProfile(nodes, profile), nil
+}
 
-	// 无筛选条件时直接返回
-	if len(profile.SourceFilter) == 0 && len(profile.CountryFilter) == 0 {
-		return nodes, nil
+func filterNodesByProfile(nodes []models.Node, profile *models.SpeedTestProfile) []models.Node {
+	if profile == nil {
+		return nodes
+	}
+	sources := compactFilter(profile.SourceFilter)
+	countries := compactFilter(profile.CountryFilter)
+	tags := compactFilter(profile.TagFilter)
+	if len(sources) == 0 && len(countries) == 0 && len(tags) == 0 {
+		return nodes
 	}
 
-	// 应用筛选条件
-	var filtered []models.Node
+	filtered := make([]models.Node, 0, len(nodes))
 	for _, node := range nodes {
-		if len(profile.SourceFilter) > 0 && !slices.Contains(profile.SourceFilter, node.Source) {
+		if len(sources) > 0 && !slices.Contains(sources, node.Source) {
 			continue
 		}
-		if len(profile.CountryFilter) > 0 && !slices.Contains(profile.CountryFilter, node.Country) {
+		if len(countries) > 0 && !slices.Contains(countries, node.Country) {
 			continue
 		}
-		// TODO: 标签筛选
+		if len(tags) > 0 && !nodeHasTagName(node, tags) {
+			continue
+		}
 		filtered = append(filtered, node)
 	}
+	return filtered
+}
 
-	return filtered, nil
+func nodeHasTagName(node models.Node, wanted []string) bool {
+	for _, tag := range node.Tags {
+		if slices.Contains(wanted, tag.Name) {
+			return true
+		}
+	}
+	return false
+}
+
+func compactFilter(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 // clamp 将值限制在指定范围内

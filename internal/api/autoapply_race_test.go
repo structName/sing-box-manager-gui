@@ -100,7 +100,7 @@ func TestAutoApplyConfigSerializesConcurrentCalls(t *testing.T) {
 	for i := 0; i < goroutines; i++ {
 		go func() {
 			defer wg.Done()
-			if err := server.autoApplyConfig(); err != nil {
+			if _, err := server.autoApplyConfig(); err != nil {
 				failures.Add(1)
 				t.Errorf("autoApplyConfig() error = %v", err)
 			}
