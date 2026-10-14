@@ -71,3 +71,7 @@ export default defineConfig([
   },
 ])
 ```
+
+## Go embed stub
+
+`web/dist/index.html` is a minimal committed stub so `go test ./internal/api` works without a full frontend build. `pnpm run build` replaces it locally; only the stub stays tracked.

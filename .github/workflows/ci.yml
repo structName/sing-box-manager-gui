@@ -39,6 +39,9 @@ jobs:
       - name: Check deployment sensitive data
         run: scripts/check-deployment-sensitive-data.sh
 
+      - name: Ensure web/dist embed stub
+        run: scripts/ensure-web-dist-stub.sh
+
       - name: Test backend
         run: go test ./...
 

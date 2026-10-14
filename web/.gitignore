@@ -8,7 +8,10 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
-dist
+# Keep a minimal embed stub committed so `go test ./internal/api` works on a clean checkout.
+# Full Vite output stays ignored; only index.html is tracked as the stub.
+dist/*
+!dist/index.html
 dist-ssr
 *.local
 

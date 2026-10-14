@@ -3,9 +3,8 @@ dist
 web/node_modules
 web/node_modules/
 web/node_modules/*
-web/dist
-web/dist/
 web/dist/*
+!web/dist/index.html
 .claude/config.json
 .atlas/
 data/
