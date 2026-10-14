@@ -212,14 +212,14 @@ This project bundles a custom sing-box build with ShadowsocksR support. The SSR-
 
 ### Tech Stack
 
-- **Backend:** Go 1.24+, Gin, gopsutil, GORM (SQLite)
+- **Backend:** Go 1.25+, Gin, gopsutil, GORM (SQLite)
 - **Frontend:** React 19, TypeScript, NextUI v2, Tailwind CSS, Zustand, Recharts
 - **Speed Test:** mihomo (Clash Meta) library for proxy adapter
 - **Build:** Single binary with embedded frontend via `go:embed`
 
 ### Requirements
 
-- Go 1.24+ (for building)
+- Go 1.25+ (for building)
 - Node.js 18+ / pnpm (for building frontend)
 - sing-box (bundled with SSR support)
 
@@ -437,14 +437,14 @@ VERSION=1.0.0 ./build.sh all         # 自定义版本号
 
 ### 技术栈
 
-- **后端：** Go 1.24+、Gin、gopsutil、GORM（SQLite）
+- **后端：** Go 1.25+、Gin、gopsutil、GORM（SQLite）
 - **前端：** React 19、TypeScript、NextUI v2、Tailwind CSS、Zustand、Recharts
 - **测速：** mihomo（Clash Meta）库作为代理适配器
 - **构建：** 通过 `go:embed` 将前端嵌入单一二进制文件
 
 ### 环境要求
 
-- Go 1.24+（用于构建）
+- Go 1.25+（用于构建）
 - Node.js 18+ / pnpm（用于构建前端）
 - sing-box（已内置，支持 SSR）
 
