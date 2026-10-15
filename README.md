@@ -87,6 +87,11 @@ A modern web-based management panel for [sing-box](https://github.com/SagerNet/s
 | TUIC | ✅ | ✅ | ✅ | ✅ |
 | SOCKS | ✅ | ✅ | ✅ | ✅ |
 
+> **SOCKS / mihomo boundaries** ([#45](https://github.com/structName/sing-box-manager-gui/issues/45)):
+> - **SOCKS4 / SOCKS4a** are **TCP-only**. Speed-test mapping sends them to mihomo as `socks4` (no UDP ASSOCIATE). Prefer SOCKS5 when UDP or UDP-over-TCP is required.
+> - **UDP-over-TCP (UoT)** is forwarded to mihomo (`udp-over-tcp`) **only** when node `Extra.udp_over_tcp` is enabled (`true` or `{enabled: true}`); it is not implied by protocol type alone.
+> - Regression gate: `go test ./internal/speedtest -count=1 -run 'TestNodeToMihomoProxySocks'` (and, once [#63](https://github.com/structName/sing-box-manager-gui/issues/63) / [PR #78](https://github.com/structName/sing-box-manager-gui/pull/78) lands, `make test-socks-rename-gate`). Details: [`docs/socks-mihomo-boundaries.md`](docs/socks-mihomo-boundaries.md).
+
 ### Screenshots
 
 ![Dashboard](docs/screenshots/dashbord.png)
@@ -311,6 +316,11 @@ MIT License
 | Hysteria2 | ✅ | ✅ | ✅ | ✅ |
 | TUIC | ✅ | ✅ | ✅ | ✅ |
 | SOCKS | ✅ | ✅ | ✅ | ✅ |
+
+> **SOCKS / mihomo 边界**（[#45](https://github.com/structName/sing-box-manager-gui/issues/45)）：
+> - **SOCKS4 / SOCKS4a** 仅 **TCP**。测速映射到 mihomo 的 `socks4`（无 UDP ASSOCIATE）。需要 UDP 或 UDP-over-TCP 时请用 SOCKS5。
+> - **UDP-over-TCP（UoT）** 仅在节点 `Extra.udp_over_tcp` 开启时传给 mihomo（`udp-over-tcp`）；不会因协议类型自动启用。
+> - 回归门槛：`go test ./internal/speedtest -count=1 -run 'TestNodeToMihomoProxySocks'`（[#63](https://github.com/structName/sing-box-manager-gui/issues/63) / [PR #78](https://github.com/structName/sing-box-manager-gui/pull/78) 合入后可用 `make test-socks-rename-gate`）。详见 [`docs/socks-mihomo-boundaries.md`](docs/socks-mihomo-boundaries.md)。
 
 ### 截图
 
