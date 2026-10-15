@@ -73,6 +73,7 @@ A modern web-based management panel for [sing-box](https://github.com/SagerNet/s
   - Built-in SSR-enabled sing-box binary
   - Version checking and online updates
   - Multi-platform support (Linux, macOS, Windows)
+  - **Version lines:** mainline `v0.2.x` vs Windows beta `v0.3.x-windows-beta` — see [docs/windows-beta.md](docs/windows-beta.md) for the feature-alignment checklist (Tor, deployment, SOCKS/mihomo, #23 rename cascade, AnyTLS, service paths)
 
 ### Supported Protocols
 
@@ -100,6 +101,8 @@ A modern web-based management panel for [sing-box](https://github.com/SagerNet/s
 #### Pre-built Binaries
 
 Download from [Releases](https://github.com/structName/sing-box-manager-gui/releases) page.
+
+> **Windows note:** mainline releases may ship `sbm-windows-amd64.exe`, but that is **not** the same feature set as tags `v0.3.*-windows-beta`. Read [docs/windows-beta.md](docs/windows-beta.md) before choosing a build.
 
 #### Build from Source
 
@@ -298,6 +301,7 @@ MIT License
   - 内置支持 SSR 的 sing-box 二进制文件
   - 版本检查与在线更新
   - 多平台支持（Linux、macOS、Windows）
+  - **版本线说明：** 主线 `v0.2.x` 与 Windows beta `v0.3.x-windows-beta` 功能并不对齐，详见 [docs/windows-beta.md](docs/windows-beta.md)（Tor / 部署工作流 / SOCKS mihomo / #23 重命名级联 / AnyTLS / 服务路径差异）
 
 ### 支持的协议
 
@@ -325,6 +329,8 @@ MIT License
 #### 预编译二进制文件
 
 从 [Releases](https://github.com/structName/sing-box-manager-gui/releases) 页面下载。
+
+> **Windows 说明：** 主线 Release 可能提供 `sbm-windows-amd64.exe`，但其功能集与 `v0.3.*-windows-beta` 标签不同。选型前请阅读 [docs/windows-beta.md](docs/windows-beta.md)。
 
 #### 从源码构建
 
